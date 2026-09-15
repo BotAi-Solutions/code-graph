@@ -1,0 +1,155 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import type { SupportedLanguage } from '@ckg/shared';
+import type { ScipDocument, ScipIndex, ScipSymbol, ScipSymbolKind } from '../types/index.js';
+import type { RefineContext, ScipSymbolRefiner } from './symbol-refiner.js';
+
+/**
+ * Recovers TypeScript/JavaScript declaration kinds that SCIP does not carry.
+ *
+ * Every definition has an exact range, so the declaring keyword is whatever
+ * precedes the name on that line (`export interface Foo`, `type Bar =`,
+ * `class Baz`, ...). Reading that one token is enough to turn a generic
+ * "class" into interface / enum / type-alias, which in turn is what makes
+ * IMPLEMENTS and EXTENDS distinguishable downstream.
+ *
+ * Only the declaring keyword is inspected. No source text is retained, logged
+ * or written to the graph.
+ */
+
+const KEYWORD_TO_KIND: ReadonlyMap<string, ScipSymbolKind> = new Map<string, ScipSymbolKind>([
+  ['interface', 'interface'],
+  ['class', 'class'],
+  ['enum', 'enum'],
+  ['type', 'type'],
+  ['function', 'function'],
+  ['namespace', 'namespace'],
+  ['module', 'module'],
+  ['const', 'constant'],
+  ['get', 'accessor'],
+  ['set', 'accessor'],
+]);
+
+/** Modifiers that may sit between the declaring keyword and the name. */
+const SKIPPABLE_MODIFIERS = new Set([
+  'export',
+  'default',
+  'declare',
+  'abstract',
+  'async',
+  'static',
+  'readonly',
+  'public',
+  'private',
+  'protected',
+  'override',
+]);
+
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+
+export class TypeScriptSymbolRefiner implements ScipSymbolRefiner {
+  readonly name = 'typescript';
+
+  supports(language: SupportedLanguage): boolean {
+    return language === 'typescript' || language === 'javascript';
+  }
+
+  async refine(index: ScipIndex, context: RefineContext): Promise<ScipIndex> {
+    const documents = await Promise.all(
+      index.documents.map((document) => this.refineDocument(document, context)),
+    );
+    return { ...index, documents };
+  }
+
+  private async refineDocument(
+    document: ScipDocument,
+    context: RefineContext,
+  ): Promise<ScipDocument> {
+    const lines = await this.readLines(path.join(context.repositoryPath, document.relativePath));
+    if (!lines) return document;
+
+    // Definition occurrence per symbol, so we know where to look.
+    const definitionLine = new Map<string, { line: number; character: number }>();
+    for (const occurrence of document.occurrences) {
+      if (!occurrence.isDefinition) continue;
+      if (definitionLine.has(occurrence.symbolId)) continue;
+      definitionLine.set(occurrence.symbolId, {
+        line: occurrence.startLine,
+        character: occurrence.startCharacter,
+      });
+    }
+
+    const symbols = document.symbols.map((symbol) => {
+      const position = definitionLine.get(symbol.id);
+      if (!position) return symbol;
+
+      const line = lines[position.line];
+      if (line === undefined) return symbol;
+
+      const keyword = declaringKeyword(line, position.character);
+      if (!keyword) return symbol;
+
+      const refined = KEYWORD_TO_KIND.get(keyword);
+      if (!refined) return symbol;
+
+      return applyKind(symbol, refined);
+    });
+
+    return { ...document, symbols };
+  }
+
+  private async readLines(filePath: string): Promise<string[] | null> {
+    try {
+      const contents = await readFile(filePath, 'utf8');
+      if (contents.length > MAX_FILE_BYTES) return null;
+      return contents.split('\n');
+    } catch {
+      // File moved or unreadable since indexing: leave kinds as parsed.
+      return null;
+    }
+  }
+}
+
+/**
+ * Returns the declaring keyword immediately before `character` on `line`,
+ * skipping modifiers. `export abstract class Foo` at the offset of `Foo`
+ * yields `class`.
+ */
+export function declaringKeyword(line: string, character: number): string | null {
+  const prefix = line.slice(0, character);
+  const tokens = prefix.split(/[^A-Za-z]+/).filter((token) => token.length > 0);
+
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index] as string;
+    if (SKIPPABLE_MODIFIERS.has(token)) continue;
+    return token;
+  }
+
+  return null;
+}
+
+/**
+ * A refined kind never downgrades structural information the parser already
+ * derived: a `method` stays a method even if the line happens to start with
+ * `async`.
+ */
+function applyKind(symbol: ScipSymbol, refined: ScipSymbolKind): ScipSymbol {
+  const current = symbol.kind;
+
+  if (current === 'class' || current === 'unknown') {
+    return { ...symbol, kind: refined };
+  }
+
+  // `const x = () => {}` parses as a variable; the keyword says constant.
+  if (current === 'variable' && refined === 'constant') {
+    return { ...symbol, kind: 'constant' };
+  }
+
+  // Getters and setters arrive as generic methods.
+  if (current === 'method' && refined === 'accessor') {
+    return { ...symbol, kind: 'accessor' };
+  }
+
+  // A top-level `function` already inferred as a function needs no change.
+  return symbol;
+}

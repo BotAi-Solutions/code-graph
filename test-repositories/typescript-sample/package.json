@@ -1,0 +1,8 @@
+{
+  "name": "typescript-sample",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Small but realistic layered TypeScript app used to exercise the analysis pipeline end to end.",
+  "main": "src/index.ts"
+}

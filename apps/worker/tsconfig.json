@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../../packages/graph"
+    },
+    {
+      "path": "../../packages/scip"
+    },
+    {
+      "path": "../../packages/database"
+    },
+    {
+      "path": "../../packages/language-detection"
+    }
+  ]
+}

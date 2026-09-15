@@ -1,0 +1,37 @@
+{
+  "name": "code-knowledge-graph",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build": "pnpm build:packages && pnpm --filter @ckg/web build",
+    "build:packages": "tsc -b tsconfig.json",
+    "typecheck": "tsc -b tsconfig.json && pnpm --filter @ckg/web typecheck",
+    "clean": "tsc -b tsconfig.json --clean && node -e \"for (const p of ['apps/web/dist','apps/web/node_modules/.vite']) require('node:fs').rmSync(p,{recursive:true,force:true})\"",
+    "dev": "pnpm build:packages && pnpm --parallel --filter @ckg/api --filter @ckg/worker --filter @ckg/web dev",
+    "dev:api": "pnpm build:packages && pnpm --filter @ckg/api dev",
+    "dev:worker": "pnpm build:packages && pnpm --filter @ckg/worker dev",
+    "dev:web": "pnpm --filter @ckg/web dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "pnpm --filter @ckg/database migrate",
+    "db:status": "pnpm --filter @ckg/database migrate:status",
+    "setup:scip": "tsx scripts/setup-scip.ts",
+    "analyze:sample": "pnpm build:packages && tsx scripts/dev-analysis.ts"
+  },
+  "devDependencies": {
+    "@ckg/database": "workspace:*",
+    "@ckg/graph": "workspace:*",
+    "@ckg/language-detection": "workspace:*",
+    "@ckg/scip": "workspace:*",
+    "@ckg/shared": "workspace:*",
+    "@sourcegraph/scip-typescript": "^0.4.0",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.23.13",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.1"
+  }
+}

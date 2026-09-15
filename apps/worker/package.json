@@ -1,0 +1,25 @@
+{
+  "name": "@ckg/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/worker.js",
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsx watch src/worker.ts",
+    "start": "node dist/worker.js"
+  },
+  "dependencies": {
+    "@ckg/database": "workspace:*",
+    "@ckg/graph": "workspace:*",
+    "@ckg/language-detection": "workspace:*",
+    "@ckg/scip": "workspace:*",
+    "@ckg/shared": "workspace:*",
+    "pino": "^10.3.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@sourcegraph/scip-typescript": "^0.4.0",
+    "tsx": "^4.23.13"
+  }
+}

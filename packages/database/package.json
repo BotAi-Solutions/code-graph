@@ -1,0 +1,24 @@
+{
+  "name": "@ckg/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "migrations"],
+  "scripts": {
+    "build": "tsc -b",
+    "migrate": "tsx src/migrate-cli.ts up",
+    "migrate:status": "tsx src/migrate-cli.ts status"
+  },
+  "dependencies": {
+    "@ckg/graph": "workspace:*",
+    "@ckg/shared": "workspace:*",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.13"
+  }
+}

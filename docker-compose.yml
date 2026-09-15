@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ckg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ckg
+      POSTGRES_PASSWORD: ckg
+      POSTGRES_DB: code_knowledge_graph
+    ports:
+      # Host port is configurable because 5432 is often already taken by a
+      # locally installed PostgreSQL. Compose reads POSTGRES_PORT from ./.env.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ckg-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ckg -d code_knowledge_graph"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ckg-postgres-data:
