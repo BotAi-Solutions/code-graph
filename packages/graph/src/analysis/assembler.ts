@@ -1,4 +1,4 @@
-import type { CodeGraph, SupportedLanguage } from '@ckg/shared';
+import type { CodeGraph, IndexingError, SupportedLanguage } from '@ckg/shared';
 import { EdgeAccumulator } from '../builder/edge-accumulator.js';
 import { NodeAccumulator } from '../builder/node-accumulator.js';
 import type { GraphIdentityContext } from '../model/identity.js';
@@ -27,10 +27,25 @@ import { SymbolIndex } from './symbol-index.js';
  * - **No edge without both endpoints.** An edge naming a node that does not
  *   exist is dropped and counted, never silently backed by an invented node.
  * - **Every edge carries evidence.** The accumulator requires it.
+ * - **One analyzer cannot end the run.** An analyzer that throws is recorded
+ *   and skipped; the other seven still have things to say about a repository,
+ *   and a graph missing one analyzer's findings is worth far more than no
+ *   graph at all.
  *
  * The whole pass is deterministic: analyzers run in a fixed order, each works
  * from a path-sorted file list, and both output arrays are sorted by id.
  */
+
+/** Reported as each analyzer finishes, so a caller can show real progress. */
+export interface AssemblyProgress {
+  analyzer: string;
+  /** Analyzers finished, including this one. */
+  completed: number;
+  /** Analyzers that will run in total. Known before the first one starts. */
+  total: number;
+  nodeCount: number;
+  edgeCount: number;
+}
 
 export interface CodeGraphAssemblerOptions {
   identity: GraphIdentityContext;
@@ -40,6 +55,12 @@ export interface CodeGraphAssemblerOptions {
   sources: SourceFileSet;
   language?: SupportedLanguage | null;
   analyzers: readonly CodeAnalyzer[];
+  /**
+   * Called after each analyzer. Optional and synchronous: the assembler reports
+   * where it is, and what the caller does with that — throttle it, write it to
+   * a database, ignore it — is the caller's business.
+   */
+  onProgress?: ((progress: AssemblyProgress) => void) | undefined;
 }
 
 export interface AssembledGraphStats {
@@ -52,6 +73,8 @@ export interface AssembledGraphStats {
   droppedEdgeCount: number;
   /** Per-analyzer counters, keyed `<analyzer>.<counter>`. */
   counters: Record<string, number>;
+  /** Analyzers that threw and were skipped. */
+  failedAnalyzerCount: number;
 }
 
 export interface AssembledGraph extends CodeGraph {
@@ -59,6 +82,8 @@ export interface AssembledGraph extends CodeGraph {
   diagnostics: string[];
   /** Analyzers that actually ran, in execution order. */
   analyzersRun: string[];
+  /** Files that could not be read or parsed, deduplicated by path. */
+  errors: IndexingError[];
 }
 
 export class CodeGraphAssembler {
@@ -71,12 +96,26 @@ export class CodeGraphAssembler {
     const diagnostics: string[] = [];
     const counters: Record<string, number> = {};
     const analyzersRun: string[] = [];
+    // Keyed by path: several analyzers parsing the same broken file must not
+    // make it look like several broken files.
+    const errors = new Map<string, IndexingError>();
+
+    for (const failure of this.options.sources.failures) {
+      errors.set(failure.file, failure);
+    }
 
     let symbols = new SymbolIndex();
     let droppedEdgeCount = 0;
     let documentCount = 0;
     let symbolCount = 0;
     let unresolvedReferenceCount = 0;
+    let failedAnalyzerCount = 0;
+    let completedAnalyzers = 0;
+
+    // Known up front, because `supports()` is a cheap check against a context
+    // that does not change during a stage. A progress total that grows as it
+    // goes is not a total.
+    const plannedAnalyzers = this.options.analyzers.length;
 
     for (const stage of ANALYSIS_STAGES) {
       const staged = this.options.analyzers.filter((analyzer) => analyzer.stage === stage);
@@ -92,10 +131,34 @@ export class CodeGraphAssembler {
           symbols,
         };
 
-        if (!analyzer.supports(context)) continue;
+        if (!analyzer.supports(context)) {
+          completedAnalyzers += 1;
+          continue;
+        }
         analyzersRun.push(analyzer.name);
 
-        const result = await analyzer.analyze(context);
+        let result;
+        try {
+          result = await analyzer.analyze(context);
+        } catch (error) {
+          // One analyzer's bug is not the repository's problem. Record it where
+          // an operator will see it and carry on with the rest.
+          failedAnalyzerCount += 1;
+          completedAnalyzers += 1;
+          diagnostics.push(
+            `${analyzer.name}: failed and was skipped — ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          this.options.onProgress?.({
+            analyzer: analyzer.name,
+            completed: completedAnalyzers,
+            total: plannedAnalyzers,
+            nodeCount: nodes.size,
+            edgeCount: edges.size,
+          });
+          continue;
+        }
 
         if (result.graph) {
           for (const node of result.graph.nodes) nodes.seed(node);
@@ -124,6 +187,19 @@ export class CodeGraphAssembler {
         for (const note of result.diagnostics ?? []) {
           diagnostics.push(`${analyzer.name}: ${note}`);
         }
+
+        for (const failure of result.errors ?? []) {
+          if (!errors.has(failure.file)) errors.set(failure.file, failure);
+        }
+
+        completedAnalyzers += 1;
+        this.options.onProgress?.({
+          analyzer: analyzer.name,
+          completed: completedAnalyzers,
+          total: plannedAnalyzers,
+          nodeCount: nodes.size,
+          edgeCount: edges.size,
+        });
       }
 
       // Later stages resolve their findings against everything found so far.
@@ -138,6 +214,8 @@ export class CodeGraphAssembler {
       edges: edgeArray,
       diagnostics,
       analyzersRun,
+      // Path order, so two runs over the same repository report the same list.
+      errors: [...errors.values()].sort((a, b) => a.file.localeCompare(b.file)),
       stats: {
         documentCount,
         symbolCount,
@@ -146,6 +224,7 @@ export class CodeGraphAssembler {
         unresolvedReferenceCount,
         droppedEdgeCount,
         counters,
+        failedAnalyzerCount,
       },
     };
   }

@@ -4,6 +4,7 @@ import type { ApiResponse, CodeGraph, Project, ProjectSummary } from '@ckg/share
 import { buildApp } from '../src/app.js';
 import type { ApiConfig } from '../src/config/index.js';
 import { AnalysisService } from '../src/modules/analysis/index.js';
+import { FilesystemService } from '../src/modules/filesystem/index.js';
 import { GraphService } from '../src/modules/graph/index.js';
 import { HealthService } from '../src/modules/health/index.js';
 import { ProjectService } from '../src/modules/projects/index.js';
@@ -20,6 +21,7 @@ const CONFIG: ApiConfig = {
   runtime: { NODE_ENV: 'test', LOG_LEVEL: 'error' },
   database: { DATABASE_URL: 'postgresql://unused', DATABASE_POOL_MAX: 1 },
   http: { PORT: 0, HOST: '127.0.0.1', CORS_ORIGIN: '*', corsOrigins: ['*'] },
+  filesystem: { LOCAL_FILESYSTEM_ENABLED: true, DIRECTORY_PICKER_TIMEOUT_MS: 1000 },
 };
 
 /** The sample application's shape, as the builder would produce it. */
@@ -147,6 +149,11 @@ async function createHarness(options: { healthy?: boolean } = {}): Promise<Harne
   const app = await buildApp({
     config: CONFIG,
     services: {
+      filesystem: new FilesystemService({
+        enabled: true,
+        picker: { isAvailable: () => false, pick: async () => null },
+        pickerTimeoutMs: 1000,
+      }),
       projects,
       repositories,
       analysis: new AnalysisService(analysisStore, projects, repositories),
@@ -269,6 +276,115 @@ describe('API', () => {
       const payload = body<ProjectSummary[]>(listed);
       expect(payload.data?.some((item) => item.id === project.id)).toBe(true);
       expect(payload.meta).toMatchObject({ limit: 50, offset: 0 });
+    });
+  });
+
+  describe('delete project', () => {
+    /** A project with a repository, a finished run and a graph behind it. */
+    async function seedProject(name: string): Promise<string> {
+      const created = await harness.app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { name },
+      });
+      const projectId = (body<Project>(created).data as Project).id;
+
+      await harness.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/repository`,
+        payload: { sourceType: 'local', sourcePath: `/tmp/${name}` },
+      });
+      await harness.app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/analysis`,
+        payload: {},
+      });
+      harness.graph.setGraph(sampleGraph(projectId));
+
+      return projectId;
+    }
+
+    it('removes the project and everything that belonged to it', async () => {
+      const projectId = await seedProject('to-delete');
+
+      const deleted = await harness.app.inject({
+        method: 'DELETE',
+        url: `/api/projects/${projectId}`,
+      });
+
+      expect(deleted.statusCode).toBe(200);
+      // The envelope, like every other response: the web client parses it
+      // unconditionally and a bodiless 204 would be the one it could not read.
+      expect(body(deleted)).toMatchObject({ success: true, data: null, error: null });
+
+      const fetched = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}`,
+      });
+      expect(fetched.statusCode).toBe(404);
+
+      // The repository record and the run went with it, rather than being
+      // orphaned rows pointing at a project that no longer exists.
+      const repository = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/repository`,
+      });
+      expect(repository.statusCode).toBe(404);
+
+      const analyses = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/analysis`,
+      });
+      expect(analyses.statusCode).toBe(404);
+    });
+
+    it('drops the project from the dashboard listing', async () => {
+      const projectId = await seedProject('vanishes');
+
+      await harness.app.inject({ method: 'DELETE', url: `/api/projects/${projectId}` });
+
+      const listed = await harness.app.inject({ method: 'GET', url: '/api/projects' });
+      const rows = body<ProjectSummary[]>(listed).data ?? [];
+      expect(rows.some((row) => row.id === projectId)).toBe(false);
+    });
+
+    it('deletes a project whose analysis never finished', async () => {
+      // A worker that died mid-run leaves a job stuck in a non-terminal state.
+      // Refusing to delete until it finishes would strand exactly the project
+      // most likely to need deleting.
+      const projectId = await seedProject('stuck');
+
+      const deleted = await harness.app.inject({
+        method: 'DELETE',
+        url: `/api/projects/${projectId}`,
+      });
+
+      expect(deleted.statusCode).toBe(200);
+    });
+
+    it('reports an unknown project as missing, and says so again on a repeat', async () => {
+      const projectId = await seedProject('gone-twice');
+
+      expect(
+        (await harness.app.inject({ method: 'DELETE', url: `/api/projects/${projectId}` }))
+          .statusCode,
+      ).toBe(200);
+
+      const again = await harness.app.inject({
+        method: 'DELETE',
+        url: `/api/projects/${projectId}`,
+      });
+      expect(again.statusCode).toBe(404);
+      const payload = body(again);
+      if (!payload.success) expect(payload.error.code).toBe('PROJECT_NOT_FOUND');
+    });
+
+    it('rejects an id that is not a uuid', async () => {
+      const response = await harness.app.inject({
+        method: 'DELETE',
+        url: '/api/projects/not-a-uuid',
+      });
+      expect(response.statusCode).toBe(400);
     });
   });
 

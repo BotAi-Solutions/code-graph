@@ -37,13 +37,17 @@ layer be added later without restructuring anything.
 ## What it does
 
 ```
+Local folder  (native picker)   apps/api/src/modules/filesystem
+        │
+        ▼
 Git / local repository
         │
         ▼
  Repository analyzer        apps/worker
         │
         ▼
- Language detection         packages/language-detection
+ Project scanner            packages/language-detection
+ Language detection
         │
         ▼
  SCIP indexer               packages/scip  ──▶  index.scip
@@ -91,20 +95,45 @@ pnpm dev                     # API :3000, worker, web :5173
 
 Then open <http://localhost:5173>.
 
-**The dashboard** (`#/`) lists every project with the size and composition of
-its graph, its source repository and the state of its last run, and is where
-projects are created and analyses started.
+**The dashboard** (`#/`) leads with **Select project**, and lists every project
+already indexed with the size and composition of its graph, its source
+repository and the state of its last run.
 
-1. **Create and analyse** — the form is pre-filled with the bundled sample at
-   `test-repositories/typescript-sample`; for the architectural layer, point it
-   at `test-repositories/express-postgres-sample`. The API queues a job and
-   returns immediately; the worker runs SCIP, the analyzers and the assembler,
-   then writes the graph to PostgreSQL. The card follows the job through
-   `QUEUED → INDEXING → PARSING → BUILDING_GRAPH → PERSISTING → COMPLETED` and
-   refreshes when it lands.
-2. **Explore graph** opens the project workspace (`#/projects/<id>`), which is a
-   real URL — reload it, bookmark it, send it to a colleague.
-3. The canvas opens on the **Architecture** mode. For the Express sample that is
+1. **Select a project** — the button opens your operating system's own folder
+   dialog, driven by the API process, which is the only part of the system that
+   touches the filesystem. Nothing recursive happens in the browser, and no path
+   has to be typed. On a host with no dialog to show — a container, a remote
+   machine — the same button opens an in-app directory browser served by
+   `GET /api/filesystem/directories`, which lists directories and never files.
+
+   The folder is then scanned before anything else happens, so the card shows
+   how many files and which languages are in it. Picking the wrong folder costs
+   a second, not a full run.
+
+2. **Index project** — the API queues a job and returns immediately; the worker
+   scans, runs SCIP, the analyzers and the assembler, then writes the graph to
+   PostgreSQL. The page follows the job through
+   `scanning → indexing → parsing → resolving → building_graph → persisting`,
+   with real counts: files parsed out of files found, symbols and relationships
+   as they accumulate. A phase that cannot count its work — a filesystem walk,
+   an external indexer — says so rather than inventing a percentage.
+
+   A file that cannot be read or parsed does not end the run. It is recorded
+   against the job, and the finished project reports *Indexed with warnings*
+   alongside the files it could not read.
+
+   To index a path relative to the repository root, or a git URL, use
+   **Index a path or a git URL instead** under the button — that is where the
+   bundled samples live (`test-repositories/typescript-sample`, and
+   `test-repositories/express-postgres-sample` for the architectural layer).
+   A card's **Delete** removes the project and its graph after a confirmation
+   on the card itself. It never touches the analysed source on disk.
+3. **The project page** (`#/projects/<id>`) is a real URL — reload it, bookmark
+   it, send it to a colleague. It shows the run's progress while it runs, then
+   what the run measured — files, directories, classes, functions, interfaces,
+   relationships and the language breakdown, every figure counted by the
+   pipeline and none derived — and then the graph.
+4. The canvas opens on the **Architecture** mode. For the Express sample that is
    exactly its shape:
 
    ```
@@ -127,7 +156,7 @@ projects are created and analyses started.
    type and relationship, grouped with the project's own counts, plus the
    module, external-dependency and entry-point filters that apply to the view
    you are looking at.
-4. **Hover a node** for a tooltip — what it is, where it lives, how connected it
+5. **Hover a node** for a tooltip — what it is, where it lives, how connected it
    is — while the rest of the graph dims. **Click** it for the full inspector:
    type, role, file, line range, members, callers, callees, references, APIs,
    data stores and dependencies, with the evidence for each. **Double-click**
@@ -135,7 +164,7 @@ projects are created and analyses started.
    disturbing what is already there; **Focus** isolates it and its
    neighbourhood at depth 1, 2 or 3; **Re-root here** starts a fresh server-side
    traversal from it; **Open source** opens the exact line in your editor.
-5. **Find path** answers "how does a request get from here to there" by walking
+6. **Find path** answers "how does a request get from here to there" by walking
    the graph on screen and lighting the route, with everything else dimmed.
 
 To check the analysis half of the system without the browser:
@@ -222,6 +251,8 @@ the codebase reads `process.env` outside `apps/*/src/config`.
 | `PORT` | `3000` | api | HTTP port |
 | `HOST` | `0.0.0.0` | api | Bind address |
 | `CORS_ORIGIN` | `http://localhost:5173` | api | Comma-separated allowed origins |
+| `LOCAL_FILESYSTEM_ENABLED` | `true` | api | Whether the API may list local directories and open the host's folder dialog. Set `false` when the API is not on the user's own machine |
+| `DIRECTORY_PICKER_TIMEOUT_MS` | `300000` | api | Ceiling on one unanswered folder dialog |
 | `POSTGRES_PORT` | `5432` | compose | Host port the Compose database publishes on |
 | `DATABASE_URL` | — | api, worker | **Required.** PostgreSQL connection string |
 | `DATABASE_POOL_MAX` | `10` | api, worker | Pool size |
@@ -239,7 +270,9 @@ the codebase reads `process.env` outside `apps/*/src/config`.
 ```
 apps/
   api/        Fastify + Zod + OpenAPI. Routes validate and delegate; no business
-              logic, no SQL, no SCIP.
+              logic, no SQL, no SCIP. Owns the one filesystem boundary the
+              browser can reach: the folder dialog, directory listings and the
+              pre-index scan.
   worker/     The analysis pipeline. Claims jobs, runs SCIP, persists graphs.
   web/        React + Vite + Sigma.js/Graphology (WebGL). Loads everything
               from the API and owns none of the graph.
@@ -253,7 +286,8 @@ packages/
   analysis/            Source analyzers: files, imports, structure, APIs,
                        databases, external services, messaging, frameworks.
                        The only place that reads syntax.
-  language-detection/  Repository scan and per-language detectors.
+  language-detection/  Project scanner (one walk, extensible ignore policy) and
+                       per-language detectors.
   database/            Pool, migrations, repositories. The only place with SQL.
   shared/              Types, Zod schemas and constants everything else speaks.
 
@@ -294,14 +328,14 @@ them with `pnpm fixtures:build`; the indexer is deterministic, so a dirty
 | Suite | Covers |
 | --- | --- |
 | `packages/shared` | Env validation, query schemas, logging contract, the graph vocabulary's completeness |
-| `packages/language-detection` | TypeScript/JavaScript/mixed repositories |
+| `packages/language-detection` | TypeScript/JavaScript/mixed repositories; the project scanner against real directory trees — nesting, ignored directories, lock files, unsupported types, empty projects, determinism |
 | `packages/scip` | Protobuf wire format, symbol grammar, parsing, indexer adapter |
 | `packages/graph` | Builder (symbols→nodes, references→edges), the assembler's merge rules, symbol index, determinism, traversal |
-| `packages/analysis` | Module resolution, bindings, SQL/Prisma/vendor detection, and every analyzer end to end against the Express sample |
+| `packages/analysis` | Module resolution, bindings, SQL/Prisma/vendor detection, every analyzer end to end against the Express sample, and what happens when one file cannot be read or parsed |
 | `packages/database` | Migration contract, row mapping, and the graph SQL against a real PostgreSQL |
-| `apps/api` | Envelope, every route, projections, direction, search paging, node detail, error codes, OpenAPI |
-| `apps/worker` | The pipeline end to end against both fixtures |
-| `apps/web` | Graph merging for expand-on-click, projections, the visual language's completeness |
+| `apps/api` | Envelope, every route, projections, direction, search paging, node detail, error codes, OpenAPI, and the local-folder intake boundary |
+| `apps/worker` | The pipeline end to end against both fixtures, including phase-by-phase progress, the statistics it records, and a run surviving a broken analyzer |
+| `apps/web` | Graph merging for expand-on-click, projections, the visual language's completeness, and the folder-picker abstraction's three outcomes |
 
 The `packages/database` integration suite skips itself when no database is
 reachable and runs when one is:

@@ -25,6 +25,7 @@ SELECT
   a.started_at    AS analysis_started_at,
   a.completed_at  AS analysis_completed_at,
   a.error         AS analysis_error,
+  a.progress      AS analysis_progress,
   coalesce(g.node_count, 0) AS node_count,
   coalesce(g.edge_count, 0) AS edge_count,
   coalesce(t.node_type_counts, '{}'::jsonb) AS node_type_counts
@@ -35,7 +36,7 @@ LEFT JOIN repositories r ON r.project_id = p.id
 
 -- Most recent run, whatever its state: the dashboard shows failures too.
 LEFT JOIN LATERAL (
-  SELECT id, status, language, started_at, completed_at, error
+  SELECT id, status, language, started_at, completed_at, error, progress
     FROM analysis_jobs
    WHERE project_id = p.id
    ORDER BY created_at DESC

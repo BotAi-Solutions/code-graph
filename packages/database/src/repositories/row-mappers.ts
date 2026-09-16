@@ -1,11 +1,13 @@
 import type {
   AnalysisJob,
+  AnalysisProgress,
   AnalysisStats,
   AnalysisStatus,
   CodeEdge,
   CodeNode,
   CodeNodeType,
   CodeRelationship,
+  IndexingError,
   Project,
   RelatedNode,
   Repository,
@@ -47,6 +49,8 @@ export interface AnalysisJobRow {
   completed_at: Date | null;
   error: string | null;
   stats: AnalysisStats | null;
+  progress: AnalysisProgress | null;
+  errors: IndexingError[] | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -107,6 +111,10 @@ export function toAnalysisJob(row: AnalysisJobRow): AnalysisJob {
     completedAt: row.completed_at?.toISOString() ?? null,
     error: row.error,
     stats: row.stats,
+    progress: row.progress,
+    // Null for a job recorded before the column existed, and for one that had
+    // nothing to report; both mean "no files failed".
+    errors: row.errors ?? [],
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };

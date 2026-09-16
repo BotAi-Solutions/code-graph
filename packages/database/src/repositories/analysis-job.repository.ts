@@ -1,4 +1,11 @@
-import type { AnalysisJob, AnalysisStats, AnalysisStatus, SupportedLanguage } from '@ckg/shared';
+import type {
+  AnalysisJob,
+  AnalysisProgress,
+  AnalysisStats,
+  AnalysisStatus,
+  IndexingError,
+  SupportedLanguage,
+} from '@ckg/shared';
 import { TERMINAL_ANALYSIS_STATUSES } from '@ckg/shared';
 import type { Queryable } from '../client.js';
 import { toAnalysisJob, type AnalysisJobRow } from './row-mappers.js';
@@ -16,10 +23,12 @@ export interface UpdateAnalysisJobInput {
   completedAt?: Date | null;
   error?: string | null;
   stats?: AnalysisStats | null;
+  progress?: AnalysisProgress | null;
+  errors?: IndexingError[] | null;
 }
 
 const COLUMNS =
-  'id, project_id, repository_id, status, language, started_at, completed_at, error, stats, created_at, updated_at';
+  'id, project_id, repository_id, status, language, started_at, completed_at, error, stats, progress, errors, created_at, updated_at';
 
 export class AnalysisJobRepository {
   constructor(private readonly db: Queryable) {}
@@ -107,6 +116,12 @@ export class AnalysisJobRepository {
     if (patch.completedAt !== undefined) push('completed_at', patch.completedAt);
     if (patch.error !== undefined) push('error', patch.error);
     if (patch.stats !== undefined) push('stats', patch.stats === null ? null : JSON.stringify(patch.stats));
+    if (patch.progress !== undefined) {
+      push('progress', patch.progress === null ? null : JSON.stringify(patch.progress));
+    }
+    if (patch.errors !== undefined) {
+      push('errors', patch.errors === null ? null : JSON.stringify(patch.errors));
+    }
 
     params.push(id);
 
@@ -121,5 +136,19 @@ export class AnalysisJobRepository {
   /** Convenience used by the pipeline to advance through its phases. */
   async setStatus(id: string, status: AnalysisStatus): Promise<void> {
     await this.update(id, { status });
+  }
+
+  /**
+   * Overwrites the progress record.
+   *
+   * Its own statement rather than a general `update` so the pipeline's hot path
+   * — one write every few hundred milliseconds for the length of a run — writes
+   * one column and returns nothing.
+   */
+  async setProgress(id: string, progress: AnalysisProgress): Promise<void> {
+    await this.db.query(
+      `UPDATE analysis_jobs SET progress = $1, updated_at = now() WHERE id = $2`,
+      [JSON.stringify(progress), id],
+    );
   }
 }

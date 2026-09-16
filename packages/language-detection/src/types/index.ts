@@ -22,6 +22,8 @@ export interface RepositoryScan {
   rootFiles: Set<string>;
   /** Count of files per lower-cased extension, e.g. `.ts` -> 42. */
   extensionCounts: Map<string, number>;
+  /** Directories walked, ignored ones excluded. The root itself is not counted. */
+  directoryCount: number;
   /** True when the scan stopped early because the repository is very large. */
   truncated: boolean;
 }

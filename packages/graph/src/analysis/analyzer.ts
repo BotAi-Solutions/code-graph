@@ -3,6 +3,7 @@ import type {
   CodeNodeType,
   CodeRelationship,
   EdgeEvidence,
+  IndexingError,
   SupportedLanguage,
 } from '@ckg/shared';
 import type { GraphIdentityContext } from '../model/identity.js';
@@ -58,6 +59,12 @@ export interface SourceFileSet {
   matching(...suffixes: string[]): readonly SourceFile[];
   /** True when the walk stopped at its file cap; findings may be incomplete. */
   readonly truncated: boolean;
+  /**
+   * Files that could not be read. Present on the set rather than thrown because
+   * an unreadable file is a fact about the repository, not a failure of the
+   * run: the graph is built from what could be read and says so.
+   */
+  readonly failures: readonly IndexingError[];
 }
 
 export interface AnalysisContext {
@@ -135,6 +142,8 @@ export interface AnalysisResult {
   enrichments?: AnalyzerEnrichment[];
   /** Counters merged into the build stats, prefixed with the analyzer name. */
   stats?: Record<string, number>;
+  /** Files this analyzer could not parse. Never fatal; always reported. */
+  errors?: IndexingError[];
   /** Operator-facing notes. Never source code. */
   diagnostics?: string[];
 }

@@ -31,3 +31,16 @@ export function languageFromPath(filePath: string): SupportedLanguage | null {
   if (index <= 0) return null;
   return LANGUAGE_BY_EXTENSION.get(lower.slice(index)) ?? null;
 }
+
+/**
+ * The per-file language question, under the name the rest of the system asks it
+ * by. Identical to `languageFromPath`; a second name because "what language is
+ * this file" is the abstraction callers depend on, and the fact that today it is
+ * answered from the extension alone is an implementation detail that a content
+ * sniffer or a shebang reader could later replace without a single call site
+ * changing.
+ *
+ * Returns null for a file type we do not support, which callers must treat as
+ * "skip this file", never as a failure.
+ */
+export const detectLanguage = languageFromPath;

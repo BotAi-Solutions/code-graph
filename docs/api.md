@@ -41,12 +41,16 @@ mode and depth, a request id on errors.
 | `VALIDATION_ERROR` | 400 | A body, query or path parameter failed its schema |
 | `BAD_REQUEST` | 400 | Malformed request Fastify rejected before routing |
 | `UNSUPPORTED_LANGUAGE` | 400 | A language with no registered indexer was forced |
+| `INVALID_PROJECT_PATH` | 400 | The path exists but is a file, not a project folder |
+| `FILESYSTEM_ACCESS_DISABLED` | 403 | `LOCAL_FILESYSTEM_ENABLED=false` on this server |
+| `DIRECTORY_NOT_READABLE` | 403 | Permission denied on the project directory |
 | `NOT_FOUND` | 404 | Unknown route |
 | `PROJECT_NOT_FOUND` | 404 | No such project |
 | `REPOSITORY_NOT_FOUND` | 404 | The project has no repository configured |
 | `ANALYSIS_NOT_FOUND` | 404 | No such analysis *in this project* |
 | `NODE_NOT_FOUND` | 404 | No such graph node in this project |
 | `REPOSITORY_PATH_NOT_FOUND` | 404 | The worker could not read the repository path |
+| `DIRECTORY_NOT_FOUND` | 404 | No such directory on the machine running the API |
 | `CONFLICT` | 409 | Generic state conflict |
 | `ANALYSIS_ALREADY_RUNNING` | 409 | A non-terminal analysis already exists for the project |
 | `REPOSITORY_NOT_CONFIGURED` | 409 | An operation needs a repository that is not attached |
@@ -55,6 +59,8 @@ mode and depth, a request id on errors.
 | `SCIP_INDEX_FAILED` | 422 | The indexer exited non-zero or timed out |
 | `SCIP_PARSE_FAILED` | 422 | `index.scip` could not be decoded |
 | `GRAPH_BUILD_FAILED` | 422 | The builder could not assemble a graph |
+| `NO_SOURCE_FILES` | 422 | The chosen folder holds nothing in a language we support |
+| `DIRECTORY_PICKER_UNAVAILABLE` | 501 | This host has no native folder dialog to open |
 | `DATABASE_ERROR` | 500 | The database rejected an operation |
 | `CONFIGURATION_ERROR` | 500 | Invalid configuration detected at runtime |
 | `INTERNAL_ERROR` | 500 | Anything unexpected — details are logged, never returned |
@@ -78,6 +84,79 @@ not. Outside `/api` because that is where orchestrators look.
 ```json
 { "status": "ok", "uptimeSeconds": 42, "checks": { "database": "ok" } }
 ```
+
+---
+
+## Local project intake
+
+Three routes, and the only ones in the API that touch the filesystem. They exist
+because the browser must not: a tab cannot be trusted with a recursive walk of
+someone's disk, and `showDirectoryPicker()` returns a handle rather than a path
+in any case. The API process is the local runtime, so the API process does it.
+
+None of these reads a file. The only thing that opens source is the worker, on a
+directory the user picked and explicitly asked to index.
+
+All three return `403 FILESYSTEM_ACCESS_DISABLED` when `LOCAL_FILESYSTEM_ENABLED`
+is false — which is what you set when the API is not on the user's own machine.
+
+### `POST /api/filesystem/select-directory` → `200`
+
+Opens the host's own folder dialog (`osascript` on macOS, PowerShell's
+`FolderBrowserDialog` on Windows, `zenity` on Linux) and blocks until it is
+answered.
+
+```json
+{ "path": "/Users/example/projects/my-app", "name": "my-app" }
+```
+
+`data: null` means the dialog was dismissed. That is a success, not an error —
+the UI stays where it was.
+
+`501 DIRECTORY_PICKER_UNAVAILABLE` where there is no dialog to show: a
+container, an SSH session, a Linux host with no display. Fall back to the
+browser below.
+
+### `GET /api/filesystem/directories?path=…` → `200`
+
+The in-app folder browser. `path` defaults to the home directory of the user
+running the API.
+
+```json
+{
+  "path": "/Users/example/projects",
+  "parentPath": "/Users/example",
+  "isProjectRoot": false,
+  "entries": [
+    { "name": "my-app", "path": "/Users/example/projects/my-app", "isProjectRoot": true }
+  ],
+  "truncated": false
+}
+```
+
+**Directories only.** Files are never listed, at any depth. `isProjectRoot`
+means a manifest was found there — `package.json`, `go.mod`, `pyproject.toml`
+and so on — so the folder you want is marked before you open it.
+
+### `GET /api/filesystem/project?path=…` → `200`
+
+One walk of the directory, no file reads: what is in this folder, before
+committing to indexing it.
+
+```json
+{
+  "rootPath": "/Users/example/projects/my-app",
+  "name": "my-app",
+  "totalFiles": 110,
+  "sourceFiles": 104,
+  "languages": { "typescript": 82, "javascript": 14, "python": 8 },
+  "directories": 24,
+  "truncated": false
+}
+```
+
+`truncated` means the walk hit its file cap; the counts are a lower bound.
+`422 NO_SOURCE_FILES` when nothing in the folder is in a language we detect.
 
 ---
 
@@ -112,6 +191,24 @@ not fifty-one.
 such a project is still listed, with zero counts. Query: `limit` (1–100, default
 50), `offset` (default 0). Newest first. `meta` carries
 `{ total, limit, offset }`.
+
+### `DELETE /api/projects/:projectId` → `200`
+
+Removes the project, its repository record, every analysis run and the whole
+stored graph — one statement, cascaded by the database.
+
+Returns the standard envelope with `data: null` rather than a bodiless `204`:
+every other response this API gives is `{ success, data, error, meta }`, and the
+web client parses that shape unconditionally.
+
+`404 PROJECT_NOT_FOUND` when there is no such project, which is also what a
+second delete of the same project returns.
+
+Not blocked while an analysis is running. A worker that dies mid-run leaves a
+job that never reaches a terminal state, and refusing to delete until it does
+would strand exactly the project most likely to need deleting; the run is
+orphaned instead. **Irreversible.** The analysed source on disk is never
+touched — this deletes what was derived from it.
 
 ### `GET /api/projects/:projectId` → `200`
 
@@ -165,12 +262,44 @@ project. `404 REPOSITORY_NOT_FOUND` if none is attached.
   "startedAt": "2026-09-15T14:31:41.500Z",
   "completedAt": "2026-09-15T14:31:42.514Z",
   "error": null,
-  "stats": { "documentCount": 6, "symbolCount": 63, "nodeCount": 79, "edgeCount": 247, "durationMs": 1002 }
+  "stats": {
+    "documentCount": 6, "symbolCount": 63, "nodeCount": 79, "edgeCount": 247,
+    "durationMs": 1002,
+    "fileCount": 9, "sourceFileCount": 6, "directoryCount": 4,
+    "classCount": 4, "functionCount": 18, "interfaceCount": 2,
+    "languages": { "typescript": 6 },
+    "parseErrorCount": 0
+  },
+  "progress": {
+    "phase": "completed", "current": 1, "total": 1,
+    "message": "Indexing complete",
+    "files": 6, "symbols": 63, "relationships": 247, "errors": 0
+  },
+  "errors": []
 }
 ```
 
 States: `QUEUED → INDEXING → PARSING → BUILDING_GRAPH → PERSISTING → COMPLETED`,
 or `FAILED` from any of them with `error` set.
+
+`progress` is finer than `status`: the phase the pipeline is in plus how far
+through that phase's own work it is. Phases are `queued`, `scanning`,
+`indexing`, `parsing`, `resolving`, `building_graph`, `persisting`, `completed`
+and `failed`.
+
+**`total: 0` means the phase cannot count its work** — a filesystem walk does
+not know how many files it will find, and an external indexer is one opaque
+subprocess. Render that as indeterminate; do not divide by it. `files`,
+`symbols` and `relationships` are counts of things that exist, absent until
+there is something to count.
+
+`errors` lists files that could not be read or parsed, capped at 100. These are
+*warnings*: the run completed in spite of them, and `error` — the run's own
+failure — is still null. A job recorded before progress existed has
+`progress: null` and `errors: []`.
+
+The statistics beyond the first five are optional for the same reason: a run
+that did not measure them does not report them, and nothing derives them.
 
 ### `GET /api/projects/:projectId/analysis` → `200`
 
@@ -348,19 +477,29 @@ The same lists on their own routes, for clients that want one of them.
 ```bash
 BASE=http://localhost:3000
 
+# What the "Select project" button does, when there is a dialog to open.
+# (Scriptable alternative: skip it and use a path you already know.)
+DIR=$(curl -s -X POST $BASE/api/filesystem/select-directory | jq -r '.data.path // empty')
+DIR=${DIR:-test-repositories/typescript-sample}
+
+# Size it up before committing to a run.
+curl -s "$BASE/api/filesystem/project?path=$DIR" | jq '.data'
+
 PID=$(curl -s -X POST $BASE/api/projects \
   -H 'Content-Type: application/json' \
   -d '{"name":"sample"}' | jq -r .data.id)
 
 curl -s -X POST $BASE/api/projects/$PID/repository \
   -H 'Content-Type: application/json' \
-  -d '{"sourceType":"local","sourcePath":"test-repositories/typescript-sample"}' > /dev/null
+  -d "{\"sourceType\":\"local\",\"sourcePath\":\"$DIR\"}" > /dev/null
 
 AID=$(curl -s -X POST $BASE/api/projects/$PID/analysis \
   -H 'Content-Type: application/json' -d '{}' | jq -r .data.id)
 
-# poll until COMPLETED
+# poll until COMPLETED, printing where the pipeline has got to
 until [ "$(curl -s $BASE/api/projects/$PID/analysis/$AID | jq -r .data.status)" = COMPLETED ]; do
+  curl -s $BASE/api/projects/$PID/analysis/$AID \
+    | jq -r '.data.progress | "\(.phase) \(.current)/\(.total) \(.message)"'
   sleep 1
 done
 

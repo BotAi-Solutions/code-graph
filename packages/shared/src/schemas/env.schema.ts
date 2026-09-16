@@ -25,6 +25,24 @@ export const apiEnvSchema = z.object({
   CORS_ORIGIN: z.string().min(1).default('http://localhost:5173'),
 });
 
+/**
+ * The local-filesystem boundary.
+ *
+ * Choosing a project folder means the API reads directory listings on the
+ * machine it runs on, and opens that machine's native folder dialog. That is
+ * exactly right for the local-first tool this is, and exactly wrong for an API
+ * reachable by anyone else — so it is one switch, and it is documented as the
+ * thing you turn off when the API stops being yours alone.
+ */
+export const filesystemEnvSchema = z.object({
+  LOCAL_FILESYSTEM_ENABLED: booleanish.default(true),
+  /**
+   * Hard ceiling on the native dialog. A dialog nobody answers must not pin a
+   * request open forever.
+   */
+  DIRECTORY_PICKER_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
+});
+
 export const scipEnvSchema = z.object({
   SCIP_TYPESCRIPT_COMMAND: z.string().min(1).default('scip-typescript'),
   SCIP_INDEX_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
@@ -43,6 +61,7 @@ export const workerEnvSchema = z.object({
 export type RuntimeEnv = z.infer<typeof runtimeEnvSchema>;
 export type DatabaseEnv = z.infer<typeof databaseEnvSchema>;
 export type ApiEnv = z.infer<typeof apiEnvSchema>;
+export type FilesystemEnv = z.infer<typeof filesystemEnvSchema>;
 export type ScipEnv = z.infer<typeof scipEnvSchema>;
 export type AnalysisEnv = z.infer<typeof analysisEnvSchema>;
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;

@@ -1,10 +1,12 @@
 import {
   apiEnvSchema,
   databaseEnvSchema,
+  filesystemEnvSchema,
   parseEnv,
   runtimeEnvSchema,
   type ApiEnv,
   type DatabaseEnv,
+  type FilesystemEnv,
   type RuntimeEnv,
 } from '@ckg/shared';
 
@@ -17,9 +19,13 @@ export interface ApiConfig {
   runtime: RuntimeEnv;
   database: DatabaseEnv;
   http: ApiEnv & { corsOrigins: string[] };
+  filesystem: FilesystemEnv;
 }
 
-const apiEnvSchemaFull = runtimeEnvSchema.and(databaseEnvSchema).and(apiEnvSchema);
+const apiEnvSchemaFull = runtimeEnvSchema
+  .and(databaseEnvSchema)
+  .and(apiEnvSchema)
+  .and(filesystemEnvSchema);
 
 export function loadApiConfig(
   source: Record<string, string | undefined> = process.env,
@@ -36,6 +42,10 @@ export function loadApiConfig(
       corsOrigins: env.CORS_ORIGIN.split(',')
         .map((origin) => origin.trim())
         .filter((origin) => origin.length > 0),
+    },
+    filesystem: {
+      LOCAL_FILESYSTEM_ENABLED: env.LOCAL_FILESYSTEM_ENABLED,
+      DIRECTORY_PICKER_TIMEOUT_MS: env.DIRECTORY_PICKER_TIMEOUT_MS,
     },
   };
 }

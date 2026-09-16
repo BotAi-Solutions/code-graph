@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GRAPH_DEFAULT_DEPTH } from '@ckg/shared';
+import { SidebarSection } from '../../components/index.js';
 import type { CodeNode, CodeNodeType, GraphDirection, GraphSummary } from '../../types/index.js';
 import { CodeGraph, type GraphControls } from './components/CodeGraph.js';
 import { GraphFilters } from './components/GraphFilters.js';
@@ -15,6 +16,7 @@ import { useCodeGraph } from './hooks/useCodeGraph.js';
 import { useGraphFocus } from './hooks/useGraphFocus.js';
 import { useGraphSearch } from './hooks/useGraphSearch.js';
 import { useGraphSelection } from './hooks/useGraphSelection.js';
+import { useSidebarLayout } from './hooks/useSidebarLayout.js';
 import { DEFAULT_MODE_ID, graphMode, matchMode, type GraphModeId } from './model/graph-modes.js';
 import type { GraphFilterState } from './model/graph-types.js';
 import { withinHops } from './utils/graph-traversal.js';
@@ -31,6 +33,12 @@ import { withinHops } from './utils/graph-traversal.js';
  * types, relationships and depth are *queries*: changing one asks the server
  * for a different slice. Modules, externals and focus are *views*: they change
  * what is drawn from the slice already in hand, without a round trip.
+ *
+ * The layout has one rule behind it: **the canvas is the product, so nothing
+ * takes space from it that could have floated over it.** One toolbar row sits
+ * above the canvas; the filters and path panels are overlays, not rows, so
+ * opening one does not shorten the graph; and the sidebar can be dragged
+ * narrower or collapsed away entirely.
  */
 
 export interface GraphWorkspaceProps {
@@ -41,6 +49,14 @@ export interface GraphWorkspaceProps {
   /** Where the analysed repository lives, for the inspector's Open source. */
   repositoryPath: string | null;
   commitHash: string | null;
+  /**
+   * Project-level content for the top of the sidebar — statistics, details.
+   *
+   * A slot rather than something this component builds, because what a project
+   * *is* belongs to the codebase feature and how a graph is drawn belongs to
+   * this one. The workspace owns the sidebar; the page owns what goes in it.
+   */
+  projectPanel?: React.ReactNode;
 }
 
 type Panel = 'filters' | 'path' | null;
@@ -51,6 +67,7 @@ export function GraphWorkspace({
   summary,
   repositoryPath,
   commitHash,
+  projectPanel,
 }: GraphWorkspaceProps): React.JSX.Element {
   const [mode, setMode] = useState<GraphModeId | null>(DEFAULT_MODE_ID);
   const [rootNodeId, setRootNodeId] = useState<string | null>(null);
@@ -76,6 +93,7 @@ export function GraphWorkspace({
   const [panel, setPanel] = useState<Panel>(null);
   const [immersive, setImmersive] = useState(false);
 
+  const sidebar = useSidebarLayout();
   const controls = useRef<GraphControls>(null);
 
   const view = useCodeGraph({
@@ -96,6 +114,14 @@ export function GraphWorkspace({
   const selection = useGraphSelection(projectId, model, refreshToken);
   const focus = useGraphFocus(model);
   const search = useGraphSearch(projectId, model);
+
+  // Clicking a node is a request to see what it is. A collapsed sidebar would
+  // swallow that silently, so picking something opens it.
+  const { expand: expandSidebar } = sidebar;
+  const inspecting = selection.selectedNodeId ?? selection.selectedEdgeId;
+  useEffect(() => {
+    if (inspecting) expandSidebar();
+  }, [inspecting, expandSidebar]);
 
   const activeMode = mode ? graphMode(mode) : null;
   const matched = matchMode(filters.nodeTypes, filters.relationships);
@@ -291,7 +317,17 @@ export function GraphWorkspace({
         : 'overview';
 
   return (
-    <div className={`workspace${immersive ? ' workspace--immersive' : ''}`}>
+    <div
+      className={[
+        'workspace',
+        immersive ? 'workspace--immersive' : '',
+        sidebar.collapsed ? 'workspace--sidebar-collapsed' : '',
+        sidebar.resizing ? 'workspace--resizing' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      style={{ ['--sidebar-width' as string]: `${String(sidebar.width)}px` }}
+    >
       <div className="workbar">
         <GraphSearch search={search} presentNodeIds={presentNodeIds} onSelect={onSearchSelect} />
 
@@ -328,44 +364,21 @@ export function GraphWorkspace({
 
         <div className="workbar__spacer" />
 
-        <GraphStats
-          model={model}
-          summary={summary}
-          truncated={view.meta?.truncated ?? false}
-        />
-
         <span className="workbar__status" title="How this slice was fetched">
           {status}
         </span>
+
+        <button
+          type="button"
+          className="button button--quiet workbar__sidebar-toggle"
+          aria-expanded={!sidebar.collapsed}
+          aria-controls="workspace-sidebar"
+          title={sidebar.collapsed ? 'Show the project panel' : 'Hide the project panel'}
+          onClick={sidebar.toggle}
+        >
+          {sidebar.collapsed ? 'Show panel' : 'Hide panel'}
+        </button>
       </div>
-
-      {panel === 'filters' && (
-        <GraphFilters
-          filters={filters}
-          model={model}
-          nodeTypeCounts={summary?.nodeTypeCounts}
-          relationshipCounts={summary?.relationshipCounts}
-          exportsUnavailable={exportsUnavailable}
-          onChange={onChangeFilters}
-        />
-      )}
-
-      {panel === 'path' && (
-        <GraphPathFinder
-          model={model}
-          from={focus.pathFrom}
-          to={focus.pathTo}
-          path={focus.path}
-          selectedNodeId={selection.selectedNodeId}
-          onChangeFrom={focus.setPathFrom}
-          onChangeTo={focus.setPathTo}
-          onSelectNode={(nodeId) => {
-            selection.selectNode(nodeId);
-            controls.current?.focusNode(nodeId);
-          }}
-          onClear={focus.clearPath}
-        />
-      )}
 
       <div className="workspace__body">
         <div className="workspace__canvas">
@@ -402,6 +415,54 @@ export function GraphWorkspace({
             />
           )}
 
+          {/* Overlays, not rows. Opening Filters used to push the canvas down
+              by its own height; over a graph that is the one thing you were
+              looking at moving out from under you. */}
+          {panel !== null && (
+            <div className="graph-overlay" role="dialog" aria-label={panel === 'filters' ? 'Filters' : 'Find path'}>
+              <div className="graph-overlay__head">
+                <span className="graph-overlay__title">
+                  {panel === 'filters' ? 'Filters' : 'Find path'}
+                </span>
+                <button
+                  type="button"
+                  className="button button--quiet"
+                  onClick={() => {
+                    setPanel(null);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+
+              {panel === 'filters' ? (
+                <GraphFilters
+                  filters={filters}
+                  model={model}
+                  nodeTypeCounts={summary?.nodeTypeCounts}
+                  relationshipCounts={summary?.relationshipCounts}
+                  exportsUnavailable={exportsUnavailable}
+                  onChange={onChangeFilters}
+                />
+              ) : (
+                <GraphPathFinder
+                  model={model}
+                  from={focus.pathFrom}
+                  to={focus.pathTo}
+                  path={focus.path}
+                  selectedNodeId={selection.selectedNodeId}
+                  onChangeFrom={focus.setPathFrom}
+                  onChangeTo={focus.setPathTo}
+                  onSelectNode={(nodeId) => {
+                    selection.selectNode(nodeId);
+                    controls.current?.focusNode(nodeId);
+                  }}
+                  onClear={focus.clearPath}
+                />
+              )}
+            </div>
+          )}
+
           <GraphToolbar
             toggles={toggles}
             selectedNodeId={selection.selectedNodeId}
@@ -424,38 +485,72 @@ export function GraphWorkspace({
           <GraphLegend />
         </div>
 
-        <GraphInspector
-          model={model}
-          node={selection.selectedNode}
-          detail={selection.detail}
-          selectedEdge={selection.selectedEdge}
-          loading={selection.detailLoading}
-          error={selection.detailError}
-          repositoryPath={repositoryPath}
-          expanded={
-            selection.selectedNodeId !== null &&
-            view.expandedNodeIds.has(selection.selectedNodeId)
-          }
-          focused={focus.focusNodeId === selection.selectedNodeId && focus.focusNodeId !== null}
-          focusDepth={focus.focusDepth}
-          onSelectNode={(nodeId) => {
-            selection.selectNode(nodeId);
-            if (model.nodesById.has(nodeId)) controls.current?.focusNode(nodeId);
-          }}
-          onExpand={view.expandNode}
-          onToggleFocus={toggleFocus}
-          onChangeFocusDepth={focus.setFocusDepth}
-          onReroot={reroot}
-          onFindReferences={findReferences}
-          onPathFrom={(nodeId) => {
-            focus.setPathFrom(nodeId);
-            setPanel('path');
-          }}
-          onPathTo={(nodeId) => {
-            focus.setPathTo(nodeId);
-            setPanel('path');
-          }}
-        />
+        {!sidebar.collapsed && (
+          <div
+            className="workspace__resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the project panel"
+            title="Drag to resize"
+            onPointerDown={sidebar.startResize}
+          />
+        )}
+
+        <aside
+          id="workspace-sidebar"
+          className="workspace__sidebar"
+          aria-label="Project panel"
+          hidden={sidebar.collapsed}
+        >
+          {projectPanel}
+
+          <SidebarSection
+            title="View"
+            storageKey="view"
+            meta={view.meta?.truncated ? 'truncated' : undefined}
+          >
+            <GraphStats
+              model={model}
+              summary={summary}
+              truncated={view.meta?.truncated ?? false}
+            />
+          </SidebarSection>
+
+          <SidebarSection title="Node info" storageKey="node" defaultOpen>
+            <GraphInspector
+              model={model}
+              node={selection.selectedNode}
+              detail={selection.detail}
+              selectedEdge={selection.selectedEdge}
+              loading={selection.detailLoading}
+              error={selection.detailError}
+              repositoryPath={repositoryPath}
+              expanded={
+                selection.selectedNodeId !== null &&
+                view.expandedNodeIds.has(selection.selectedNodeId)
+              }
+              focused={focus.focusNodeId === selection.selectedNodeId && focus.focusNodeId !== null}
+              focusDepth={focus.focusDepth}
+              onSelectNode={(nodeId) => {
+                selection.selectNode(nodeId);
+                if (model.nodesById.has(nodeId)) controls.current?.focusNode(nodeId);
+              }}
+              onExpand={view.expandNode}
+              onToggleFocus={toggleFocus}
+              onChangeFocusDepth={focus.setFocusDepth}
+              onReroot={reroot}
+              onFindReferences={findReferences}
+              onPathFrom={(nodeId) => {
+                focus.setPathFrom(nodeId);
+                setPanel('path');
+              }}
+              onPathTo={(nodeId) => {
+                focus.setPathTo(nodeId);
+                setPanel('path');
+              }}
+            />
+          </SidebarSection>
+        </aside>
       </div>
     </div>
   );

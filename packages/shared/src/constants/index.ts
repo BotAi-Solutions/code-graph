@@ -1,5 +1,6 @@
 export * from './error-codes.js';
 export * from './graph.js';
+export * from './indexing.js';
 export * from './node-families.js';
 export * from './projections.js';
 export * from './relationships.js';

@@ -1,44 +1,36 @@
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { IgnoreRules, type IgnoreOptions } from './ignore.js';
 import type { RepositoryScan } from './types/index.js';
 
-/** Directories that never contain first-party source worth indexing. */
-const IGNORED_DIRECTORIES = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  '.idea',
-  '.vscode',
-  'node_modules',
-  'bower_components',
-  'vendor',
-  'dist',
-  'build',
-  'out',
-  'target',
-  'coverage',
-  '.next',
-  '.nuxt',
-  '.turbo',
-  '.cache',
-  '__pycache__',
-  '.venv',
-  'venv',
-  '.workspace',
-]);
-
-export interface ScanOptions {
+export interface ScanOptions extends IgnoreOptions {
   /** Stops the walk once this many files have been seen. */
   maxFiles?: number;
   maxDepth?: number;
+  /**
+   * Called as the walk proceeds, with files seen so far. There is no total to
+   * report against — a walk does not know how big a tree is until it has walked
+   * it — so a caller showing this must show it as a count, not a percentage.
+   */
+  onProgress?: (filesSeen: number) => void;
+  /** Files between progress callbacks. Keeps a big walk from spamming. */
+  progressInterval?: number;
+  /** Aborts the walk. Whatever was found so far is returned, `truncated`. */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_MAX_FILES = 25_000;
 const DEFAULT_MAX_DEPTH = 24;
+const DEFAULT_PROGRESS_INTERVAL = 250;
 
 /**
- * Walks a repository once and produces the read-only view every detector works
- * from. Doing the I/O here keeps detectors pure and unit-testable.
+ * Walks a repository once and produces the read-only view every detector — and
+ * the project scanner, and the source loader — works from. Doing the I/O here
+ * keeps all three of those pure and unit-testable, and means a repository is
+ * walked once per run rather than once per consumer.
+ *
+ * Unreadable directories are skipped rather than fatal: a permission error on
+ * one subtree is not a reason to refuse to analyse the rest.
  */
 export async function scanRepository(
   rootPath: string,
@@ -46,39 +38,49 @@ export async function scanRepository(
 ): Promise<RepositoryScan> {
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
+  const progressInterval = options.progressInterval ?? DEFAULT_PROGRESS_INTERVAL;
+  const ignore = new IgnoreRules(options);
 
   const files: string[] = [];
   const rootFiles = new Set<string>();
   const extensionCounts = new Map<string, number>();
+  let directoryCount = 0;
   let truncated = false;
+  let sinceProgress = 0;
 
   const queue: Array<{ absolute: string; relative: string; depth: number }> = [
     { absolute: rootPath, relative: '', depth: 0 },
   ];
 
   while (queue.length > 0) {
+    if (options.signal?.aborted) {
+      truncated = true;
+      break;
+    }
+
     const current = queue.shift();
     if (!current) break;
-    if (current.depth > maxDepth) continue;
+    if (current.depth > maxDepth) {
+      truncated = true;
+      continue;
+    }
 
     let entries;
     try {
       entries = await readdir(current.absolute, { withFileTypes: true });
     } catch {
       // Unreadable directory (permissions, broken symlink): skip it rather than
-      // failing the whole analysis.
+      // failing the whole analysis. The root itself is validated by the caller,
+      // which is where an unreadable project is worth reporting.
       continue;
     }
 
     for (const entry of entries) {
-      if (entry.name.startsWith('.') && entry.name !== '.github') {
-        if (IGNORED_DIRECTORIES.has(entry.name)) continue;
-      }
-
       const relative = current.relative ? `${current.relative}/${entry.name}` : entry.name;
 
       if (entry.isDirectory()) {
-        if (IGNORED_DIRECTORIES.has(entry.name)) continue;
+        if (ignore.ignoresDirectory(entry.name)) continue;
+        directoryCount += 1;
         queue.push({
           absolute: path.join(current.absolute, entry.name),
           relative,
@@ -87,7 +89,10 @@ export async function scanRepository(
         continue;
       }
 
+      // Symlinks are not followed: a link out of the tree is a way to read
+      // files the user did not choose, and a link back into it is a cycle.
       if (!entry.isFile()) continue;
+      if (ignore.ignoresFile(entry.name)) continue;
 
       if (files.length >= maxFiles) {
         truncated = true;
@@ -101,11 +106,19 @@ export async function scanRepository(
       if (extension) {
         extensionCounts.set(extension, (extensionCounts.get(extension) ?? 0) + 1);
       }
+
+      sinceProgress += 1;
+      if (options.onProgress && sinceProgress >= progressInterval) {
+        sinceProgress = 0;
+        options.onProgress(files.length);
+      }
     }
   }
 
+  options.onProgress?.(files.length);
+
   files.sort();
-  return { rootPath, files, rootFiles, extensionCounts, truncated };
+  return { rootPath, files, rootFiles, extensionCounts, directoryCount, truncated };
 }
 
 /** Returns the lower-cased extension, treating `.d.ts` as its own extension. */

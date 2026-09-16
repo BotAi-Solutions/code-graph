@@ -78,6 +78,10 @@ export const api = {
       ...(signal ? { signal } : {}),
     });
   },
+
+  delete<TData>(path: string, signal?: AbortSignal): Promise<RequestResult<TData>> {
+    return request<TData>(path, { method: 'DELETE', ...(signal ? { signal } : {}) });
+  },
 };
 
 /** Builds a query string, dropping empty values. Arrays become CSV. */

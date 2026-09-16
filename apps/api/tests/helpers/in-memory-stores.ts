@@ -47,6 +47,22 @@ export class InMemoryProjectStore {
     return this.projects.get(id) ?? null;
   }
 
+  /**
+   * Mirrors the SQL cascade: the project goes and everything referencing it
+   * goes with it, so a test can check that a deleted project leaves nothing
+   * behind rather than only that the row is gone.
+   */
+  async delete(id: string): Promise<boolean> {
+    if (!this.projects.delete(id)) return false;
+
+    this.repositories?.byProject.delete(id);
+    for (const [jobId, job] of this.analyses?.jobs ?? []) {
+      if (job.projectId === id) this.analyses?.jobs.delete(jobId);
+    }
+    this.graph?.dropProject(id);
+    return true;
+  }
+
   async list(input: { limit: number; offset: number }): Promise<{
     items: Project[];
     total: number;
@@ -94,6 +110,7 @@ export class InMemoryProjectStore {
                 startedAt: latest.startedAt,
                 completedAt: latest.completedAt,
                 error: latest.error,
+                progress: latest.progress,
               }
             : null,
           nodeCount: counts.nodeCount,
@@ -158,6 +175,8 @@ export class InMemoryAnalysisJobStore {
       completedAt: null,
       error: null,
       stats: null,
+      progress: null,
+      errors: [],
       createdAt: now(),
       updatedAt: now(),
     };
@@ -195,6 +214,14 @@ export class InMemoryGraphStore {
 
   setGraph(graph: CodeGraph): void {
     this.graph = graph;
+  }
+
+  /** The `ON DELETE CASCADE` on code_nodes and code_edges. */
+  dropProject(projectId: string): void {
+    this.graph = {
+      nodes: this.graph.nodes.filter((node) => node.projectId !== projectId),
+      edges: this.graph.edges.filter((edge) => edge.projectId !== projectId),
+    };
   }
 
   private nodesOf(projectId: string): CodeNode[] {

@@ -75,9 +75,16 @@ export class StructureAnalyzer implements CodeAnalyzer {
       });
     }
 
+    // Every source analyzer shares one `ModuleSet`, and this one walks all of
+    // it — so by the time it finishes, the set knows about every file that
+    // could not be parsed. Reporting them from here means the account is
+    // complete without each analyzer repeating the same three lines.
+    const failures = modules.failures();
+
     return {
       edges,
       stats: { instantiationCount: instantiations, signatureCount: signatures },
+      ...(failures.length > 0 ? { errors: failures } : {}),
     };
   }
 

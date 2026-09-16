@@ -21,6 +21,10 @@ import { FOCUS_DEPTHS } from '../hooks/useGraphFocus.js';
  *
  * A section with nothing in it is not rendered, so the panel reads as a
  * description of this node rather than as a form with empty fields.
+ *
+ * It renders as a block, not as a landmark: it is one band inside the
+ * workspace's sidebar, and the sidebar is the `<aside>`. Two nested asides
+ * would be two landmarks describing one region.
  */
 
 export interface GraphInspectorProps {
@@ -50,23 +54,23 @@ export function GraphInspector(props: GraphInspectorProps): React.JSX.Element {
 
   if (props.loading && !props.detail) {
     return (
-      <aside className="inspector">
+      <div className="inspector">
         <p className="inspector__empty">Loading node…</p>
-      </aside>
+      </div>
     );
   }
 
   if (props.error) {
     return (
-      <aside className="inspector">
+      <div className="inspector">
         <p className="inspector__error">{props.error}</p>
-      </aside>
+      </div>
     );
   }
 
   if (!props.detail || !props.node) {
     return (
-      <aside className="inspector">
+      <div className="inspector">
         <h2 className="inspector__title">No selection</h2>
         <p className="inspector__empty">
           Click a node to inspect it. Double-click to pull in its neighbours.
@@ -74,7 +78,7 @@ export function GraphInspector(props: GraphInspectorProps): React.JSX.Element {
         <p className="inspector__empty">
           Zooming out shows architecture; zooming in reveals symbols.
         </p>
-      </aside>
+      </div>
     );
   }
 
@@ -124,7 +128,7 @@ function NodeBody({
     members.length === 0;
 
   return (
-    <aside className="inspector">
+    <div className="inspector">
       <h2 className="inspector__title" title={node.fullLabel}>
         <span className="swatch" style={{ background: nodeColor(node.type) }} />
         {nodeLabel(source)}
@@ -305,7 +309,7 @@ function NodeBody({
       {nothingElse && (
         <p className="inspector__empty">Nothing else in the graph touches this node.</p>
       )}
-    </aside>
+    </div>
   );
 }
 
@@ -555,7 +559,7 @@ function EdgeInspector({
   const metadata = edge.metadata;
 
   return (
-    <aside className="inspector">
+    <div className="inspector">
       <h2 className="inspector__title">Selected relationship</h2>
 
       <dl className="inspector__facts">
@@ -601,7 +605,7 @@ function EdgeInspector({
           </>
         )}
       </dl>
-    </aside>
+    </div>
   );
 }
 

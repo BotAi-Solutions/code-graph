@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { CODE_NODE_TYPES, CODE_RELATIONSHIPS, CONFIDENCE_LEVELS } from '../types/graph.js';
 import { ANALYSIS_STATUSES, REPOSITORY_SOURCE_TYPES } from '../types/domain.js';
 import { SUPPORTED_LANGUAGES } from '../types/language.js';
+import { ANALYSIS_PHASES } from '../constants/indexing.js';
 import {
   GRAPH_DEFAULT_DEPTH,
   GRAPH_DEFAULT_DIRECTION,
@@ -50,6 +51,35 @@ export const graphNodeParamsSchema = z.object({
   nodeId: z.string().min(1).max(512),
 });
 
+// --- Shared building blocks -----------------------------------------------
+//
+// Declared before the sections that use them: a project summary carries its
+// last run's progress, so the progress schema cannot be defined further down
+// beside the analysis routes.
+
+/** Source-file counts per language. Sparse: a language absent has no key. */
+export const languageCountsSchema = z.partialRecord(
+  z.enum(SUPPORTED_LANGUAGES),
+  z.number().int(),
+);
+
+/** `total: 0` means the phase cannot count its work; render it indeterminate. */
+export const analysisProgressSchema = z.object({
+  phase: z.enum(ANALYSIS_PHASES),
+  current: z.number().int().min(0),
+  total: z.number().int().min(0),
+  message: z.string(),
+  files: z.number().int().optional(),
+  symbols: z.number().int().optional(),
+  relationships: z.number().int().optional(),
+  errors: z.number().int().optional(),
+});
+
+export const indexingErrorSchema = z.object({
+  file: z.string(),
+  error: z.string(),
+});
+
 // --- Projects -------------------------------------------------------------
 
 export const createProjectBodySchema = z.object({
@@ -82,6 +112,7 @@ export const projectSummarySchema = z.object({
       startedAt: z.string().nullable(),
       completedAt: z.string().nullable(),
       error: z.string().nullable(),
+      progress: analysisProgressSchema.nullable(),
     })
     .nullable(),
   nodeCount: z.number().int(),
@@ -135,6 +166,16 @@ export const analysisStatsSchema = z.object({
   nodeCount: z.number().int(),
   edgeCount: z.number().int(),
   durationMs: z.number().int(),
+  // Optional because a run recorded before these were measured has none, and
+  // the UI shows only what was actually counted.
+  fileCount: z.number().int().optional(),
+  sourceFileCount: z.number().int().optional(),
+  directoryCount: z.number().int().optional(),
+  classCount: z.number().int().optional(),
+  functionCount: z.number().int().optional(),
+  interfaceCount: z.number().int().optional(),
+  languages: languageCountsSchema.optional(),
+  parseErrorCount: z.number().int().optional(),
 });
 
 export const analysisJobSchema = z.object({
@@ -147,8 +188,66 @@ export const analysisJobSchema = z.object({
   completedAt: z.string().nullable(),
   error: z.string().nullable(),
   stats: analysisStatsSchema.nullable(),
+  progress: analysisProgressSchema.nullable(),
+  errors: z.array(indexingErrorSchema),
   createdAt: z.string(),
   updatedAt: z.string(),
+});
+
+// --- Local project intake -------------------------------------------------
+
+/**
+ * An absolute path chosen on the machine running the API.
+ *
+ * Absolute on purpose: a relative path would mean different directories to the
+ * API and the worker, and "which directory did the user actually pick" is not a
+ * question worth guessing at. The one exception is the repository `sourcePath`,
+ * which keeps accepting relative paths so the bundled samples still work.
+ */
+export const directoryPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(4096)
+  // A NUL byte truncates a path inside libc; reject it before it reaches fs.
+  .refine((value) => !value.includes('\u0000'), 'path must not contain a NUL byte');
+
+export const selectedDirectorySchema = z.object({
+  path: z.string(),
+  name: z.string(),
+});
+
+export const browseDirectoryQuerySchema = z.object({
+  /** Omitted means "start where the user's files are": their home directory. */
+  path: directoryPathSchema.optional(),
+});
+
+export const directoryEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  isProjectRoot: z.boolean(),
+});
+
+export const directoryListingSchema = z.object({
+  path: z.string(),
+  parentPath: z.string().nullable(),
+  isProjectRoot: z.boolean(),
+  entries: z.array(directoryEntrySchema),
+  truncated: z.boolean(),
+});
+
+export const inspectProjectQuerySchema = z.object({
+  path: directoryPathSchema,
+});
+
+export const projectMetadataSchema = z.object({
+  rootPath: z.string(),
+  name: z.string(),
+  totalFiles: z.number().int(),
+  sourceFiles: z.number().int(),
+  languages: languageCountsSchema,
+  directories: z.number().int(),
+  truncated: z.boolean(),
 });
 
 // --- Graph ----------------------------------------------------------------
@@ -269,6 +368,8 @@ export type CreateProjectBody = z.infer<typeof createProjectBodySchema>;
 export type ListProjectsQuery = z.infer<typeof listProjectsQuerySchema>;
 export type CreateRepositoryBody = z.infer<typeof createRepositoryBodySchema>;
 export type CreateAnalysisBody = z.infer<typeof createAnalysisBodySchema>;
+export type BrowseDirectoryQuery = z.infer<typeof browseDirectoryQuerySchema>;
+export type InspectProjectQuery = z.infer<typeof inspectProjectQuerySchema>;
 export type GraphQuery = z.infer<typeof graphQuerySchema>;
 export type GraphSearchQuery = z.infer<typeof graphSearchQuerySchema>;
 export type NeighbourQuery = z.infer<typeof neighbourQuerySchema>;

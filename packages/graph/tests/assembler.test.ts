@@ -13,6 +13,7 @@ import {
   type SourceFile,
   type SourceFileSet,
 } from '@ckg/graph';
+import type { IndexingError } from '@ckg/shared';
 
 /**
  * The assembler's merge rules are what keep a multi-source graph trustworthy,
@@ -25,7 +26,10 @@ const IDENTITY = { projectId: 'project-1', repositoryId: 'repository-1' };
 
 class StubSources implements SourceFileSet {
   readonly truncated = false;
-  constructor(private readonly files: SourceFile[] = []) {}
+  constructor(
+    private readonly files: SourceFile[] = [],
+    readonly failures: IndexingError[] = [],
+  ) {}
   all(): readonly SourceFile[] {
     return this.files;
   }

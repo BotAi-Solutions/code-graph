@@ -12,9 +12,19 @@ export interface AppLayoutProps {
   children: React.ReactNode;
 }
 
+/**
+ * The dashboard is a document: it scrolls, and it is easier to read held to a
+ * comfortable measure. The project page is an application: it fills the window,
+ * uses every pixel of width the screen has, and scrolls inside its own panels
+ * rather than as a page. One class is the whole difference.
+ */
+function shellVariant(route: Route): string {
+  return route.name === 'project' ? ' app--workspace' : '';
+}
+
 export function AppLayout({ route, children }: AppLayoutProps): React.JSX.Element {
   return (
-    <div className="app">
+    <div className={`app${shellVariant(route)}`}>
       <header className="app__header">
         <a
           className="app__brand"

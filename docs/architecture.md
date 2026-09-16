@@ -33,12 +33,22 @@ analyzers — never guessed from a file name.
 ## Pipeline
 
 ```
-Repository (git or local path)
+Local folder
+        │
+        │  FilesystemService         apps/api/src/modules/filesystem
+        │    └─ NativeDirectoryPicker   ── the OS's own dialog
+        ▼
+{ path, name }  ──▶  project + repository + queued analysis
         │
         │  RepositoryLoader          apps/worker/src/services
         ▼
 Working tree on disk
         │
+        │  scanProject               packages/language-detection
+        ▼
+RepositoryScan + ProjectMetadata    ── counts, languages, and the
+        │                              denominator every later phase
+        │                              reports progress against
         │  LanguageDetectionService  packages/language-detection
         ▼
 SupportedLanguage
@@ -116,6 +126,20 @@ One filesystem walk produces a `RepositoryScan`; each detector is a pure
 function over it. Detectors return *evidence* (a score plus human-readable
 markers), not a verdict, so the ranking is in one place and a new language is
 one class.
+
+The same walk is the project scanner. `scanProject` resolves and checks the
+root, walks it once, and `summarizeScan` — pure, no I/O — turns the result into
+`ProjectMetadata`: file and directory counts and a per-language breakdown. One
+run walks the tree exactly once: the scan is handed to language detection and
+then to `loadSourceFiles`, rather than each of the three walking for itself.
+
+What the walk skips is an `IgnoreRules` policy, not a constant buried in the
+loop. It can be extended (`extraIgnoredDirectories`) or replaced outright, which
+is what keeps "this language's build output" from being a change to the walk.
+
+`detectLanguage(filePath)` is the per-file question, answered today from the
+extension. That it is a function rather than a map at the call sites is what
+lets a content sniffer replace it later without touching one of them.
 
 ### `packages/scip`
 
@@ -211,6 +235,21 @@ Fastify, Zod-validated, OpenAPI-documented. Three strict rules:
 Every response — success or failure — leaves through one envelope and one error
 handler. See [api.md](api.md).
 
+`modules/filesystem` is the one exception to "the API owns no I/O", and it is a
+deliberate one. Choosing a local folder is filesystem work that has to happen
+*somewhere*, and the two alternatives are worse: the browser cannot be trusted
+with a recursive walk of someone's disk, and a fourth process would be a second
+architecture for three routes. So the API process — which is the local runtime
+in a local-first tool — opens the OS dialog and lists directories, behind three
+constraints:
+
+- **No route reads a file.** Listings are directories only; the scan counts.
+  The only thing that opens source is the worker.
+- **No request input reaches a command line.** The dialog runs through
+  `execFile` with a constant argument list and no shell.
+- **One switch turns it all off.** `LOCAL_FILESYSTEM_ENABLED=false` is what you
+  set when the API stops being the user's own machine.
+
 ### `apps/worker`
 
 `AnalyzeRepositoryJob` is the pipeline; `AnalysisProcessor` is the loop that
@@ -218,6 +257,21 @@ feeds it; `AnalysisJobQueue` is the seam between them. The MVP claims jobs from
 PostgreSQL with `FOR UPDATE SKIP LOCKED`, which is already safe for several
 worker processes. Introducing BullMQ means writing one more implementation of
 `AnalysisJobQueue` — the job and the processor do not change.
+
+Progress is a fourth seam. The pipeline reports where it is to an
+`AnalysisProgressReporter`, which coalesces those reports and writes them to the
+job row; the UI polls the row. The pipeline knows only that it reports progress
+somewhere — moving to server-sent events later replaces that one class. Two
+rules hold it honest: a phase that cannot count its work publishes `total: 0`
+rather than a denominator nobody has, and a failed progress write is logged and
+dropped rather than failing a run.
+
+Resilience is the other thing the pipeline owes a real repository. A file that
+cannot be read or parsed is recorded as an `IndexingError` and skipped; an
+analyzer that throws is recorded and skipped. Both are warnings on a completed
+run, not failures of it — a graph of the hundred and eight files that worked is
+worth having, and refusing to produce one because of two that did not would be
+the wrong trade every time.
 
 Every dependency is injected, so `apps/worker/tests` runs the whole pipeline
 with a fake command runner and in-memory stores.
@@ -229,7 +283,19 @@ derives no facts it could have asked for: view state (mode, root, depth,
 filters) is pushed to the API on every change, and the inspector shows what the
 API returns.
 
-Inside the feature there are two more seams:
+There are two features, and the line between them matters. `features/codebase`
+is intake — choosing a folder, sizing it up, watching it index, reporting what
+the run measured. `features/code-graph` is the graph. Intake knows nothing about
+how a graph is drawn; the graph feature knows nothing about where its graph came
+from. The only thing that passes between them is a project id.
+
+Within intake, `selectProjectDirectory()` is the whole of what a component knows
+about choosing a folder. It resolves every way the attempt can end into three
+outcomes — `selected`, `cancelled`, `unavailable` — so no component learns that
+a dialog was involved, which platform it belonged to, or that there is a
+fallback browser at all.
+
+Inside the graph feature there are two more seams:
 
 **`normalizeGraph`** turns the API's `CodeGraph` into the renderer's own model —
 modules, degree, centrality, importance, entry-point status — so the

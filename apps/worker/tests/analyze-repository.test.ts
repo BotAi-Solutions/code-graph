@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AnalysisJob, AnalysisStats, CodeGraph, Repository } from '@ckg/shared';
+import type {
+  AnalysisJob,
+  AnalysisProgress,
+  AnalysisStats,
+  CodeGraph,
+  Repository,
+} from '@ckg/shared';
 import { createSilentLogger } from '@ckg/shared/logger';
 import { findWorkspaceRoot } from '@ckg/shared/node';
 import { LanguageDetectionService } from '@ckg/language-detection';
@@ -86,6 +92,8 @@ class FailingCommandRunner implements CommandRunner {
 class FakeAnalysisJobRepository {
   readonly jobs = new Map<string, AnalysisJob>();
   readonly statusHistory: string[] = [];
+  /** Every position the pipeline published, in order. */
+  readonly progressHistory: AnalysisProgress[] = [];
 
   seed(job: AnalysisJob): AnalysisJob {
     this.jobs.set(job.id, job);
@@ -108,6 +116,11 @@ class FakeAnalysisJobRepository {
 
   async setStatus(id: string, status: AnalysisJob['status']): Promise<void> {
     await this.update(id, { status });
+  }
+
+  async setProgress(id: string, progress: AnalysisProgress): Promise<void> {
+    this.progressHistory.push(progress);
+    await this.update(id, { progress });
   }
 }
 
@@ -141,6 +154,8 @@ function queuedJob(): AnalysisJob {
     completedAt: null,
     error: null,
     stats: null,
+    progress: null,
+    errors: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -155,6 +170,18 @@ const LOCAL_REPOSITORY: Repository = {
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 };
+
+/** The order the pipeline must publish phases in. */
+const ORDERED_PHASES = [
+  'queued',
+  'scanning',
+  'indexing',
+  'parsing',
+  'resolving',
+  'building_graph',
+  'persisting',
+  'completed',
+] as string[];
 
 describe('AnalyzeRepositoryJob', () => {
   let workspaceRoot: string;
@@ -243,6 +270,80 @@ describe('AnalyzeRepositoryJob', () => {
       'PERSISTING',
       'COMPLETED',
     ]);
+  });
+
+  it('reports real progress through every phase, in order', async () => {
+    const { job, analysisJobs } = createJob(new FixtureCommandRunner());
+    await job.run(analysisJobs.seed(queuedJob()));
+
+    const phases = analysisJobs.progressHistory.map((entry) => entry.phase);
+
+    // Each phase appears, and no phase comes back after a later one started.
+    for (const phase of ['scanning', 'indexing', 'parsing', 'resolving', 'building_graph', 'persisting', 'completed']) {
+      expect(phases).toContain(phase);
+    }
+    expect([...phases]).toEqual(
+      [...phases].sort(
+        (a, b) => ORDERED_PHASES.indexOf(a) - ORDERED_PHASES.indexOf(b),
+      ),
+    );
+
+    // Where a phase claims a denominator it is a real one, and the position
+    // never exceeds it.
+    for (const entry of analysisJobs.progressHistory) {
+      expect(entry.current).toBeGreaterThanOrEqual(0);
+      if (entry.total > 0) expect(entry.current).toBeLessThanOrEqual(entry.total);
+      expect(entry.message.length).toBeGreaterThan(0);
+    }
+
+    const resolving = analysisJobs.progressHistory.filter((e) => e.phase === 'resolving');
+    expect(resolving.at(-1)?.current).toBe(resolving.at(-1)?.total);
+  });
+
+  it('records what it actually counted in the job statistics', async () => {
+    const { job, analysisJobs, graph } = createJob(new FixtureCommandRunner());
+    const stats = await job.run(analysisJobs.seed(queuedJob()));
+
+    const countOf = (type: string): number =>
+      graph.graph.nodes.filter((node) => node.type === type).length;
+
+    // Symbol counts come from the graph.
+    expect(stats.classCount).toBe(countOf('class'));
+    expect(stats.interfaceCount).toBe(countOf('interface'));
+    expect(stats.functionCount).toBe(countOf('function') + countOf('method'));
+    expect(stats.edgeCount).toBe(graph.graph.edges.length);
+
+    // Files and directories come from the scan, so both describe the folder
+    // that was chosen rather than whatever the indexer reached.
+    expect(stats.sourceFileCount).toBeGreaterThan(0);
+    expect(stats.fileCount).toBeGreaterThanOrEqual(stats.sourceFileCount as number);
+    expect(stats.directoryCount).toBeGreaterThan(0);
+    expect(stats.languages?.typescript).toBeGreaterThan(0);
+    expect(stats.parseErrorCount).toBe(0);
+  });
+
+  it('completes the run when one analyzer throws, and says which', async () => {
+    class ExplodingAnalyzer implements CodeAnalyzer {
+      readonly name = 'exploding-analyzer';
+      readonly stage = 'source' as const;
+      supports(): boolean {
+        return true;
+      }
+      async analyze(): Promise<never> {
+        throw new Error('this analyzer is broken');
+      }
+    }
+
+    const { job, analysisJobs, graph } = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+      analyzers: [new ExplodingAnalyzer()],
+    });
+
+    const stats = await job.run(analysisJobs.seed(queuedJob()));
+
+    // The SCIP graph is still built and still persisted.
+    expect(stats.nodeCount).toBeGreaterThan(50);
+    expect(graph.replaceCount).toBe(1);
+    expect(analysisJobs.jobs.get('55555555-5555-4555-8555-555555555555')?.status).toBe('COMPLETED');
   });
 
   it('detects the language and records it on the job', async () => {

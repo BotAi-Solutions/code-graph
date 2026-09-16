@@ -13,6 +13,7 @@ import type { ApiConfig } from './config/index.js';
 import { registerErrorHandler } from './common/errors/index.js';
 import { createLogController } from './common/middleware/index.js';
 import { analysisRoutes, type AnalysisService } from './modules/analysis/index.js';
+import { filesystemRoutes, type FilesystemService } from './modules/filesystem/index.js';
 import { graphRoutes, type GraphService } from './modules/graph/index.js';
 import { healthRoutes, type HealthService } from './modules/health/index.js';
 import { projectRoutes, type ProjectService } from './modules/projects/index.js';
@@ -27,6 +28,7 @@ import { repositoryRoutes, type RepositoryService } from './modules/repositories
  */
 
 export interface AppServices {
+  filesystem: FilesystemService;
   projects: ProjectService;
   repositories: RepositoryService;
   analysis: AnalysisService;
@@ -64,7 +66,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   await app.register(cors, {
     origin: config.http.corsOrigins,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   });
 
   await app.register(swagger, {
@@ -79,6 +81,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       servers: [{ url: `http://${config.http.HOST}:${String(config.http.PORT)}` }],
       tags: [
         { name: 'health', description: 'Liveness and dependencies' },
+        {
+          name: 'filesystem',
+          description: 'Choosing and sizing up a local project folder',
+        },
         { name: 'projects', description: 'Units of analysis' },
         { name: 'repositories', description: 'Source repositories attached to a project' },
         { name: 'analysis', description: 'Analysis runs' },
@@ -95,6 +101,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   await app.register(
     async (api) => {
+      await api.register(filesystemRoutes(services.filesystem));
       await api.register(projectRoutes(services.projects));
       await api.register(repositoryRoutes(services.repositories));
       await api.register(analysisRoutes(services.analysis));

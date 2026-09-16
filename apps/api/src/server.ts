@@ -10,6 +10,7 @@ import {
 import { buildApp, type AppServices } from './app.js';
 import { loadApiConfig } from './config/index.js';
 import { AnalysisService } from './modules/analysis/index.js';
+import { FilesystemService, NativeDirectoryPicker } from './modules/filesystem/index.js';
 import { GraphService } from './modules/graph/index.js';
 import { HealthService } from './modules/health/index.js';
 import { ProjectService } from './modules/projects/index.js';
@@ -41,6 +42,11 @@ async function main(): Promise<void> {
   );
 
   const services: AppServices = {
+    filesystem: new FilesystemService({
+      enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
+      picker: new NativeDirectoryPicker(),
+      pickerTimeoutMs: config.filesystem.DIRECTORY_PICKER_TIMEOUT_MS,
+    }),
     projects,
     repositories,
     analysis: new AnalysisService(new AnalysisJobRepository(database), projects, repositories),

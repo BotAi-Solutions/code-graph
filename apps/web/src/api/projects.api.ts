@@ -20,6 +20,14 @@ export async function createProject(input: {
   return data;
 }
 
+/**
+ * Removes a project and its whole graph. The analysed source on disk is not
+ * touched — this deletes what we derived from it.
+ */
+export async function deleteProject(projectId: string): Promise<void> {
+  await api.delete<null>(`/api/projects/${projectId}`);
+}
+
 export async function attachRepository(
   projectId: string,
   input: { sourceType: 'local' | 'git'; sourcePath: string },

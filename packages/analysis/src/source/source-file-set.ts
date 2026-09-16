@@ -1,4 +1,5 @@
 import type { SourceFile, SourceFileSet } from '@ckg/graph';
+import type { IndexingError } from '@ckg/shared';
 
 /**
  * The repository's source, read once.
@@ -12,7 +13,16 @@ export class InMemorySourceFileSet implements SourceFileSet {
   private readonly files: readonly SourceFile[];
   private readonly byRelativePath: Map<string, SourceFile>;
 
-  constructor(files: readonly SourceFile[], readonly truncated = false) {
+  constructor(
+    files: readonly SourceFile[],
+    readonly truncated = false,
+    /**
+     * Files the walk found but could not read. Carried with the set rather
+     * than thrown, so every analyzer sees the same account of what was
+     * readable and the run reports it once at the end.
+     */
+    readonly failures: readonly IndexingError[] = [],
+  ) {
     // Path order, so every analyzer visits files in the same sequence and the
     // graph is reproducible.
     this.files = [...files].sort((a, b) => a.relativePath.localeCompare(b.relativePath));

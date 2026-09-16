@@ -1,28 +1,48 @@
-import type { AnalysisJob, AnalysisStats, AnalysisStatus, SupportedLanguage } from '@ckg/shared';
+import type {
+  AnalysisJob,
+  AnalysisStats,
+  AnalysisStatus,
+  CodeNodeType,
+  IndexingError,
+  ProjectMetadata,
+  SupportedLanguage,
+} from '@ckg/shared';
 import type { Logger } from '@ckg/shared/logger';
 import type {
   AnalysisJobRepository,
   GraphRepository,
   SourceRepositoryRepository,
 } from '@ckg/database';
-import { LanguageDetectionService } from '@ckg/language-detection';
+import {
+  LanguageDetectionService,
+  ProjectScanError,
+  scanProject,
+  type RepositoryScan,
+} from '@ckg/language-detection';
 import { readScipIndexFile, type ScipIndexerRegistry } from '@ckg/scip';
 import { CodeGraphAssembler, ScipAnalyzer, type CodeAnalyzer } from '@ckg/graph';
 import { createDefaultAnalyzers, loadSourceFiles } from '@ckg/analysis';
 import { AnalysisWorkspace } from '../services/analysis-workspace.js';
+import { AnalysisProgressReporter } from '../services/progress-reporter.js';
 import { RepositoryLoader } from '../services/repository-loader.js';
 
 /**
  * The analysis pipeline.
  *
- *   load repository -> detect language -> select indexer -> run SCIP ->
- *   parse index.scip -> build graph -> run source analyzers -> merge ->
- *   persist nodes and edges -> complete
+ *   load repository -> scan project -> detect language -> select indexer ->
+ *   run SCIP -> parse index.scip -> read source -> build graph -> run source
+ *   analyzers -> merge -> persist nodes and edges -> complete
  *
  * SCIP remains the code-intelligence stage and the authority on symbols; the
  * analyzers add the architectural layer — routes, data stores, integrations,
  * queues — that no compiler can report. Both enter the graph through the same
  * `CodeAnalyzer` seam, and `CodeGraphAssembler` owns the merge.
+ *
+ * The scan at the front does two jobs. It establishes what is in the project —
+ * how many files, in which languages — which is what the statistics panel is
+ * made of and what the language detector reads anyway. And it gives every later
+ * phase a denominator, which is what separates a progress bar that means
+ * something from one that moves because time is passing.
  *
  * Every dependency is injected, so the whole pipeline can be exercised with a
  * fake command runner and an in-memory database. Nothing here knows about HTTP,
@@ -55,12 +75,32 @@ export class AnalysisFailedError extends Error {
   }
 }
 
+/**
+ * Node types the statistics panel reports, mapped to their stat field.
+ *
+ * Symbol counts only. Files and directories come from the scan instead, so that
+ * every figure under "Project statistics" describes the folder that was chosen:
+ * an indexer following project references can put files from a sibling package
+ * in the graph, and "34 files, 42 directories" side by side would be two
+ * different questions answered under one heading.
+ */
+const COUNTED_NODE_TYPES: ReadonlyArray<[CodeNodeType, 'classCount' | 'interfaceCount']> = [
+  ['class', 'classCount'],
+  ['interface', 'interfaceCount'],
+];
+
 export class AnalyzeRepositoryJob {
   constructor(private readonly deps: AnalyzeRepositoryJobDependencies) {}
 
   async run(job: AnalysisJob): Promise<AnalysisStats> {
     const startedAt = Date.now();
     const log = this.deps.logger.child({ jobId: job.id, projectId: job.projectId });
+
+    const progress = new AnalysisProgressReporter({
+      jobId: job.id,
+      sink: this.deps.analysisJobs,
+      logger: log,
+    });
 
     const repository = await this.deps.repositories.findById(job.repositoryId);
     if (!repository) {
@@ -71,8 +111,41 @@ export class AnalyzeRepositoryJob {
     const loaded = await this.deps.repositoryLoader.load(repository, workspaceDirectory);
     log.info({ repositoryName: loaded.name }, 'repository ready');
 
+    // --- scan -----------------------------------------------------------
+    // One walk of the tree, shared by language detection, the source loader
+    // and the statistics. A second walk would be the same answer, slower.
+    progress.report({
+      phase: 'scanning',
+      current: 0,
+      total: 0,
+      message: 'Scanning project files…',
+    });
+
+    const scanned = await this.scan(loaded.path, (filesSeen) => {
+      progress.report({
+        phase: 'scanning',
+        current: filesSeen,
+        // A walk does not know how many files it will find until it has found
+        // them, so there is no denominator to offer and none is invented.
+        total: 0,
+        message: `Scanning project files… ${String(filesSeen)} found`,
+      });
+    });
+
+    const metadata = scanned.metadata;
+    progress.carry({ files: metadata.sourceFiles });
+    log.info(
+      {
+        files: metadata.totalFiles,
+        sourceFiles: metadata.sourceFiles,
+        directories: metadata.directories,
+        languages: metadata.languages,
+      },
+      'project scanned',
+    );
+
     // --- language -------------------------------------------------------
-    const language = await this.resolveLanguage(job, loaded.path, log);
+    const language = await this.resolveLanguage(job, scanned.scan, log);
     await this.deps.analysisJobs.update(job.id, { language });
 
     const indexer = this.deps.indexers.resolve(language);
@@ -85,6 +158,15 @@ export class AnalyzeRepositoryJob {
 
     // --- index ----------------------------------------------------------
     log.info({ language, indexer: indexer.name }, 'running SCIP indexer');
+    progress.report({
+      phase: 'indexing',
+      current: 0,
+      // The indexer is one subprocess that reports nothing until it exits.
+      // Pretending otherwise would be the one thing a progress bar must not do.
+      total: 0,
+      message: `Indexing ${String(metadata.sourceFiles)} source files with ${indexer.name}…`,
+    });
+
     const indexResult = await indexer.index(loaded.path, {
       outputDirectory: workspaceDirectory,
       timeoutMs: this.deps.scipTimeoutMs,
@@ -93,21 +175,57 @@ export class AnalyzeRepositoryJob {
 
     // --- parse ----------------------------------------------------------
     await this.setStatus(job.id, 'PARSING');
+    progress.report({
+      phase: 'parsing',
+      current: 0,
+      total: metadata.sourceFiles,
+      message: 'Parsing the index…',
+    });
+
     const parsed = await readScipIndexFile(indexResult.indexPath);
     const refiner = this.deps.indexers.resolveRefiner(language);
     const index = await refiner.refine(parsed, { repositoryPath: loaded.path });
 
-    const symbolCount = index.documents.reduce(
+    const indexedSymbolCount = index.documents.reduce(
       (total, document) => total + document.symbols.length,
       0,
     );
-    log.info({ documents: index.documents.length, symbols: symbolCount }, 'SCIP index parsed');
+    log.info(
+      { documents: index.documents.length, symbols: indexedSymbolCount },
+      'SCIP index parsed',
+    );
+
+    // One pass over the source, shared by every analyzer, reusing the walk the
+    // scan already did.
+    const sources = await loadSourceFiles(loaded.path, {
+      scan: scanned.scan,
+      onProgress: (read, total) => {
+        progress.report({
+          phase: 'parsing',
+          current: read,
+          total,
+          message: 'Reading source files…',
+        });
+      },
+    });
 
     // --- build ----------------------------------------------------------
-    await this.setStatus(job.id, 'BUILDING_GRAPH');
+    const analyzers = [
+      new ScipAnalyzer({ index }),
+      ...(this.deps.analyzers ?? createDefaultAnalyzers()),
+    ];
 
-    // One pass over the source, shared by every analyzer.
-    const sources = await loadSourceFiles(loaded.path);
+    // Queued before the status changes, so a poll landing between the two does
+    // not see the coarse status of one phase beside the fine report of the
+    // previous one.
+    progress.report({
+      phase: 'resolving',
+      current: 0,
+      total: analyzers.length,
+      message: 'Resolving relationships…',
+    });
+
+    await this.setStatus(job.id, 'BUILDING_GRAPH');
 
     const assembler = new CodeGraphAssembler({
       identity: { projectId: job.projectId, repositoryId: repository.id },
@@ -115,10 +233,34 @@ export class AnalyzeRepositoryJob {
       repositoryPath: loaded.path,
       language,
       sources,
-      analyzers: [new ScipAnalyzer({ index }), ...(this.deps.analyzers ?? createDefaultAnalyzers())],
+      analyzers,
+      onProgress: (event) => {
+        progress.report({
+          phase: 'resolving',
+          current: event.completed,
+          total: event.total,
+          message: `Resolving relationships… ${event.analyzer}`,
+          relationships: event.edgeCount,
+        });
+      },
     });
 
     const graph = await assembler.assemble();
+
+    // Counted now rather than from the raw index: an index's symbol table also
+    // holds every symbol the project *refers* to, and reporting that as
+    // "symbols" would mean the progress panel and the statistics panel used one
+    // word for two different numbers.
+    progress.carry({ symbols: graph.stats.symbolCount });
+
+    progress.report({
+      phase: 'building_graph',
+      current: graph.nodes.length,
+      total: graph.nodes.length,
+      message: 'Building the graph…',
+      relationships: graph.edges.length,
+      errors: graph.errors.length,
+    });
 
     log.info(
       {
@@ -127,6 +269,8 @@ export class AnalyzeRepositoryJob {
         analyzers: graph.analyzersRun,
         counters: graph.stats.counters,
         droppedEdges: graph.stats.droppedEdgeCount,
+        failedAnalyzers: graph.stats.failedAnalyzerCount,
+        unreadableFiles: graph.errors.length,
       },
       'code knowledge graph built',
     );
@@ -134,22 +278,41 @@ export class AnalyzeRepositoryJob {
 
     // --- persist --------------------------------------------------------
     await this.setStatus(job.id, 'PERSISTING');
+    progress.report({
+      phase: 'persisting',
+      current: 0,
+      total: graph.nodes.length + graph.edges.length,
+      message: 'Storing the graph…',
+      relationships: graph.edges.length,
+      errors: graph.errors.length,
+    });
+
     await this.deps.graph.replaceProjectGraph(job.projectId, graph);
 
-    const stats: AnalysisStats = {
-      documentCount: graph.stats.documentCount,
-      symbolCount: graph.stats.symbolCount,
-      nodeCount: graph.stats.nodeCount,
-      edgeCount: graph.stats.edgeCount,
-      durationMs: Date.now() - startedAt,
-    };
+    const stats = this.buildStats(graph, metadata, startedAt);
 
     await this.deps.analysisJobs.update(job.id, {
       status: 'COMPLETED',
       completedAt: new Date(),
       error: null,
       stats,
+      // Capped: the record is for telling someone which files to look at, not
+      // for storing a repository's worth of failures.
+      errors: graph.errors.slice(0, MAX_RECORDED_ERRORS),
     });
+
+    progress.report({
+      phase: 'completed',
+      current: 1,
+      total: 1,
+      message:
+        graph.errors.length > 0
+          ? `Indexed with warnings: ${String(graph.errors.length)} file(s) could not be parsed`
+          : 'Indexing complete',
+      relationships: graph.edges.length,
+      errors: graph.errors.length,
+    });
+    await progress.flush();
 
     // Successful runs clean up after themselves; failed ones keep their
     // artefacts so the index can be inspected.
@@ -159,9 +322,67 @@ export class AnalyzeRepositoryJob {
     return stats;
   }
 
+  /**
+   * Walks the project, turning the scanner's own failure modes into the
+   * pipeline's. A path that cannot be read is a failed run — unlike a *file*
+   * inside it, which is only a warning.
+   */
+  private async scan(
+    repositoryPath: string,
+    onProgress: (filesSeen: number) => void,
+  ): Promise<{ metadata: ProjectMetadata; scan: RepositoryScan }> {
+    try {
+      return await scanProject(repositoryPath, { onProgress });
+    } catch (error) {
+      if (error instanceof ProjectScanError) {
+        throw new AnalysisFailedError(
+          error.reason === 'unreadable'
+            ? 'permission denied while accessing the project'
+            : 'unable to read the project directory',
+          'INDEXING',
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Everything the completed run measured, and nothing it did not. */
+  private buildStats(
+    graph: { nodes: Array<{ type: CodeNodeType }>; edges: unknown[]; stats: { documentCount: number; symbolCount: number; nodeCount: number; edgeCount: number }; errors: IndexingError[] },
+    metadata: ProjectMetadata,
+    startedAt: number,
+  ): AnalysisStats {
+    const byType = new Map<CodeNodeType, number>();
+    for (const node of graph.nodes) {
+      byType.set(node.type, (byType.get(node.type) ?? 0) + 1);
+    }
+
+    const counts: Partial<AnalysisStats> = {};
+    for (const [type, field] of COUNTED_NODE_TYPES) {
+      counts[field] = byType.get(type) ?? 0;
+    }
+    // Functions and methods are one number to a reader: "how much behaviour is
+    // in here". They are two node types because a method belongs to a class.
+    counts.functionCount = (byType.get('function') ?? 0) + (byType.get('method') ?? 0);
+
+    return {
+      documentCount: graph.stats.documentCount,
+      symbolCount: graph.stats.symbolCount,
+      nodeCount: graph.stats.nodeCount,
+      edgeCount: graph.stats.edgeCount,
+      durationMs: Date.now() - startedAt,
+      fileCount: metadata.totalFiles,
+      sourceFileCount: metadata.sourceFiles,
+      directoryCount: metadata.directories,
+      languages: metadata.languages,
+      parseErrorCount: graph.errors.length,
+      ...counts,
+    };
+  }
+
   private async resolveLanguage(
     job: AnalysisJob,
-    repositoryPath: string,
+    scan: RepositoryScan,
     log: Logger,
   ): Promise<SupportedLanguage> {
     if (job.language) {
@@ -169,7 +390,8 @@ export class AnalyzeRepositoryJob {
       return job.language;
     }
 
-    const detection = await this.deps.languageDetection.detect(repositoryPath);
+    // Detection reads the scan we already have rather than walking again.
+    const detection = this.deps.languageDetection.detectFromScan(scan);
     if (!detection.primaryLanguage) {
       throw new AnalysisFailedError(
         'no supported language was detected in the repository',
@@ -191,3 +413,6 @@ export class AnalyzeRepositoryJob {
     await this.deps.analysisJobs.setStatus(jobId, status);
   }
 }
+
+/** Per-file failures kept on the job record. Beyond this it is a pattern, not a list. */
+const MAX_RECORDED_ERRORS = 100;

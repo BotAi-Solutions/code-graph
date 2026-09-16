@@ -52,8 +52,10 @@ export const errorEnvelopeSchema = z.object({
 /** Attached to every route so the documented failure shape is consistent. */
 export const commonErrorResponses = {
   400: errorEnvelopeSchema,
+  403: errorEnvelopeSchema,
   404: errorEnvelopeSchema,
   409: errorEnvelopeSchema,
   422: errorEnvelopeSchema,
   500: errorEnvelopeSchema,
+  501: errorEnvelopeSchema,
 } as const;

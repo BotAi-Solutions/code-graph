@@ -55,6 +55,28 @@ export function projectRoutes(service: ProjectService): FastifyPluginAsyncZod {
       },
     );
 
+    app.delete(
+      '/projects/:projectId',
+      {
+        schema: {
+          tags: ['projects'],
+          summary: 'Delete a project and its graph',
+          description:
+            'Removes the project, its repository record, every analysis run and the whole stored graph. The analysed source on disk is never touched. Irreversible.',
+          params: projectIdParamSchema,
+          // 200 with an empty envelope rather than 204. Every other response
+          // this API gives is `{ success, data, error, meta }`, and the web
+          // client parses that shape unconditionally — a bodiless 204 would be
+          // the one route it could not read.
+          response: { 200: envelopeSchema(z.null()), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        await service.delete(request.params.projectId);
+        return reply.send(success(null));
+      },
+    );
+
     app.get(
       '/projects/:projectId',
       {
