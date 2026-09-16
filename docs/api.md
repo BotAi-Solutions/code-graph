@@ -103,8 +103,8 @@ not fifty-one.
   "repository": { "sourceType": "local", "sourcePath": "test-repositories/typescript-sample", "commitHash": null },
   "latestAnalysis": { "id": "…", "status": "COMPLETED", "language": "typescript",
                       "startedAt": "…", "completedAt": "…", "error": null },
-  "nodeCount": 76, "edgeCount": 243,
-  "nodeTypeCounts": { "class": 6, "interface": 4, "method": 31, "file": 6, "…": 0 }
+  "nodeCount": 79, "edgeCount": 247,
+  "nodeTypeCounts": { "class": 6, "interface": 4, "method": 31, "file": 6, "service": 1, "…": 0 }
 }
 ```
 
@@ -165,7 +165,7 @@ project. `404 REPOSITORY_NOT_FOUND` if none is attached.
   "startedAt": "2026-09-15T14:31:41.500Z",
   "completedAt": "2026-09-15T14:31:42.514Z",
   "error": null,
-  "stats": { "documentCount": 6, "symbolCount": 63, "nodeCount": 76, "edgeCount": 243, "durationMs": 1002 }
+  "stats": { "documentCount": 6, "symbolCount": 63, "nodeCount": 79, "edgeCount": 247, "durationMs": 1002 }
 }
 ```
 
@@ -188,20 +188,46 @@ The main read. **It never returns the whole graph.**
 | --- | --- | --- |
 | `rootNodeId` | — | Omit for the overview |
 | `depth` | `2` | 0–5 |
-| `nodeTypes` | all | CSV or repeated; `class,method` |
-| `relationships` | all | CSV or repeated; `CALLS,REFERENCES` |
+| `projection` | — | `everything`, `architecture`, `calls`, `files`, `dependencies`, `dataflow` |
+| `nodeTypes` | projection's, else all | CSV or repeated; `class,method` |
+| `relationships` | projection's, else all | CSV or repeated; `CALLS,ROUTES_TO` |
+| `direction` | `both` | `both`, `outgoing`, `incoming` |
 | `limit` | `500` | Max nodes, 1–2000 |
 
 Two modes, reported in `meta.mode`:
 
-- **`traversal`** — with `rootNodeId`, an undirected walk outward to `depth`
-  hops. Filters apply *during* expansion: a filtered traversal never reaches
-  through an excluded node. The root is always included.
-- **`overview`** — without one, the project's most connected code-bearing nodes
-  (`class`, `interface`, `type`, `function`, `method`) and the behavioural edges
-  between them. Files and directories are excluded by default because they
-  always win a degree contest while saying nothing about behaviour; pass
-  `nodeTypes` to include them.
+- **`traversal`** — with `rootNodeId`, a walk outward to `depth` hops.
+  `direction` decides which end of an edge the walk may arrive from; `both` is
+  the default because a depth-1 walk from a service should find its callers as
+  well as its callees. Filters apply *during* expansion: a filtered traversal
+  never reaches through an excluded node. The root is always included.
+- **`overview`** — without one, the project's most connected nodes and the
+  behavioural edges between them. Containment is excluded from the ranking
+  because a file CONTAINs everything in it and would win every degree contest
+  while saying nothing about behaviour.
+
+Nodes come back in the order they were selected — nearest-first for a traversal,
+highest-ranked first for an overview — so reading the first few means reading
+the most relevant few.
+
+#### Projections
+
+A projection is a named slice: a node-type filter, a relationship filter and a
+ranking hint, defined once in `@ckg/shared` and read by both the API and the UI.
+It is not a separate graph, a separate table or a separate code path.
+
+| `projection` | Answers |
+| --- | --- |
+| `everything` | No filter at all |
+| `architecture` | How is this system put together — APIs, services, data stores, queues, events, and the behaviour between them |
+| `calls` | What calls what |
+| `files` | The source tree and its file-level dependencies |
+| `dependencies` | What this service depends on: libraries and other services |
+| `dataflow` | Request to store: API → service → database, queue, event |
+
+An explicit `nodeTypes` or `relationships` always wins over the projection's
+default, and the two are independent — overriding the relationships keeps the
+projection's node-type filter. `meta` reports what was actually applied.
 
 ```json
 {
@@ -209,7 +235,9 @@ Two modes, reported in `meta.mode`:
   "data": { "nodes": [], "edges": [] },
   "error": null,
   "meta": {
-    "mode": "traversal", "rootNodeId": "a1b2…", "depth": 2,
+    "mode": "traversal", "rootNodeId": "a1b2…", "depth": 2, "direction": "both",
+    "projection": "architecture",
+    "nodeTypes": ["api", "service", "…"], "relationships": ["ROUTES_TO", "…"],
     "limit": 500, "nodeCount": 11, "edgeCount": 25, "truncated": false
   }
 }
@@ -220,37 +248,73 @@ filters, or reduce the depth.
 
 Edges are the induced subgraph: an edge appears only when both endpoints do.
 
+#### Expand-on-click
+
+There is no separate expansion endpoint: the UI's expand action is this route
+with `rootNodeId` set to the clicked node and `depth=1`, merged client-side into
+what is already displayed. One contract, one set of filter semantics.
+
 ### `GET /api/projects/:projectId/graph/summary` → `200`
 
 ```json
 {
-  "nodeCount": 76,
-  "edgeCount": 243,
+  "nodeCount": 114,
+  "edgeCount": 407,
   "rootNodeId": "0293…",
-  "nodeTypeCounts": { "class": 6, "interface": 4, "method": 31, "file": 6 }
+  "nodeTypeCounts": { "class": 10, "method": 41, "api": 6, "table": 2, "service": 1 },
+  "relationshipCounts": { "CALLS": 106, "ROUTES_TO": 10, "WRITES_TO": 4 }
 }
 ```
 
 `nodeCount: 0` means the project has not been analysed yet. `rootNodeId` is the
 repository node, the natural starting point for a structural walk.
+`relationshipCounts` is what lets a client dim a filter the project has no edges
+for rather than offering a chip that can only return nothing.
 
 ### `GET /api/projects/:projectId/graph/search` → `200`
 
-Query: `q` (required), `limit` (1–100, default 20). Case-insensitive substring
-match on symbol name and file path, shortest names first.
+Query: `q` (required), `nodeTypes` (CSV or repeated), `limit` (1–100, default
+20), `offset` (default 0).
+
+Case-insensitive substring match on **name**, **qualified name** and **file
+path**, which between them cover every way a person refers to a piece of code:
+
+| Term | Finds |
+| --- | --- |
+| `UserService` | the class |
+| `UserService.getUser` | the method |
+| `user.service.ts` | the file |
+| `src/services` | everything under the directory |
+| `POST /users` | the API route |
+| `table` | every node of that type |
+
+Exact matches rank first, then prefix matches, then the rest, shortest names
+first. `meta` carries `{ total, limit, offset }`; `total` is the full match
+count, not the page, so a client can say "showing 15 of 42" rather than
+silently truncating.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId` → `200`
 
-Everything the node inspector needs, in one round trip:
+Everything the node inspector needs, in one round trip — and one database
+query, not one per section:
 
 ```json
 {
-  "node": { "id": "…", "type": "class", "name": "UserService",
-            "filePath": "src/services/user.service.ts", "startLine": 13, "endLine": 47,
-            "metadata": { "scipSymbol": "…", "scipKind": "class", "language": "typescript" } },
-  "callers":    [ { "type": "class", "name": "UserController" } ],
-  "callees":    [ { "type": "class", "name": "UserRepository" } ],
-  "references": [ ]
+  "node": { "id": "…", "type": "class", "name": "UserRepository",
+            "qualifiedName": "UserRepository",
+            "filePath": "src/repositories/user.repository.ts",
+            "startLine": 8, "startCharacter": 13, "endLine": 55, "endCharacter": 1,
+            "metadata": { "scipSymbol": "…", "role": "repository",
+                          "roleEvidence": "it reads or writes a database table" } },
+  "callers":      [ { "type": "class", "name": "UserService" } ],
+  "callees":      [ ],
+  "references":   [ { "type": "method", "name": "create" } ],
+  "dependencies": [ ],
+  "dependents":   [ ],
+  "apis":         [ ],
+  "databases":    [ { "type": "table", "name": "users", "relationship": "WRITES_TO",
+                      "direction": "outgoing", "confidence": "high",
+                      "evidenceSource": "database-analyzer" } ]
 }
 ```
 
@@ -258,11 +322,22 @@ Everything the node inspector needs, in one round trip:
 - **callees** — outgoing `CALLS`
 - **references** — incoming `REFERENCES`, i.e. what uses this node without
   calling it
+- **dependencies** / **dependents** — outgoing / incoming `DEPENDS_ON`,
+  `DEPENDS_ON_SERVICE`, `IMPORTS`, `USES`
+- **apis** — `api` nodes that `ROUTES_TO` this node
+- **databases** — `database`, `table`, `queue` and `event` nodes this node
+  `READS_FROM`, `WRITES_TO`, `PUBLISHES` or `SUBSCRIBES`
+
+The first three keep the plain node shape they have always had. The sections
+added since carry `relationship`, `direction` and the edge's evidence with each
+entry, because "depends on" covers four different relationships and a client
+should be able to say which. A section with nothing in it is `[]`, never absent.
 
 Query: `limit` (default 100) caps each list.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/callers` → `200`
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/callees` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/references` → `200`
 
 The same lists on their own routes, for clients that want one of them.
 
@@ -291,8 +366,10 @@ done
 
 curl -s "$BASE/api/projects/$PID/graph" | jq '.meta'
 
+curl -s "$BASE/api/projects/$PID/graph?projection=architecture" | jq '.meta'
+
 NODE=$(curl -s "$BASE/api/projects/$PID/graph/search?q=UserService" | jq -r '.data[0].id')
-curl -s "$BASE/api/projects/$PID/graph/nodes/$NODE" | jq '.data.callers'
+curl -s "$BASE/api/projects/$PID/graph/nodes/$NODE" | jq '.data.callers, .data.databases'
 ```
 
 ## Conventions

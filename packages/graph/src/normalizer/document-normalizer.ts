@@ -1,6 +1,7 @@
 import type { CodeNodeType } from '@ckg/shared';
 import type { ScipDocument, ScipOccurrence, ScipRange, ScipSymbol } from '@ckg/scip';
 import { nodeTypeForSymbolKind } from './kind-mapping.js';
+import { declaresForeignModule } from './qualified-name.js';
 import { rangeContains, rangeSize } from './position.js';
 
 /**
@@ -63,6 +64,9 @@ export function normalizeDocument(
 
   for (const symbol of document.symbols) {
     if (symbol.identity.isLocal) continue;
+
+    // `declare module 'pg'` describes another package, not this repository.
+    if (declaresForeignModule(symbol.identity)) continue;
 
     if (symbol.kind === 'file') {
       // The file scope is represented by the `file` node the builder creates

@@ -10,6 +10,7 @@
     "start": "node dist/worker.js"
   },
   "dependencies": {
+    "@ckg/analysis": "workspace:*",
     "@ckg/database": "workspace:*",
     "@ckg/graph": "workspace:*",
     "@ckg/language-detection": "workspace:*",

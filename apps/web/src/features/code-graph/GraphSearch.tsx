@@ -2,19 +2,30 @@ import { useEffect, useRef, useState } from 'react';
 import { searchNodes } from '../../api/graph.api.js';
 import { errorMessage } from '../../hooks/useAsync.js';
 import type { CodeNode } from '../../types/index.js';
-import { nodeColor } from './graph-style.js';
+import { shortenPath } from '../../utils/format.js';
+import { NODE_TYPE_LABELS, nodeColor, nodeFullName } from './graph-style.js';
 
 const DEBOUNCE_MS = 200;
+const PAGE_SIZE = 15;
 
 export interface GraphSearchProps {
   projectId: string;
   onSelect: (node: CodeNode) => void;
 }
 
-/** Symbol and file search. Selecting a result re-roots the traversal on it. */
+/**
+ * Search over symbols, members, files, directories, API routes and node types —
+ * all of which the server matches against the same three columns, so one box
+ * covers `UserService`, `UserService.getUser`, `user.service.ts`,
+ * `src/services`, `POST /users` and `table`.
+ *
+ * Results are a page, not the whole match set, and the count says so: a search
+ * that quietly truncates is a search that lies about what is in the graph.
+ */
 export function GraphSearch({ projectId, onSelect }: GraphSearchProps): React.JSX.Element {
   const [term, setTerm] = useState('');
   const [results, setResults] = useState<CodeNode[]>([]);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -23,16 +34,18 @@ export function GraphSearch({ projectId, onSelect }: GraphSearchProps): React.JS
     const trimmed = term.trim();
     if (trimmed.length === 0) {
       setResults([]);
+      setTotal(0);
       setError(null);
       return;
     }
 
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      searchNodes(projectId, trimmed, controller.signal)
-        .then((nodes) => {
+      searchNodes(projectId, trimmed, { limit: PAGE_SIZE }, controller.signal)
+        .then((page) => {
           if (controller.signal.aborted) return;
-          setResults(nodes);
+          setResults(page.nodes);
+          setTotal(page.total);
           setError(null);
           setOpen(true);
         })
@@ -70,8 +83,8 @@ export function GraphSearch({ projectId, onSelect }: GraphSearchProps): React.JS
         className="search__input"
         type="search"
         value={term}
-        placeholder="Search symbol or file"
-        aria-label="Search symbol or file"
+        placeholder="Search symbol, file, route or type"
+        aria-label="Search symbol, file, route or type"
         onChange={(event) => {
           setTerm(event.target.value);
         }}
@@ -83,24 +96,32 @@ export function GraphSearch({ projectId, onSelect }: GraphSearchProps): React.JS
       {open && (results.length > 0 || error) && (
         <ul className="search__results" role="listbox">
           {error && <li className="search__error">{error}</li>}
+
           {results.map((node) => (
             <li key={node.id}>
               <button
                 type="button"
                 className="search__result"
+                title={nodeFullName(node)}
                 onClick={() => {
                   choose(node);
                 }}
               >
                 <span className="search__dot" style={{ background: nodeColor(node.type) }} />
-                <span className="search__name">{node.name}</span>
+                <span className="search__name">{nodeFullName(node)}</span>
                 <span className="search__meta">
-                  {node.type}
-                  {node.filePath ? ` · ${node.filePath}` : ''}
+                  <span className="search__type">{NODE_TYPE_LABELS[node.type]}</span>
+                  {node.filePath ? shortenPath(node.filePath, 30) : ''}
                 </span>
               </button>
             </li>
           ))}
+
+          {total > results.length && (
+            <li className="search__more">
+              showing {results.length} of {total} — narrow the term to see the rest
+            </li>
+          )}
         </ul>
       )}
     </div>

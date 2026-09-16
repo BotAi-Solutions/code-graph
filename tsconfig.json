@@ -1,12 +1,29 @@
 {
   "files": [],
   "references": [
-    { "path": "./packages/shared" },
-    { "path": "./packages/language-detection" },
-    { "path": "./packages/scip" },
-    { "path": "./packages/graph" },
-    { "path": "./packages/database" },
-    { "path": "./apps/api" },
-    { "path": "./apps/worker" }
+    {
+      "path": "./packages/shared"
+    },
+    {
+      "path": "./packages/language-detection"
+    },
+    {
+      "path": "./packages/scip"
+    },
+    {
+      "path": "./packages/graph"
+    },
+    {
+      "path": "./packages/analysis"
+    },
+    {
+      "path": "./packages/database"
+    },
+    {
+      "path": "./apps/api"
+    },
+    {
+      "path": "./apps/worker"
+    }
   ]
 }

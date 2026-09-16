@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { GRAPH_MAX_DEPTH } from '@ckg/shared';
-import type { CodeNode, CodeNodeType, CodeRelationship, GraphMeta } from '../../types/index.js';
+import type {
+  CodeNode,
+  CodeNodeType,
+  CodeRelationship,
+  GraphMeta,
+  GraphProjectionId,
+  GraphSummary,
+} from '../../types/index.js';
 import { GraphFilters } from './GraphFilters.js';
 import { VIEW_PRESETS, matchPreset } from './view-presets.js';
 import { GraphSearch } from './GraphSearch.js';
@@ -8,15 +15,18 @@ import { GraphSearch } from './GraphSearch.js';
 export interface GraphToolbarProps {
   projectId: string;
   depth: number;
+  projection: GraphProjectionId | null;
   nodeTypes: CodeNodeType[];
   relationships: CodeRelationship[];
   meta: GraphMeta | null;
+  summary: GraphSummary | null;
   loading: boolean;
+  expandedCount: number;
   onChangeDepth: (depth: number) => void;
   onChangeNodeTypes: (next: CodeNodeType[]) => void;
   onChangeRelationships: (next: CodeRelationship[]) => void;
   onSearchSelect: (node: CodeNode) => void;
-  onApplyPreset: (nodeTypes: CodeNodeType[], relationships: CodeRelationship[]) => void;
+  onApplyPreset: (projection: GraphProjectionId) => void;
   onFit: () => void;
   onReset: () => void;
 }
@@ -24,7 +34,13 @@ export interface GraphToolbarProps {
 export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const activePreset = matchPreset(props.nodeTypes, props.relationships);
+  // A projection is lit while the filters still match what it prescribes; the
+  // moment the user edits them, no button claims to describe the view.
+  const activePreset = matchPreset(props.nodeTypes, props.relationships) ?? props.projection;
+  const edited =
+    props.projection !== null && matchPreset(props.nodeTypes, props.relationships) === null;
+
+  const overview = props.meta?.mode === 'overview';
 
   return (
     <div className="toolbar">
@@ -38,9 +54,9 @@ export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
             min={0}
             max={GRAPH_MAX_DEPTH}
             value={props.depth}
-            disabled={props.meta?.mode === 'overview'}
+            disabled={overview}
             title={
-              props.meta?.mode === 'overview'
+              overview
                 ? 'Depth applies once a root node is selected'
                 : 'Hops to traverse from the root node'
             }
@@ -53,7 +69,7 @@ export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
           />
         </label>
 
-        <div className="segmented" role="group" aria-label="View preset">
+        <div className="segmented" role="group" aria-label="Graph projection">
           {VIEW_PRESETS.map((preset) => (
             <button
               key={preset.id}
@@ -64,7 +80,7 @@ export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
               title={preset.title}
               aria-pressed={activePreset === preset.id}
               onClick={() => {
-                props.onApplyPreset(preset.nodeTypes, preset.relationships);
+                props.onApplyPreset(preset.id);
               }}
             >
               {preset.label}
@@ -81,6 +97,7 @@ export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
           }}
         >
           Filters
+          {edited && <span className="button__mark" title="Filters edited" />}
         </button>
 
         <div className="toolbar__spacer" />
@@ -96,9 +113,15 @@ export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
           {props.loading
             ? 'loading…'
             : props.meta
-              ? `${String(props.meta.nodeCount)} nodes · ${String(props.meta.edgeCount)} edges${
-                  props.meta.truncated ? ' · truncated' : ''
-                } · ${props.meta.mode}`
+              ? [
+                  `${String(props.meta.nodeCount)} nodes`,
+                  `${String(props.meta.edgeCount)} edges`,
+                  props.expandedCount > 0 ? `${String(props.expandedCount)} expanded` : null,
+                  props.meta.truncated ? 'truncated' : null,
+                  props.meta.mode,
+                ]
+                  .filter((part): part is string => part !== null)
+                  .join(' · ')
               : ''}
         </span>
       </div>
@@ -107,6 +130,8 @@ export function GraphToolbar(props: GraphToolbarProps): React.JSX.Element {
         <GraphFilters
           nodeTypes={props.nodeTypes}
           relationships={props.relationships}
+          nodeTypeCounts={props.summary?.nodeTypeCounts}
+          relationshipCounts={props.summary?.relationshipCounts}
           onChangeNodeTypes={props.onChangeNodeTypes}
           onChangeRelationships={props.onChangeRelationships}
         />

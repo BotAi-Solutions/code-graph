@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { Panel, Spinner, StatusBadge } from '../components/index.js';
 import { CodeGraphPage } from '../features/code-graph/index.js';
 import { fetchGraphSummary } from '../api/graph.api.js';
-import { getProject } from '../api/projects.api.js';
+import { getProject, getRepository } from '../api/projects.api.js';
 import { useAnalysis, useAsync, navigate } from '../hooks/index.js';
 import { formatCount } from '../utils/format.js';
 
@@ -18,6 +18,13 @@ export function ProjectGraphPage({ projectId }: { projectId: string }): React.JS
     (signal) => fetchGraphSummary(projectId, signal),
     [projectId, refreshToken],
   );
+
+  /**
+   * The repository behind this project, for the inspector's "Open source".
+   * A project without one is normal — it simply has no graph yet — so a failure
+   * here is not surfaced as an error.
+   */
+  const repositoryState = useAsync((signal) => getRepository(projectId, signal), [projectId]);
 
   const onCompleted = useCallback(() => {
     setRefreshToken((value) => value + 1);
@@ -103,7 +110,12 @@ export function ProjectGraphPage({ projectId }: { projectId: string }): React.JS
           </p>
         </Panel>
       ) : (
-        <CodeGraphPage projectId={projectId} refreshToken={refreshToken} />
+        <CodeGraphPage
+          projectId={projectId}
+          refreshToken={refreshToken}
+          summary={summaryState.data}
+          repositoryPath={repositoryState.data?.sourcePath ?? null}
+        />
       )}
     </div>
   );

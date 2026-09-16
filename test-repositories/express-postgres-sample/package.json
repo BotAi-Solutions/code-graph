@@ -1,0 +1,14 @@
+{
+  "name": "users-service",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Layered Express + PostgreSQL service used to exercise the architectural analyzers end to end.",
+  "main": "src/app.ts",
+  "dependencies": {
+    "bullmq": "^5.0.0",
+    "express": "^4.19.2",
+    "pg": "^8.11.5",
+    "stripe": "^14.0.0"
+  }
+}

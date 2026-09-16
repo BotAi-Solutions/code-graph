@@ -15,6 +15,7 @@ import {
   type CommandRunner,
   type RunOptions,
 } from '@ckg/scip';
+import type { CodeAnalyzer } from '@ckg/graph';
 import { AnalyzeRepositoryJob } from '../src/jobs/analyze-repository.job.js';
 import { AnalysisProcessor } from '../src/processors/analysis.processor.js';
 import { AnalysisWorkspace } from '../src/services/analysis-workspace.js';
@@ -34,18 +35,28 @@ const SAMPLE_REPOSITORY = path.resolve(
   fileURLToPath(new URL('../../../test-repositories/typescript-sample', import.meta.url)),
 );
 
+/** The layered service that exercises the architectural analyzers. */
+const SERVICE_FIXTURE = fileURLToPath(
+  new URL('../../../packages/scip/tests/fixtures/express-postgres-sample.scip', import.meta.url),
+);
+const SERVICE_REPOSITORY = path.resolve(
+  fileURLToPath(new URL('../../../test-repositories/express-postgres-sample', import.meta.url)),
+);
+
 const PROJECT_ID = '33333333-3333-4333-8333-333333333333';
 const REPOSITORY_ID = '44444444-4444-4444-8444-444444444444';
 
 class FixtureCommandRunner implements CommandRunner {
   readonly calls: Array<{ command: string; args: string[] }> = [];
 
+  constructor(private readonly fixture: string = FIXTURE) {}
+
   async run(command: string, args: string[], _options: RunOptions): Promise<CommandResult> {
     this.calls.push({ command, args });
 
     const outputIndex = args.indexOf('--output');
     if (outputIndex >= 0) {
-      await copyFile(FIXTURE, args[outputIndex + 1] as string);
+      await copyFile(this.fixture, args[outputIndex + 1] as string);
     }
 
     return {
@@ -159,6 +170,7 @@ describe('AnalyzeRepositoryJob', () => {
   function createJob(
     commandRunner: CommandRunner,
     repository: Repository = LOCAL_REPOSITORY,
+    options: { analyzers?: CodeAnalyzer[] } = {},
   ): {
     job: AnalyzeRepositoryJob;
     analysisJobs: FakeAnalysisJobRepository;
@@ -181,6 +193,7 @@ describe('AnalyzeRepositoryJob', () => {
       workspace: new AnalysisWorkspace(workspaceRoot),
       logger: createSilentLogger(),
       scipTimeoutMs: 1000,
+      ...(options.analyzers ? { analyzers: options.analyzers } : {}),
     });
 
     return { job, analysisJobs, graph };
@@ -197,6 +210,25 @@ describe('AnalyzeRepositoryJob', () => {
     expect(stats.edgeCount).toBeGreaterThan(100);
     expect(graph.replaceCount).toBe(1);
     expect(graph.graph.nodes.length).toBe(stats.nodeCount);
+  });
+
+  it('produces exactly the SCIP graph when no analyzer is registered', async () => {
+    const withAnalyzers = createJob(new FixtureCommandRunner());
+    await withAnalyzers.job.run(withAnalyzers.analysisJobs.seed(queuedJob()));
+
+    const scipOnly = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, { analyzers: [] });
+    await scipOnly.job.run(scipOnly.analysisJobs.seed(queuedJob()));
+
+    // The analyzers only ever add: every node the SCIP-only run produced is
+    // still there, with the same identity.
+    const scipIds = new Set(scipOnly.graph.graph.nodes.map((node) => node.id));
+    const enrichedIds = new Set(withAnalyzers.graph.graph.nodes.map((node) => node.id));
+
+    for (const id of scipIds) expect(enrichedIds.has(id)).toBe(true);
+    expect(enrichedIds.size).toBeGreaterThan(scipIds.size);
+    expect(
+      scipOnly.graph.graph.nodes.some((node) => node.type === 'service' || node.type === 'config'),
+    ).toBe(false);
   });
 
   it('moves through the documented job states in order', async () => {
@@ -297,6 +329,74 @@ describe('AnalyzeRepositoryJob', () => {
     });
 
     await expect(job.run(analysisJobs.seed(queuedJob()))).rejects.toThrow(/does not exist/);
+  });
+
+  describe('over a layered service repository', () => {
+    const SERVICE: Repository = {
+      ...LOCAL_REPOSITORY,
+      sourcePath: SERVICE_REPOSITORY,
+    };
+
+    async function analyse(): Promise<FakeGraphRepository> {
+      const { job, analysisJobs, graph } = createJob(
+        new FixtureCommandRunner(SERVICE_FIXTURE),
+        SERVICE,
+      );
+      await job.run(analysisJobs.seed(queuedJob()));
+      return graph;
+    }
+
+    it('persists the architectural layer alongside the symbol graph', async () => {
+      const graph = await analyse();
+
+      const byType = (type: string): string[] =>
+        graph.graph.nodes.filter((node) => node.type === type).map((node) => node.name);
+
+      expect(byType('api')).toContain('POST /users');
+      expect(byType('table')).toContain('users');
+      expect(byType('queue')).toContain('welcome-emails');
+      expect(byType('event')).toContain('user.created');
+      expect(byType('external_service').sort()).toEqual(['SendGrid', 'Stripe']);
+      expect(byType('service')).toEqual(['users-service']);
+      // And the symbols SCIP found are all still there.
+      expect(byType('class')).toContain('UserService');
+    });
+
+    it('produces the request-to-store chain the sample documents', async () => {
+      const graph = await analyse();
+
+      const node = (type: string, name: string) =>
+        graph.graph.nodes.find(
+          (item) => item.type === type && (item.name === name || item.qualifiedName === name),
+        );
+
+      const linked = (from: string, fromType: string, relationship: string, to: string, toType: string) =>
+        graph.graph.edges.some(
+          (edge) =>
+            edge.sourceNodeId === node(fromType, from)?.id &&
+            edge.targetNodeId === node(toType, to)?.id &&
+            edge.relationship === relationship,
+        );
+
+      expect(linked('POST /users', 'api', 'ROUTES_TO', 'UserController.create', 'method')).toBe(true);
+      expect(linked('UserController.create', 'method', 'CALLS', 'UserService.create', 'method')).toBe(true);
+      expect(linked('UserService.create', 'method', 'CALLS', 'UserRepository.create', 'method')).toBe(true);
+      expect(linked('UserRepository.create', 'method', 'WRITES_TO', 'users', 'table')).toBe(true);
+      expect(linked('EmailService', 'class', 'CALLS', 'SendGrid', 'external_service')).toBe(true);
+      expect(linked('UserService.create', 'method', 'PUBLISHES', 'user.created', 'event')).toBe(true);
+    });
+
+    it('is idempotent across the whole pipeline, analyzers included', async () => {
+      const first = await analyse();
+      const second = await analyse();
+
+      expect(second.graph.nodes.map((node) => node.id)).toEqual(
+        first.graph.nodes.map((node) => node.id),
+      );
+      expect(second.graph.edges.map((edge) => edge.id)).toEqual(
+        first.graph.edges.map((edge) => edge.id),
+      );
+    });
   });
 });
 

@@ -23,6 +23,9 @@
     },
     {
       "path": "../../packages/language-detection"
+    },
+    {
+      "path": "../../packages/analysis"
     }
   ]
 }

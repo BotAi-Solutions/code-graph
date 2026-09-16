@@ -38,12 +38,14 @@ function sampleGraph(projectId: string): CodeGraph {
     source: string,
     relationship: CodeGraph['edges'][number]['relationship'],
     target: string,
+    metadata?: Record<string, unknown>,
   ) => ({
     id: `${source}-${relationship}-${target}`,
     projectId,
     sourceNodeId: source,
     targetNodeId: target,
     relationship,
+    ...(metadata ? { metadata } : {}),
   });
 
   return {
@@ -59,6 +61,64 @@ function sampleGraph(projectId: string): CodeGraph {
       edge('controller', 'CALLS', 'service'),
       edge('service', 'CALLS', 'repository'),
       edge('repository', 'REFERENCES', 'model'),
+    ],
+  };
+}
+
+/**
+ * The same application with its architectural layer, as the analyzers add it:
+ * a route, a table, a package and the service itself.
+ */
+function architecturalGraph(projectId: string): CodeGraph {
+  const base = sampleGraph(projectId);
+
+  const node = (
+    id: string,
+    type: CodeGraph['nodes'][number]['type'],
+    name: string,
+    extra: Record<string, unknown> = {},
+  ) => ({ id, projectId, type, name, ...extra });
+
+  const edge = (
+    source: string,
+    relationship: CodeGraph['edges'][number]['relationship'],
+    target: string,
+    metadata: Record<string, unknown>,
+  ) => ({
+    id: `${source}-${relationship}-${target}`,
+    projectId,
+    sourceNodeId: source,
+    targetNodeId: target,
+    relationship,
+    metadata,
+  });
+
+  return {
+    nodes: [
+      ...base.nodes,
+      node('api', 'api', 'POST /users', {
+        qualifiedName: 'POST /users',
+        filePath: 'src/api/user.routes.ts',
+        startLine: 4,
+        metadata: { httpMethod: 'POST', path: '/users', framework: 'express' },
+      }),
+      node('table', 'table', 'users', { qualifiedName: 'postgresql.users' }),
+      node('svc', 'service', 'users-service', { qualifiedName: 'users-service' }),
+      node('pkg', 'module', 'express', {
+        qualifiedName: 'express',
+        metadata: { external: true },
+      }),
+    ],
+    edges: [
+      ...base.edges,
+      edge('api', 'ROUTES_TO', 'controller', { source: 'api-analyzer', confidence: 'high' }),
+      edge('repository', 'WRITES_TO', 'table', {
+        source: 'database-analyzer',
+        confidence: 'high',
+        statement: 'INSERT',
+      }),
+      edge('svc', 'DEPENDS_ON', 'pkg', { source: 'import-analyzer', confidence: 'high' }),
+      edge('svc', 'CONTAINS', 'api', { source: 'api-analyzer', confidence: 'high' }),
     ],
   };
 }
@@ -466,6 +526,215 @@ describe('API', () => {
 
       expect(body<Array<{ id: string }>>(response).data?.[0]?.id).toBe('service');
     });
+
+    it('narrows the walk to one direction when asked', async () => {
+      const outgoing = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?rootNodeId=service&depth=1&direction=outgoing`,
+      });
+
+      expect(body<CodeGraph>(outgoing).meta).toMatchObject({ direction: 'outgoing' });
+      expect(body<CodeGraph>(outgoing).data?.nodes.map((node) => node.id).sort()).toEqual([
+        'repository',
+        'service',
+      ]);
+
+      const incoming = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?rootNodeId=service&depth=1&direction=incoming`,
+      });
+
+      expect(body<CodeGraph>(incoming).data?.nodes.map((node) => node.id).sort()).toEqual([
+        'controller',
+        'service',
+      ]);
+    });
+
+    it('rejects a direction that is not one of the three', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?rootNodeId=service&direction=sideways`,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(body(response).error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('projections', () => {
+    let projectId: string;
+
+    beforeAll(async () => {
+      const created = await harness.app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { name: 'projection-project' },
+      });
+      projectId = (body<Project>(created).data as Project).id;
+      harness.graph.setGraph(architecturalGraph(projectId));
+    });
+
+    it('applies a projection\u2019s filters when the caller sends none', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=calls&rootNodeId=controller&depth=3`,
+      });
+
+      expect(body<CodeGraph>(response).meta).toMatchObject({
+        projection: 'calls',
+        relationships: ['CALLS'],
+      });
+      // CONTAINS and REFERENCES are outside the projection, so the repository
+      // root and the model are unreachable.
+      expect(body<CodeGraph>(response).data?.nodes.map((node) => node.id).sort()).toEqual([
+        'controller',
+        'repository',
+        'service',
+      ]);
+    });
+
+    it('lets an explicit filter override the projection', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=calls&rootNodeId=repository&depth=1&relationships=WRITES_TO`,
+      });
+
+      // The relationship filter is the caller's; the projection's node-type
+      // filter still applies, and `calls` does not include tables — so the
+      // WRITES_TO edge is followed to a node the caller excluded, and stops.
+      expect(body<CodeGraph>(response).meta).toMatchObject({
+        projection: 'calls',
+        relationships: ['WRITES_TO'],
+        nodeTypes: ['class', 'interface', 'function', 'method'],
+      });
+      expect(body<CodeGraph>(response).data?.nodes.map((node) => node.id)).toEqual(['repository']);
+    });
+
+    it('lets both filters be overridden together', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=calls&rootNodeId=repository&depth=1&relationships=WRITES_TO&nodeTypes=class,table`,
+      });
+
+      expect(body<CodeGraph>(response).data?.nodes.map((node) => node.id).sort()).toEqual([
+        'repository',
+        'table',
+      ]);
+    });
+
+    it('reaches request to store with the architecture projection', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=architecture&rootNodeId=api&depth=4`,
+      });
+
+      // POST /users -> UserController -> UserService -> UserRepository -> users
+      const ids = (body<CodeGraph>(response).data?.nodes.map((node) => node.id) ?? []).sort();
+      expect(ids).toEqual(['api', 'controller', 'repository', 'service', 'table']);
+      // REFERENCES is outside the projection, so the model is not dragged in.
+      expect(ids).not.toContain('model');
+    });
+
+    it('ranks the architecture projection\u2019s subjects first in an overview', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=architecture&limit=3`,
+      });
+
+      const types = body<CodeGraph>(response).data?.nodes.map((node) => node.type) ?? [];
+      expect(types[0]).toBe('api');
+      expect(types).toContain('table');
+    });
+
+    it('leaves the graph unfiltered under the everything projection', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=everything&rootNodeId=repo&depth=2`,
+      });
+
+      expect(body<CodeGraph>(response).meta).toMatchObject({
+        projection: 'everything',
+        nodeTypes: null,
+        relationships: null,
+      });
+    });
+
+    it('rejects a projection that does not exist', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph?projection=made-up`,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(body(response).error?.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('search', () => {
+    let projectId: string;
+
+    beforeAll(async () => {
+      const created = await harness.app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { name: 'search-project' },
+      });
+      projectId = (body<Project>(created).data as Project).id;
+      harness.graph.setGraph(architecturalGraph(projectId));
+    });
+
+    const search = async (query: string) =>
+      harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph/search?${query}`,
+      });
+
+    it('finds an API by its path', async () => {
+      const response = await search('q=POST%20%2Fusers');
+      expect(body<Array<{ id: string }>>(response).data?.map((node) => node.id)).toEqual(['api']);
+    });
+
+    it('finds a node by its qualified name', async () => {
+      const response = await search('q=postgresql.users');
+      expect(body<Array<{ id: string }>>(response).data?.map((node) => node.id)).toEqual(['table']);
+    });
+
+    it('finds files by path fragment', async () => {
+      const response = await search('q=src%2Fapi');
+      expect(body<Array<{ id: string }>>(response).data?.map((node) => node.id)).toEqual(['api']);
+    });
+
+    it('finds every node of a type when the term names one', async () => {
+      const response = await search('q=table');
+      expect(body<Array<{ id: string }>>(response).data?.map((node) => node.id)).toEqual(['table']);
+    });
+
+    it('narrows results by node type', async () => {
+      const response = await search('q=user&nodeTypes=table');
+      expect(body<Array<{ type: string }>>(response).data?.every((node) => node.type === 'table')).toBe(
+        true,
+      );
+    });
+
+    it('pages, and reports the full total', async () => {
+      const first = await search('q=user&limit=2&offset=0');
+      const payload = body<Array<{ id: string }>>(first);
+
+      expect(payload.data).toHaveLength(2);
+      expect(payload.meta).toMatchObject({ limit: 2, offset: 0 });
+      expect(Number(payload.meta.total)).toBeGreaterThan(2);
+
+      const second = await search('q=user&limit=2&offset=2');
+      const secondIds = body<Array<{ id: string }>>(second).data?.map((node) => node.id) ?? [];
+      const firstIds = payload.data?.map((node) => node.id) ?? [];
+
+      expect(secondIds.some((id) => firstIds.includes(id))).toBe(false);
+    });
+
+    it('rejects an empty term rather than returning the whole graph', async () => {
+      const response = await search('q=');
+      expect(response.statusCode).toBe(400);
+    });
   });
 
   describe('retrieve node', () => {
@@ -541,6 +810,111 @@ describe('API', () => {
       expect(response.statusCode).toBe(404);
       expect(body(response).error?.code).toBe('NODE_NOT_FOUND');
     });
+
+    it('serves references on their own route too', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph/nodes/model/references`,
+      });
+
+      expect(body<Array<{ id: string }>>(response).data?.map((item) => item.id)).toEqual([
+        'repository',
+      ]);
+    });
+  });
+
+  describe('node detail over an architectural graph', () => {
+    let projectId: string;
+
+    beforeAll(async () => {
+      const created = await harness.app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { name: 'detail-project' },
+      });
+      projectId = (body<Project>(created).data as Project).id;
+      harness.graph.setGraph(architecturalGraph(projectId));
+    });
+
+    const detail = async (nodeId: string) =>
+      body<{
+        node: { name: string };
+        callers: Array<{ id: string }>;
+        callees: Array<{ id: string }>;
+        references: Array<{ id: string }>;
+        dependencies: Array<{ id: string; relationship: string }>;
+        dependents: Array<{ id: string; relationship: string }>;
+        apis: Array<{ id: string; relationship: string }>;
+        databases: Array<{ id: string; relationship: string; confidence?: string }>;
+      }>(
+        await harness.app.inject({
+          method: 'GET',
+          url: `/api/projects/${projectId}/graph/nodes/${nodeId}`,
+        }),
+      ).data;
+
+    it('keeps the original three sections exactly as they were', async () => {
+      const service = await detail('service');
+
+      expect(service?.callers.map((item) => item.id)).toEqual(['controller']);
+      expect(service?.callees.map((item) => item.id)).toEqual(['repository']);
+      expect(service?.references).toEqual([]);
+      // The original sections carry no relationship field, as before.
+      expect(service?.callers[0]).not.toHaveProperty('relationship');
+    });
+
+    it('reports the APIs that reach a controller', async () => {
+      const controller = await detail('controller');
+
+      expect(controller?.apis).toEqual([
+        expect.objectContaining({ id: 'api', relationship: 'ROUTES_TO' }),
+      ]);
+    });
+
+    it('reports the data stores a repository touches, with the evidence', async () => {
+      const repository = await detail('repository');
+
+      expect(repository?.databases).toEqual([
+        expect.objectContaining({
+          id: 'table',
+          relationship: 'WRITES_TO',
+          confidence: 'high',
+          evidenceSource: 'database-analyzer',
+        }),
+      ]);
+    });
+
+    it('reports dependencies and dependents in the right direction', async () => {
+      const service = await detail('svc');
+      expect(service?.dependencies).toEqual([
+        expect.objectContaining({ id: 'pkg', relationship: 'DEPENDS_ON' }),
+      ]);
+
+      const packageNode = await detail('pkg');
+      expect(packageNode?.dependents).toEqual([
+        expect.objectContaining({ id: 'svc', relationship: 'DEPENDS_ON' }),
+      ]);
+    });
+
+    it('leaves a section empty rather than inventing entries', async () => {
+      const model = await detail('model');
+
+      expect(model?.apis).toEqual([]);
+      expect(model?.databases).toEqual([]);
+      expect(model?.dependencies).toEqual([]);
+    });
+
+    it('reports relationship composition through the summary', async () => {
+      const response = await harness.app.inject({
+        method: 'GET',
+        url: `/api/projects/${projectId}/graph/summary`,
+      });
+
+      expect(body<{ relationshipCounts: Record<string, number> }>(response).data).toMatchObject({
+        nodeTypeCounts: { api: 1, table: 1, service: 1 },
+        relationshipCounts: { ROUTES_TO: 1, WRITES_TO: 1, DEPENDS_ON: 1 },
+      });
+    });
   });
 
   it('publishes an OpenAPI document covering every module', async () => {
@@ -559,6 +933,7 @@ describe('API', () => {
         '/api/projects/{projectId}/graph/nodes/{nodeId}',
         '/api/projects/{projectId}/graph/nodes/{nodeId}/callers',
         '/api/projects/{projectId}/graph/nodes/{nodeId}/callees',
+        '/api/projects/{projectId}/graph/nodes/{nodeId}/references',
       ]),
     );
   });

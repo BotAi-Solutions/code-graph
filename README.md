@@ -2,17 +2,31 @@
 
 Turns a source repository into a queryable graph of its own code.
 
-A repository is indexed with [SCIP](https://github.com/sourcegraph/scip), the
-index is normalised into a language-neutral **code knowledge graph** (classes,
-interfaces, functions, methods, files — and the `CALLS`, `REFERENCES`,
-`IMPLEMENTS`, `EXTENDS`, `IMPORTS`, `CONTAINS` relationships between them),
-stored in PostgreSQL, and served through a traversal-first HTTP API that a React
-UI renders with Cytoscape.
+A repository is indexed with [SCIP](https://github.com/sourcegraph/scip) for its
+compiler-level facts, read again by source analyzers for the facts no compiler
+has an opinion about, and normalised into one language-neutral **code knowledge
+graph**:
+
+- **code** — classes, interfaces, functions, methods, files, and the `CALLS`,
+  `REFERENCES`, `IMPLEMENTS`, `EXTENDS`, `IMPORTS`, `EXPORTS`, `INSTANTIATES`,
+  `ACCEPTS`, `RETURNS`, `CONTAINS` relationships between them
+- **architecture** — API routes, the service itself, databases, tables, queues,
+  events, external services and configuration, joined by `ROUTES_TO`, `USES`,
+  `READS_FROM`, `WRITES_TO`, `PUBLISHES`, `SUBSCRIBES`, `CONFIGURED_BY`,
+  `AUTHENTICATED_BY`, `VALIDATES`, `DEPENDS_ON`, `DEPENDS_ON_SERVICE`
+
+It is stored in PostgreSQL and served through a traversal-first HTTP API that a
+React UI renders with Cytoscape.
+
+Every edge records **what observed it and how much that observer trusts it**. An
+analyzer that cannot resolve a reference emits nothing rather than a guess: a
+graph you have to second-guess is worse than a smaller one you can trust.
 
 The graph is the product. SCIP is one way to populate it, PostgreSQL is one way
 to store it, and the API is one way to read it — each is replaceable without
-touching the others. That separation is what will let a CodeRAG/MCP layer be
-added later without restructuring anything.
+touching the others. That separation is what let the architectural layer be
+added as seven analyzers behind one interface, and what will let a CodeRAG/MCP
+layer be added later without restructuring anything.
 
 > **Status: foundation.** The pipeline works end to end for TypeScript and
 > JavaScript. Other languages, vector search, RAG and MCP are deliberately not
@@ -38,8 +52,14 @@ Git / local repository
  SCIP parser                packages/scip/src/parser
         │
         ▼
- Graph builder              packages/graph
+ Graph builder              packages/graph      ──▶  symbols, calls, references
         │
+        ▼
+ Source analyzers           packages/analysis   ──▶  APIs, tables, queues,
+        │                                            events, integrations
+        ▼
+ Graph assembler            packages/graph      ──▶  one graph, merged by
+        │                                            identity, every edge evidenced
         ▼
  Code knowledge graph
         │
@@ -65,7 +85,7 @@ Requirements: Node 20.11+, pnpm 9+, Docker (for PostgreSQL).
 ```bash
 pnpm install                 # installs workspace deps, including the SCIP indexer
 docker compose up -d         # PostgreSQL on localhost:5432
-pnpm db:migrate              # create the schema
+pnpm db:migrate              # create or update the schema
 pnpm dev                     # API :3000, worker, web :5173
 ```
 
@@ -76,32 +96,43 @@ its graph, its source repository and the state of its last run, and is where
 projects are created and analyses started.
 
 1. **Create and analyse** — the form is pre-filled with the bundled sample at
-   `test-repositories/typescript-sample`. The API queues a job and returns
-   immediately; the worker runs SCIP, builds the graph and writes it to
-   PostgreSQL. The card follows the job through `QUEUED → INDEXING → PARSING →
-   BUILDING_GRAPH → PERSISTING → COMPLETED` and refreshes when it lands.
+   `test-repositories/typescript-sample`; for the architectural layer, point it
+   at `test-repositories/express-postgres-sample`. The API queues a job and
+   returns immediately; the worker runs SCIP, the analyzers and the assembler,
+   then writes the graph to PostgreSQL. The card follows the job through
+   `QUEUED → INDEXING → PARSING → BUILDING_GRAPH → PERSISTING → COMPLETED` and
+   refreshes when it lands.
 2. **Explore graph** opens the project workspace (`#/projects/<id>`), which is a
    real URL — reload it, bookmark it, send it to a colleague.
-3. The canvas opens on the **Architecture** view: types and the behaviour
-   between them. For the sample repository that is exactly its shape:
+3. The canvas opens on the **Architecture** projection. For the Express sample
+   that is exactly its shape:
 
    ```
-   UserController ──CALLS──▶ UserService ──CALLS──▶ UserRepository ──REFERENCES──▶ User
+   POST /users ──ROUTES_TO──▶ UserController ──CALLS──▶ UserService ──CALLS──▶ UserRepository ──WRITES_TO──▶ users
+                                                             │
+                                                        CALLS│──▶ SendGrid · Stripe
+                                                    PUBLISHES│──▶ welcome-emails · user.created
    ```
 
-   The other presets — Everything, Call graph, Files — are the same filters
-   under different names, and the Filters panel exposes all of them.
-4. **Click a node** for its file, line range, callers, callees and references.
-   **Double-click** to re-root the traversal on it.
+   The other projections — Everything, Call graph, Files, Dependencies, Data
+   flow — are the same graph under different filters, defined once and shared by
+   the API and the UI. The Filters panel exposes every node type and
+   relationship, grouped, with the project's own counts beside them.
+4. **Click a node** for its type, role, file, line range, callers, callees,
+   references, APIs, data stores and dependencies — with the evidence for each.
+   **Double-click** (or **Expand**) pulls that node's neighbours onto the canvas
+   without disturbing what is already there; **Focus** starts a fresh traversal
+   from it; **Open source** opens the exact line in your editor.
 
 To check the analysis half of the system without the browser:
 
 ```bash
-pnpm analyze:sample
+pnpm analyze:sample                                         # the small sample
+pnpm analyze:sample test-repositories/express-postgres-sample
 ```
 
-It creates a project, attaches the sample repository, runs the full pipeline and
-prints the resulting overview edges.
+It creates a project, attaches the repository, runs the full pipeline and prints
+the node composition and the architecture projection.
 
 ---
 
@@ -201,14 +232,22 @@ apps/
 packages/
   scip/                SCIP indexer adapters, protobuf parser, internal types.
                        Raw protobuf never leaves this package.
-  graph/               Graph domain model, deterministic builder, traversal,
-                       serialisation. Language-agnostic by construction.
+  graph/               Graph domain model, deterministic builder, the analyzer
+                       seam and the merge, traversal, serialisation.
+                       Language-agnostic by construction.
+  analysis/            Source analyzers: files, imports, structure, APIs,
+                       databases, external services, messaging, frameworks.
+                       The only place that reads syntax.
   language-detection/  Repository scan and per-language detectors.
   database/            Pool, migrations, repositories. The only place with SQL.
   shared/              Types, Zod schemas and constants everything else speaks.
 
-test-repositories/typescript-sample/   Layered fixture app used end to end.
-scripts/                               setup-scip.ts, dev-analysis.ts
+test-repositories/
+  typescript-sample/           Layered fixture app: controller → service →
+                               repository → model.
+  express-postgres-sample/     Express + PostgreSQL service: routes, SQL, a
+                               queue, an event bus, two integrations.
+scripts/                       setup-scip.ts, dev-analysis.ts, build-fixtures.ts
 docker/postgres/                       Compose init scripts
 docs/                                  Architecture, SCIP, graph model, API
 ```
@@ -229,20 +268,37 @@ TypeScript is strict everywhere, ESM throughout, with project references so
 
 ### Tests
 
-157 tests, no database or network required. `packages/scip/tests/fixtures/`
-holds a real `index.scip` produced by scip-typescript from the sample
-repository, so the parser and builder are checked against genuine indexer
-output rather than a fixture that only agrees with itself.
+345 tests, no database or network required — plus 27 more that run when one is
+(see below). `packages/scip/tests/fixtures/`
+holds real `index.scip` files produced by scip-typescript from the sample
+repositories, so the parser, builder and analyzers are checked against genuine
+indexer output rather than a fixture that only agrees with itself. Regenerate
+them with `pnpm fixtures:build`; the indexer is deterministic, so a dirty
+`git status` afterwards means a sample actually changed.
 
 | Suite | Covers |
 | --- | --- |
-| `packages/shared` | Env validation, query schemas, logging contract |
+| `packages/shared` | Env validation, query schemas, logging contract, the graph vocabulary's completeness |
 | `packages/language-detection` | TypeScript/JavaScript/mixed repositories |
 | `packages/scip` | Protobuf wire format, symbol grammar, parsing, indexer adapter |
-| `packages/graph` | Builder (symbols→nodes, references→edges), determinism, traversal |
-| `packages/database` | Migration contract, row mapping |
-| `apps/api` | Envelope, every route, error codes, OpenAPI |
-| `apps/worker` | The pipeline end to end against the fixture |
+| `packages/graph` | Builder (symbols→nodes, references→edges), the assembler's merge rules, symbol index, determinism, traversal |
+| `packages/analysis` | Module resolution, bindings, SQL/Prisma/vendor detection, and every analyzer end to end against the Express sample |
+| `packages/database` | Migration contract, row mapping, and the graph SQL against a real PostgreSQL |
+| `apps/api` | Envelope, every route, projections, direction, search paging, node detail, error codes, OpenAPI |
+| `apps/worker` | The pipeline end to end against both fixtures |
+| `apps/web` | Graph merging for expand-on-click, projections, the visual language's completeness |
+
+The `packages/database` integration suite skips itself when no database is
+reachable and runs when one is:
+
+```bash
+docker compose up -d postgres
+pnpm test                       # the integration suite now executes too
+```
+
+It exists because a fake cannot reproduce SQL: one bug it caught — a count
+query reusing a predicate whose parameters it did not pass — passed every
+in-memory test and failed on the first live request.
 
 ---
 
@@ -251,10 +307,13 @@ output rather than a fixture that only agrees with itself.
 Implemented: the TypeScript/JavaScript pipeline, the graph model and builder,
 PostgreSQL persistence, the traversal API, and the React UI.
 
+Implemented since: the architectural layer — API, service, database, table,
+queue, event, external-service and config nodes, produced by source analyzers
+behind the `CodeAnalyzer` seam — graph projections, and evidence on every edge.
+
 Not implemented, and intentionally so: Qdrant, embeddings, LLM/Claude
 integration, MCP, OAuth, authentication, multi-tenancy, Neo4j, distributed
-workers, AI summaries, AST framework analyzers, incremental indexing and
-production deployment. The architecture is arranged so each can be added
+workers, AI summaries, incremental indexing and production deployment. The architecture is arranged so each can be added
 without restructuring — see the last section of
 [docs/architecture.md](docs/architecture.md).
 

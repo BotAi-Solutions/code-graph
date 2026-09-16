@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   AnalysisJob,
+  GraphDirection,
   NodeTypeCounts,
   ProjectSummary,
   AnalysisStatus,
@@ -10,9 +11,11 @@ import type {
   CodeNodeType,
   CodeRelationship,
   Project,
+  RelatedNode,
+  RelationshipCounts,
   Repository,
 } from '@ckg/shared';
-import { TERMINAL_ANALYSIS_STATUSES } from '@ckg/shared';
+import { DEPENDENCY_RELATIONSHIPS, TERMINAL_ANALYSIS_STATUSES } from '@ckg/shared';
 
 /**
  * In-memory stands-in for the database repositories.
@@ -225,21 +228,50 @@ export class InMemoryGraphStore {
     return counts;
   }
 
-  async composition(
-    projectId: string,
-  ): Promise<{ nodeCount: number; edgeCount: number; nodeTypeCounts: NodeTypeCounts }> {
-    return { ...(await this.counts(projectId)), nodeTypeCounts: await this.nodeTypeCounts(projectId) };
+  async relationshipCounts(projectId: string): Promise<RelationshipCounts> {
+    const counts: RelationshipCounts = {};
+    for (const edge of this.edgesOf(projectId)) {
+      counts[edge.relationship] = (counts[edge.relationship] ?? 0) + 1;
+    }
+    return counts;
   }
 
-  async searchNodes(projectId: string, term: string, limit: number): Promise<CodeNode[]> {
+  async composition(projectId: string): Promise<{
+    nodeCount: number;
+    edgeCount: number;
+    nodeTypeCounts: NodeTypeCounts;
+    relationshipCounts: RelationshipCounts;
+  }> {
+    return {
+      ...(await this.counts(projectId)),
+      nodeTypeCounts: await this.nodeTypeCounts(projectId),
+      relationshipCounts: await this.relationshipCounts(projectId),
+    };
+  }
+
+  /** Mirrors the SQL: matches name, qualified name and path, and pages. */
+  async searchNodes(
+    projectId: string,
+    term: string,
+    options: { nodeTypes?: CodeNodeType[] | undefined; limit: number; offset: number },
+  ): Promise<{ nodes: CodeNode[]; total: number }> {
     const needle = term.toLowerCase();
-    return this.nodesOf(projectId)
+    const allowed = options.nodeTypes ? new Set(options.nodeTypes) : null;
+
+    const matched = this.nodesOf(projectId)
+      .filter((node) => !allowed || allowed.has(node.type))
       .filter(
         (node) =>
           node.name.toLowerCase().includes(needle) ||
-          (node.filePath ?? '').toLowerCase().includes(needle),
-      )
-      .slice(0, limit);
+          (node.qualifiedName ?? '').toLowerCase().includes(needle) ||
+          (node.filePath ?? '').toLowerCase().includes(needle) ||
+          node.type === needle,
+      );
+
+    return {
+      nodes: matched.slice(options.offset, options.offset + options.limit),
+      total: matched.length,
+    };
   }
 
   async traverse(
@@ -249,6 +281,7 @@ export class InMemoryGraphStore {
       depth: number;
       nodeTypes?: CodeNodeType[] | undefined;
       relationships?: CodeRelationship[] | undefined;
+      direction?: GraphDirection | undefined;
       limit: number;
     },
   ): Promise<CodeGraph & { truncated: boolean }> {
@@ -272,9 +305,14 @@ export class InMemoryGraphStore {
       const depth = depths.get(current) as number;
       if (depth >= options.depth) continue;
 
+      const direction = options.direction ?? 'both';
+
       for (const edge of edges) {
         if (allowedRelationships && !allowedRelationships.has(edge.relationship)) continue;
-        if (edge.sourceNodeId !== current && edge.targetNodeId !== current) continue;
+
+        const leaves = edge.sourceNodeId === current && direction !== 'incoming';
+        const arrives = edge.targetNodeId === current && direction !== 'outgoing';
+        if (!leaves && !arrives) continue;
 
         const other = edge.sourceNodeId === current ? edge.targetNodeId : edge.sourceNodeId;
         if (depths.has(other)) continue;
@@ -310,6 +348,7 @@ export class InMemoryGraphStore {
     options: {
       nodeTypes?: CodeNodeType[] | undefined;
       relationships?: CodeRelationship[] | undefined;
+      priorityNodeTypes?: CodeNodeType[] | undefined;
       limit: number;
     },
   ): Promise<CodeGraph & { truncated: boolean }> {
@@ -325,10 +364,15 @@ export class InMemoryGraphStore {
     }
 
     const allowedTypes = options.nodeTypes ? new Set(options.nodeTypes) : null;
+    const priority = options.priorityNodeTypes ? new Set(options.priorityNodeTypes) : null;
+    const rank = (node: CodeNode): number => (priority?.has(node.type) ? 0 : 1);
+
     const ranked = this.nodesOf(projectId)
       .filter((node) => degree.has(node.id))
       .filter((node) => !allowedTypes || allowedTypes.has(node.type))
-      .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
+      .sort(
+        (a, b) => rank(a) - rank(b) || (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0),
+      );
 
     const selected = ranked.slice(0, options.limit);
     const ids = new Set(selected.map((node) => node.id));
@@ -357,6 +401,92 @@ export class InMemoryGraphStore {
       .map((edge) => nodes.get(direction === 'outgoing' ? edge.targetNodeId : edge.sourceNodeId))
       .filter((node): node is CodeNode => node !== undefined)
       .slice(0, limit);
+  }
+
+  /**
+   * Mirrors `GraphRepository.nodeRelations`: one sweep over the edges touching
+   * the node, bucketed by relationship and direction.
+   */
+  async nodeRelations(
+    projectId: string,
+    nodeId: string,
+    limitPerSection: number,
+  ): Promise<{
+    callers: CodeNode[];
+    callees: CodeNode[];
+    references: CodeNode[];
+    dependencies: RelatedNode[];
+    dependents: RelatedNode[];
+    apis: RelatedNode[];
+    databases: RelatedNode[];
+  }> {
+    const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+
+    const relations = {
+      callers: [] as CodeNode[],
+      callees: [] as CodeNode[],
+      references: [] as CodeNode[],
+      dependencies: [] as RelatedNode[],
+      dependents: [] as RelatedNode[],
+      apis: [] as RelatedNode[],
+      databases: [] as RelatedNode[],
+    };
+
+    const dataRelationships = new Set<CodeRelationship>([
+      'READS_FROM',
+      'WRITES_TO',
+      'PUBLISHES',
+      'SUBSCRIBES',
+    ]);
+    const dataTypes = new Set<CodeNodeType>(['database', 'table', 'queue', 'event']);
+    const dependencyRelationships = new Set<CodeRelationship>(DEPENDENCY_RELATIONSHIPS);
+
+    const push = <T>(bucket: T[], value: T): void => {
+      if (bucket.length < limitPerSection) bucket.push(value);
+    };
+
+    for (const edge of this.edgesOf(projectId)) {
+      const outgoing = edge.sourceNodeId === nodeId;
+      const incoming = edge.targetNodeId === nodeId;
+      if (!outgoing && !incoming) continue;
+
+      const other = nodes.get(outgoing ? edge.targetNodeId : edge.sourceNodeId);
+      if (!other) continue;
+
+      const related: RelatedNode = {
+        ...other,
+        relationship: edge.relationship,
+        direction: outgoing ? 'outgoing' : 'incoming',
+        ...(typeof edge.metadata?.confidence === 'string'
+          ? { confidence: edge.metadata.confidence as RelatedNode['confidence'] }
+          : {}),
+        ...(typeof edge.metadata?.source === 'string'
+          ? { evidenceSource: edge.metadata.source }
+          : {}),
+      };
+
+      if (edge.relationship === 'CALLS') {
+        push(outgoing ? relations.callees : relations.callers, other);
+        continue;
+      }
+      if (edge.relationship === 'REFERENCES' && incoming) {
+        push(relations.references, other);
+        continue;
+      }
+      if (edge.relationship === 'ROUTES_TO' && other.type === 'api') {
+        push(relations.apis, related);
+        continue;
+      }
+      if (dataRelationships.has(edge.relationship) && dataTypes.has(other.type)) {
+        push(relations.databases, related);
+        continue;
+      }
+      if (dependencyRelationships.has(edge.relationship)) {
+        push(outgoing ? relations.dependencies : relations.dependents, related);
+      }
+    }
+
+    return relations;
   }
 
   async callers(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {

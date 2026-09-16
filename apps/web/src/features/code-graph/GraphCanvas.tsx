@@ -1,13 +1,15 @@
-import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useRef, type Ref } from 'react';
 import cytoscape, { type Core, type ElementDefinition, type StylesheetStyle } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import type { CodeEdge, CodeGraph, CodeNode } from '../../types/index.js';
 import {
+  DASHED_RELATIONSHIPS,
+  LABELLED_RELATIONSHIPS,
   NODE_SHAPES,
   NODE_SIZES,
   nodeColor,
+  nodeLabel,
   relationshipColor,
-  STRUCTURAL_RELATIONSHIPS,
 } from './graph-style.js';
 
 cytoscape.use(dagre);
@@ -67,6 +69,8 @@ export interface GraphCanvasProps {
   layout: GraphLayout;
   selectedNodeId: string | null;
   selectedEdgeId: string | null;
+  /** Nodes whose neighbourhood has already been pulled in. */
+  expandedNodeIds: ReadonlySet<string>;
   onSelectNode: (node: CodeNode) => void;
   onSelectEdge: (edge: CodeEdge) => void;
   onExpandNode: (node: CodeNode) => void;
@@ -74,19 +78,21 @@ export interface GraphCanvasProps {
   ref?: Ref<GraphCanvasHandle>;
 }
 
-function toElements(graph: CodeGraph): ElementDefinition[] {
+function toElements(graph: CodeGraph, expanded: ReadonlySet<string>): ElementDefinition[] {
   const nodeIds = new Set(graph.nodes.map((node) => node.id));
 
   const nodes: ElementDefinition[] = graph.nodes.map((node) => ({
     group: 'nodes',
     data: {
       id: node.id,
-      label: node.name,
+      label: nodeLabel(node),
       type: node.type,
       color: nodeColor(node.type),
       // Shape and size are the second and third channels of the encoding:
-      // hue alone cannot separate ten node types (see graph-style.ts).
+      // hue alone cannot separate twenty-one node types (see graph-style.ts).
       size: NODE_SIZES[node.type],
+      // Drawn as a ring, so an already-expanded node is visibly done.
+      expanded: expanded.has(node.id) ? 1 : 0,
     },
   }));
 
@@ -102,8 +108,20 @@ function toElements(graph: CodeGraph): ElementDefinition[] {
         target: edge.targetNodeId,
         label: edge.relationship,
         color: relationshipColor(edge.relationship),
-        dashed: STRUCTURAL_RELATIONSHIPS.has(edge.relationship) ? 1 : 0,
+        dashed: DASHED_RELATIONSHIPS.has(edge.relationship) ? 1 : 0,
         derived: edge.metadata?.derived === true ? 1 : 0,
+        // Architectural relationships say something the shapes cannot, and
+        // there are few of them on any one canvas, so they carry their name.
+        labelled: LABELLED_RELATIONSHIPS.has(edge.relationship) ? 1 : 0,
+        /*
+         * Dotted means "a weaker observation". A container summary is *not*
+         * that — it is an exact aggregate of member edges, already marked by
+         * its heavier stroke — and since most architectural edges are lifted to
+         * their class, dotting those too would leave the canvas looking
+         * uniformly uncertain and say nothing.
+         */
+        uncertain:
+          edge.metadata?.confidence === 'medium' && edge.metadata?.derived !== true ? 1 : 0,
       },
     }));
 
@@ -115,6 +133,7 @@ export function GraphCanvas({
   layout,
   selectedNodeId,
   selectedEdgeId,
+  expandedNodeIds,
   onSelectNode,
   onSelectEdge,
   onExpandNode,
@@ -133,6 +152,13 @@ export function GraphCanvas({
   const edgesById = useRef(new Map<string, CodeEdge>());
   nodesById.current = new Map(graph.nodes.map((node) => [node.id, node]));
   edgesById.current = new Map(graph.edges.map((edge) => [edge.id, edge]));
+
+  /**
+   * Element construction is the expensive part of a render, and an expansion
+   * changes the graph by a handful of nodes. Memoising on the two inputs keeps
+   * a selection change from rebuilding anything.
+   */
+  const elements = useMemo(() => toElements(graph, expandedNodeIds), [graph, expandedNodeIds]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -178,6 +204,11 @@ export function GraphCanvas({
             'font-weight': 'bold' as unknown as number,
           },
         },
+        // An expanded node wears a ring, so the same click is not made twice.
+        {
+          selector: 'node[expanded = 1]',
+          style: { 'border-width': 3, 'border-color': '#55637a' },
+        },
         ...SHAPE_RULES,
         { selector: 'node.faded', style: { opacity: 0.25 } },
         {
@@ -194,6 +225,22 @@ export function GraphCanvas({
         },
         { selector: 'edge[dashed = 1]', style: { 'line-style': 'dashed', opacity: 0.45 } },
         { selector: 'edge[derived = 1]', style: { width: 2.4 } },
+        { selector: 'edge[uncertain = 1]', style: { 'line-style': 'dotted' } },
+        {
+          selector: 'edge[labelled = 1]',
+          style: {
+            label: 'data(label)',
+            color: '#9fb0c8',
+            'font-size': '8px',
+            'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            'text-rotation': 'autorotate',
+            'text-background-color': '#060910',
+            'text-background-opacity': 0.82,
+            'text-background-padding': '2px',
+            'text-background-shape': 'roundrectangle',
+            'min-zoomed-font-size': 8,
+          },
+        },
         {
           selector: 'edge.selected-edge',
           style: {
@@ -243,12 +290,24 @@ export function GraphCanvas({
     const cy = cyRef.current;
     if (!cy) return;
 
+    // Positions of nodes already on the canvas are kept, so expanding a node
+    // grows the picture instead of rearranging what the user was looking at.
+    const previous = new Map(cy.nodes().map((node) => [node.id(), { ...node.position() }]));
+    const isFirstRender = previous.size === 0;
+
     cy.batch(() => {
       cy.elements().remove();
-      cy.add(toElements(graph));
+      cy.add(elements);
     });
 
     if (cy.nodes().length === 0) return;
+
+    const added = cy.nodes().filter((node) => !previous.has(node.id()));
+
+    for (const [id, position] of previous) {
+      const node = cy.getElementById(id);
+      if (node.nonempty()) node.position(position);
+    }
 
     // Dagre for both modes. Code relationships are directed — a controller
     // calls a service calls a repository — so a layered left-to-right reading
@@ -271,10 +330,14 @@ export function GraphCanvas({
 
     const run = cy.layout(options as cytoscape.LayoutOptions);
     run.one('layoutstop', () => {
-      fitWithin(cy);
+      // A fresh view is framed; an expansion is not, so the user keeps their
+      // viewport unless the new nodes landed outside it.
+      if (isFirstRender || added.length === 0 || added.length > previous.size) {
+        fitWithin(cy);
+      }
     });
     run.run();
-  }, [graph, layout]);
+  }, [elements, layout]);
 
   // Selection highlighting is a style pass, not a re-layout.
   useEffect(() => {
@@ -302,7 +365,7 @@ export function GraphCanvas({
         }
       }
     });
-  }, [selectedNodeId, selectedEdgeId, graph]);
+  }, [selectedNodeId, selectedEdgeId, elements]);
 
   useImperativeHandle(
     ref,
@@ -327,5 +390,7 @@ export function GraphCanvas({
     [],
   );
 
-  return <div className="graph-canvas" ref={containerRef} role="application" aria-label="Code graph" />;
+  return (
+    <div className="graph-canvas" ref={containerRef} role="application" aria-label="Code graph" />
+  );
 }

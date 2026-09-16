@@ -1,4 +1,4 @@
-import type { CodeNode, CodeNodeType, CodeRelationship } from '@ckg/shared';
+import type { CodeNode, CodeNodeType, CodeRelationship, EdgeEvidence } from '@ckg/shared';
 import type { ScipIndex } from '@ckg/scip';
 import type { GraphIdentityContext } from '../model/identity.js';
 import type { GraphBuildResult, GraphBuildStats } from '../model/types.js';
@@ -6,6 +6,7 @@ import {
   isCallableNodeType,
   isContainerNodeType,
   normalizeDocument,
+  qualifiedNameOf,
   type NormalizedDefinition,
   type NormalizedDocument,
 } from '../normalizer/index.js';
@@ -26,7 +27,18 @@ import { NodeAccumulator } from './node-accumulator.js';
  * It is also language agnostic. Everything it knows about a symbol arrives as
  * the neutral `ScipSymbolKind` vocabulary produced by `@ckg/scip`; no syntax,
  * file extension or framework convention is interpreted here.
+ *
+ * Every edge it emits is evidenced `scip`: literal relationships at `high`
+ * confidence, because they come from the compiler, and the container-level
+ * aggregates it derives at `medium`, because those are a summary rather than
+ * something the compiler said.
  */
+
+/** Relationships read straight out of the index. */
+const SCIP_EVIDENCE: EdgeEvidence = { source: 'scip', confidence: 'high' };
+
+/** Aggregates this builder derives from those relationships. */
+const DERIVED_EVIDENCE: EdgeEvidence = { source: 'graph-builder', confidence: 'medium' };
 
 export interface ScipGraphBuilderOptions {
   identity: GraphIdentityContext;
@@ -65,6 +77,7 @@ export class ScipGraphBuilder {
       type: 'repository',
       name: this.options.repositoryName,
       symbolKey: 'repository',
+      qualifiedName: this.options.repositoryName,
       metadata: {
         indexer: index.metadata.toolInfo.name,
         indexerVersion: index.metadata.toolInfo.version,
@@ -101,7 +114,7 @@ export class ScipGraphBuilder {
         const ownerRecord = ownerId ? symbols.get(ownerId) : undefined;
         const parentNodeId = ownerRecord?.nodeId ?? fileNode.id;
 
-        edges.add(parentNodeId, 'CONTAINS', node.id);
+        edges.add(parentNodeId, 'CONTAINS', node.id, { evidence: SCIP_EVIDENCE });
 
         symbols.set(definition.symbol.id, {
           nodeId: node.id,
@@ -152,7 +165,7 @@ export class ScipGraphBuilder {
         if (target.documentPath !== document.relativePath) {
           const targetFileNode = fileNodeByPath.get(target.documentPath);
           if (targetFileNode && targetFileNode.id !== fileNode.id) {
-            edges.add(fileNode.id, 'IMPORTS', targetFileNode.id);
+            edges.add(fileNode.id, 'IMPORTS', targetFileNode.id, { evidence: SCIP_EVIDENCE });
           }
         }
 
@@ -165,7 +178,7 @@ export class ScipGraphBuilder {
           ? 'CALLS'
           : 'REFERENCES';
 
-        edges.add(sourceNodeId, relationship, target.nodeId);
+        edges.add(sourceNodeId, relationship, target.nodeId, { evidence: SCIP_EVIDENCE });
 
         if (this.deriveContainerEdges) {
           this.addDerivedContainerEdge(edges, source, target, relationship);
@@ -185,7 +198,9 @@ export class ScipGraphBuilder {
           const target = symbols.get(relation.symbolId);
           if (!target) continue;
 
-          edges.add(source.nodeId, inheritanceRelationship(target.nodeType), target.nodeId);
+          edges.add(source.nodeId, inheritanceRelationship(target.nodeType), target.nodeId, {
+            evidence: SCIP_EVIDENCE,
+          });
         }
       }
     }
@@ -226,9 +241,10 @@ export class ScipGraphBuilder {
         type: 'directory',
         name: segment,
         symbolKey: currentPath,
+        qualifiedName: currentPath,
         filePath: currentPath,
       });
-      edges.add(parentId, 'CONTAINS', directoryNode.id);
+      edges.add(parentId, 'CONTAINS', directoryNode.id, { evidence: SCIP_EVIDENCE });
       parentId = directoryNode.id;
     }
 
@@ -236,10 +252,11 @@ export class ScipGraphBuilder {
       type: 'file',
       name: fileName,
       symbolKey: document.relativePath,
+      qualifiedName: document.relativePath,
       filePath: document.relativePath,
       metadata: document.language ? { language: document.language } : {},
     });
-    edges.add(parentId, 'CONTAINS', fileNode.id);
+    edges.add(parentId, 'CONTAINS', fileNode.id, { evidence: SCIP_EVIDENCE });
 
     return fileNode;
   }
@@ -265,11 +282,15 @@ export class ScipGraphBuilder {
       type: definition.nodeType,
       name: definition.symbol.name,
       symbolKey: definition.symbol.id,
+      qualifiedName: qualifiedNameOf(definition.symbol.identity, document.relativePath),
       filePath: document.relativePath,
       // SCIP positions are zero-based; the graph exposes one-based line numbers
       // because that is what every editor and reviewer means by "line 42".
+      // Character offsets stay zero-based, as every editor API expects.
       startLine: range.startLine + 1,
+      startCharacter: range.startCharacter,
       endLine: range.endLine + 1,
+      endCharacter: range.endCharacter,
       metadata,
     });
   }
@@ -297,7 +318,10 @@ export class ScipGraphBuilder {
 
     if (edges.has(sourceContainer, relationship, targetContainer)) return;
 
-    edges.add(sourceContainer, relationship, targetContainer, { derived: true });
+    edges.add(sourceContainer, relationship, targetContainer, {
+      evidence: DERIVED_EVIDENCE,
+      metadata: { derived: true },
+    });
   }
 }
 

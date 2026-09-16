@@ -4,9 +4,6 @@
  */
 export type {
   AnalysisJob,
-  NodeFamily,
-  NodeTypeCounts,
-  ProjectSummary,
   AnalysisStatus,
   ApiErrorBody,
   ApiResponse,
@@ -15,24 +12,51 @@ export type {
   CodeNode,
   CodeNodeType,
   CodeRelationship,
+  ConfidenceLevel,
+  EdgeEvidence,
+  GraphDirection,
+  GraphProjection,
+  GraphProjectionId,
+  NodeCategory,
   NodeDetail,
+  NodeFamily,
+  NodeTypeCounts,
   Project,
+  ProjectSummary,
+  RelatedNode,
+  RelationshipCounts,
+  RelationshipGroup,
   Repository,
   RepositorySourceType,
 } from '@ckg/shared';
 
 export {
+  ARCHITECTURAL_NODE_TYPES,
   CODE_NODE_TYPES,
   CODE_RELATIONSHIPS,
+  CONFIDENCE_LEVELS,
+  FAMILIES_BY_CATEGORY,
+  GRAPH_DIRECTIONS,
+  NODE_CATEGORIES,
+  NODE_CATEGORY_BY_FAMILY,
+  NODE_CATEGORY_LABELS,
   NODE_FAMILIES,
   NODE_FAMILY_BY_TYPE,
   NODE_FAMILY_LABELS,
+  NODE_TYPE_LABELS,
+  edgeEvidence,
+  isArchitecturalNodeType,
 } from '@ckg/shared';
 
+/** Server-reported facts about the slice that came back. */
 export interface GraphMeta {
   mode: 'traversal' | 'overview';
   rootNodeId: string | null;
   depth: number;
+  direction: import('@ckg/shared').GraphDirection;
+  projection: import('@ckg/shared').GraphProjectionId | null;
+  nodeTypes: import('@ckg/shared').CodeNodeType[] | null;
+  relationships: import('@ckg/shared').CodeRelationship[] | null;
   nodeCount: number;
   edgeCount: number;
   truncated: boolean;
@@ -43,12 +67,23 @@ export interface GraphSummary {
   edgeCount: number;
   rootNodeId: string | null;
   nodeTypeCounts: import('@ckg/shared').NodeTypeCounts;
+  relationshipCounts: import('@ckg/shared').RelationshipCounts;
 }
 
 /** Everything the toolbar controls, in one object the page owns. */
 export interface GraphViewState {
   rootNodeId: string | null;
   depth: number;
+  projection: import('@ckg/shared').GraphProjectionId | null;
   nodeTypes: import('@ckg/shared').CodeNodeType[];
   relationships: import('@ckg/shared').CodeRelationship[];
+  direction: import('@ckg/shared').GraphDirection;
+}
+
+/** A page of search results, with the full count behind it. */
+export interface GraphSearchPage {
+  nodes: import('@ckg/shared').CodeNode[];
+  total: number;
+  limit: number;
+  offset: number;
 }

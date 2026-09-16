@@ -6,3 +6,5 @@ export * from './GraphSearch.js';
 export * from './GraphToolbar.js';
 export * from './NodeInspector.js';
 export * from './graph-style.js';
+export * from './merge-graph.js';
+export * from './view-presets.js';

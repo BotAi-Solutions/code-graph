@@ -11,7 +11,13 @@
 import path from 'node:path';
 import { createLogger } from '@ckg/shared/logger';
 import { loadEnvFile } from '@ckg/shared/node';
-import { databaseEnvSchema, parseEnv, runtimeEnvSchema, scipEnvSchema } from '@ckg/shared';
+import {
+  databaseEnvSchema,
+  graphProjection,
+  parseEnv,
+  runtimeEnvSchema,
+  scipEnvSchema,
+} from '@ckg/shared';
 import {
   AnalysisJobRepository,
   GraphRepository,
@@ -111,15 +117,34 @@ async function main(): Promise<void> {
     process.stdout.write(`  edges     ${String(stats.edgeCount)}\n`);
     process.stdout.write(`  duration  ${String(stats.durationMs)}ms\n`);
 
-    const overview = await graph.overview(project.id, { limit: 12 });
-    const names = new Map(overview.nodes.map((node) => [node.id, `${node.type}:${node.name}`]));
+    const composition = await graph.composition(project.id);
+    process.stdout.write('\nnodes by type\n');
+    for (const [type, count] of Object.entries(composition.nodeTypeCounts).sort(
+      (a, b) => (b[1] ?? 0) - (a[1] ?? 0),
+    )) {
+      process.stdout.write(`  ${type.padEnd(18)} ${String(count)}\n`);
+    }
 
-    process.stdout.write('\noverview edges\n');
-    for (const edge of overview.edges.slice(0, 20)) {
+    // The architecture projection, which is what the UI opens on: the API
+    // routes, services and data stores, ranked ahead of everything else.
+    const architecture = graphProjection('architecture');
+    const overview = await graph.overview(project.id, {
+      nodeTypes: [...architecture.nodeTypes],
+      relationships: [...architecture.relationships],
+      priorityNodeTypes: [...architecture.priorityNodeTypes],
+      limit: 18,
+    });
+    const names = new Map(
+      overview.nodes.map((node) => [node.id, `${node.type}:${node.qualifiedName ?? node.name}`]),
+    );
+
+    process.stdout.write('\narchitecture\n');
+    for (const edge of overview.edges.slice(0, 24)) {
+      const confidence = String(edge.metadata?.confidence ?? '');
       process.stdout.write(
-        `  ${(names.get(edge.sourceNodeId) ?? '?').padEnd(30)} -${edge.relationship}-> ${
+        `  ${(names.get(edge.sourceNodeId) ?? '?').padEnd(34)} -${edge.relationship}-> ${(
           names.get(edge.targetNodeId) ?? '?'
-        }\n`,
+        ).padEnd(30)} ${confidence}\n`,
       );
     }
 

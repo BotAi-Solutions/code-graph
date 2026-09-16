@@ -9,6 +9,7 @@ and the codebase keeps them apart deliberately.
 | --- | --- | --- |
 | **SCIP** | An open interchange format for code-intelligence data, and the indexers that emit it. An input we consume. | `packages/scip` |
 | **Code knowledge graph** | *Our* normalised model of a codebase: typed nodes and typed relationships. The product. | `packages/graph` |
+| **Source analysis** | The second source of facts: AST and framework analysis, for what a compiler has no opinion about. | `packages/analysis` |
 | **Graph database** | Where the graph is persisted. Today PostgreSQL. An implementation detail. | `packages/database` |
 | **Graph API** | The traversal-first HTTP contract over the graph. | `apps/api` |
 | **Graph UI** | The visual explorer. | `apps/web` |
@@ -16,9 +17,16 @@ and the codebase keeps them apart deliberately.
 The internal graph is **not** a "Sourcegraph graph". SCIP is a format we read,
 the way a compiler reads source. The vocabulary in `packages/graph` is ours: we
 choose what a node is, what an edge means, and what identity a symbol has. That
-is what makes it possible to add a second source of facts later — an AST
-analyzer, a runtime tracer, an embedding index — without renegotiating the
-model.
+is what made it possible to add the second source of facts — the source
+analyzers in `packages/analysis` — without renegotiating the model, and what
+will make a third (a runtime tracer, an embedding index) the same kind of
+addition.
+
+A compiler can tell you that `UserRepository.create` calls `Pool.query`. It has
+no opinion about the fact that `POST /users` reaches that method, or that the
+statement it runs writes to a table called `users`. Those are the facts that
+turn a symbol graph into a knowledge graph, and they are read from the syntax by
+analyzers — never guessed from a file name.
 
 ---
 
@@ -47,9 +55,24 @@ ScipIndex  (our types — no protobuf)
         ▼
 ScipIndex with language-specific kinds recovered
         │
-        │  ScipGraphBuilder          packages/graph/src/builder
+        │  ScipAnalyzer              packages/graph/src/analysis
+        │    └─ ScipGraphBuilder     packages/graph/src/builder
         ▼
-CodeGraph  { nodes, edges }
+CodeGraph  { nodes, edges }          — the code-intelligence stage
+        │
+        │  source analyzers          packages/analysis
+        │    file · import · structure · api · database ·
+        │    external-service · messaging
+        ▼
+CodeGraph  + APIs, tables, queues, events, integrations, dependencies
+        │
+        │  FrameworkAnalyzer         packages/analysis  (classification stage)
+        ▼
+CodeGraph  + frameworks and class roles
+        │
+        │  CodeGraphAssembler        packages/graph/src/analysis
+        ▼                            — owns identity and the merge rules
+CodeGraph  { nodes, edges, stats }
         │
         │  GraphRepository           packages/database
         ▼
@@ -116,18 +139,49 @@ enters the graph, the logs or the database.
 
 The domain. `model/` owns identity, `normalizer/` turns SCIP documents into
 position-resolved definitions and references, `builder/` assembles the graph,
-`traversal/` walks it in memory, `serializers/` renders it deterministically.
+`analysis/` defines the analyzer seam and the merge, `traversal/` walks the graph
+in memory, `serializers/` renders it deterministically.
 
 The builder is language-agnostic by construction: everything it knows about a
 symbol arrives as the neutral `ScipSymbolKind` vocabulary. It never inspects a
 file extension, a syntax token or a framework convention.
 
-It is also deterministic by construction — content-hash identities, `Map`
-accumulators, sorted output. Running it twice over the same index produces
-byte-identical results, which is what makes persistence an idempotent replace
-and lets the UI keep its selection across a re-analysis.
+`analysis/` is the extension point. `CodeAnalyzer` is the interface every source
+of facts implements — SCIP included — and `CodeGraphAssembler` owns what happens
+when two of them describe the same thing. Its rules are short and are the
+graph's guarantees: identity decides everything, the first writer wins for
+nodes, later analyzers annotate rather than replace, no edge exists without both
+endpoints, and every edge carries evidence. `SymbolIndex` is how an analyzer
+finds a node to point at, and it only answers questions scoped by file — which
+is what keeps resolution from degenerating into name matching.
+
+The whole pipeline is deterministic by construction — content-hash identities,
+`Map` accumulators, fixed analyzer order, sorted output. Running it twice over
+the same commit produces byte-identical results, which is what makes persistence
+an idempotent replace and lets the UI keep its selection across a re-analysis.
 
 See [graph-model.md](graph-model.md).
+
+### `packages/analysis`
+
+The second analysis layer: what the compiler has no opinion about.
+
+- **`source/`** — one pass over the repository, shared by every analyzer: files
+  read once, parsed once with the TypeScript compiler's own parser (syntax only,
+  no type checker, so a repository whose dependencies are not installed still
+  analyses), and one binding table per module recording what every name refers
+  to. A live `.env` is listed but never read: its path is a fact about the
+  service, its contents are credentials.
+- **`detectors/`** — the pattern knowledge, in tables: HTTP methods, SQL
+  statement forms, Prisma schema syntax, vendor packages and API hosts,
+  frameworks. Data rather than code, so adding a vendor is a line.
+- **`analyzers/`** — one analyzer per kind of fact, each returning a description
+  of what it observed with the evidence for it, and nothing when the evidence is
+  weak.
+
+Parsing rather than pattern-matching text is the basis for the evidence quality
+the graph promises: `@Controller('/users')` inside a comment is not a
+controller, and a regex cannot tell the difference.
 
 ### `packages/database`
 
@@ -200,6 +254,14 @@ returns `202` with a `QUEUED` job; the client polls.
 **Bounded reads.** The graph API never returns a whole repository. A request
 either traverses from a root node with a small default depth, or asks for the
 ranked overview. Both are capped, and the response says when it was truncated.
+The UI grows a view by expanding one node at a time — the same endpoint at depth
+1, merged client-side by id — rather than by fetching more.
+
+**Evidence.** Every edge records what observed it and how much that observer
+trusts it. An analyzer that cannot resolve a reference emits nothing rather than
+a guess, and the assembler has no way to record an edge without evidence. This
+is the property the whole graph's usefulness rests on: a graph you have to
+second-guess is worse than a smaller one you can trust.
 
 ---
 
@@ -210,6 +272,7 @@ The phases that are explicitly out of scope each attach at an existing seam:
 | Later phase | Where it attaches | What changes |
 | --- | --- | --- |
 | More languages | `ScipIndexerRegistry.register()` | One `ScipIndexer`, optionally one `ScipSymbolRefiner` |
+| More frameworks | `createDefaultAnalyzers()` | One `CodeAnalyzer`, or one entry in a detector table |
 | BullMQ / distributed workers | `AnalysisJobQueue` | One implementation; the job is untouched |
 | Qdrant + embeddings | Beside `GraphRepository` | Node text is already addressable by stable id |
 | CodeRAG | Above the graph API | Reads the same traversal contract the UI uses |

@@ -7,6 +7,7 @@ import type {
   CodeNodeType,
   CodeRelationship,
   Project,
+  RelatedNode,
   Repository,
   RepositorySourceType,
   SupportedLanguage,
@@ -55,9 +56,12 @@ export interface CodeNodeRow {
   project_id: string;
   node_type: string;
   name: string;
+  qualified_name: string | null;
   file_path: string | null;
   start_line: number | null;
+  start_character: number | null;
   end_line: number | null;
+  end_character: number | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -115,10 +119,38 @@ export function toCodeNode(row: CodeNodeRow): CodeNode {
     type: row.node_type as CodeNodeType,
     name: row.name,
   };
+  if (row.qualified_name !== null) node.qualifiedName = row.qualified_name;
   if (row.file_path !== null) node.filePath = row.file_path;
   if (row.start_line !== null) node.startLine = row.start_line;
+  if (row.start_character !== null) node.startCharacter = row.start_character;
   if (row.end_line !== null) node.endLine = row.end_line;
+  if (row.end_character !== null) node.endCharacter = row.end_character;
   if (row.metadata && Object.keys(row.metadata).length > 0) node.metadata = row.metadata;
+  return node;
+}
+
+/**
+ * A neighbour plus how it is related, as the node-detail query returns it. The
+ * relationship travels with the node so the inspector can label each entry
+ * without a second round trip.
+ */
+export interface RelatedNodeRow extends CodeNodeRow {
+  relationship: string;
+  direction: string;
+  edge_metadata: Record<string, unknown> | null;
+}
+
+export function toRelatedNode(row: RelatedNodeRow): RelatedNode {
+  const node = toCodeNode(row) as RelatedNode;
+  node.relationship = row.relationship as CodeRelationship;
+  node.direction = row.direction === 'incoming' ? 'incoming' : 'outgoing';
+
+  const confidence = row.edge_metadata?.confidence;
+  if (typeof confidence === 'string') node.confidence = confidence as RelatedNode['confidence'];
+
+  const source = row.edge_metadata?.source;
+  if (typeof source === 'string') node.evidenceSource = source;
+
   return node;
 }
 
@@ -135,6 +167,6 @@ export function toCodeEdge(row: CodeEdgeRow): CodeEdge {
 }
 
 export const CODE_NODE_COLUMNS =
-  'id, project_id, node_type, name, file_path, start_line, end_line, metadata';
+  'id, project_id, node_type, name, qualified_name, file_path, start_line, start_character, end_line, end_character, metadata';
 export const CODE_EDGE_COLUMNS =
   'id, project_id, source_node_id, target_node_id, relationship, metadata';

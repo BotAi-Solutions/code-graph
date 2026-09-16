@@ -1,13 +1,19 @@
 import { z } from 'zod';
-import { CODE_NODE_TYPES, CODE_RELATIONSHIPS } from '../types/graph.js';
+import { CODE_NODE_TYPES, CODE_RELATIONSHIPS, CONFIDENCE_LEVELS } from '../types/graph.js';
 import { ANALYSIS_STATUSES, REPOSITORY_SOURCE_TYPES } from '../types/domain.js';
 import { SUPPORTED_LANGUAGES } from '../types/language.js';
 import {
   GRAPH_DEFAULT_DEPTH,
+  GRAPH_DEFAULT_DIRECTION,
+  GRAPH_DEFAULT_NEIGHBOUR_LIMIT,
   GRAPH_DEFAULT_NODE_LIMIT,
+  GRAPH_DEFAULT_SEARCH_LIMIT,
+  GRAPH_DIRECTIONS,
   GRAPH_MAX_DEPTH,
   GRAPH_MAX_NODE_LIMIT,
+  GRAPH_MAX_SEARCH_LIMIT,
 } from '../constants/graph.js';
+import { GRAPH_PROJECTION_IDS } from '../constants/projections.js';
 
 /**
  * Wire contracts shared by the API and the web client. Defining them once means
@@ -151,8 +157,15 @@ export const graphQuerySchema = z.object({
   /** Traversal root. When omitted the API seeds from the repository root node. */
   rootNodeId: z.string().min(1).max(512).optional(),
   depth: z.coerce.number().int().min(0).max(GRAPH_MAX_DEPTH).default(GRAPH_DEFAULT_DEPTH),
+  /**
+   * Named slice of the graph. Supplies the node-type and relationship filters
+   * when the caller gives none, and ranks the overview. Explicit `nodeTypes` /
+   * `relationships` always win over the projection's defaults.
+   */
+  projection: z.enum(GRAPH_PROJECTION_IDS).optional(),
   nodeTypes: csvEnum(CODE_NODE_TYPES),
   relationships: csvEnum(CODE_RELATIONSHIPS),
+  direction: z.enum(GRAPH_DIRECTIONS).default(GRAPH_DEFAULT_DIRECTION),
   limit: z.coerce
     .number()
     .int()
@@ -161,14 +174,30 @@ export const graphQuerySchema = z.object({
     .default(GRAPH_DEFAULT_NODE_LIMIT),
 });
 
+/** Search accepts a term plus an optional node-type narrowing, and pages. */
+export const graphSearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(200),
+  nodeTypes: csvEnum(CODE_NODE_TYPES),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(GRAPH_MAX_SEARCH_LIMIT)
+    .default(GRAPH_DEFAULT_SEARCH_LIMIT),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export const codeNodeSchema = z.object({
   id: z.string(),
   projectId: z.uuid(),
   type: z.enum(CODE_NODE_TYPES),
   name: z.string(),
+  qualifiedName: z.string().optional(),
   filePath: z.string().optional(),
   startLine: z.number().int().optional(),
+  startCharacter: z.number().int().optional(),
   endLine: z.number().int().optional(),
+  endCharacter: z.number().int().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -187,21 +216,53 @@ export const codeGraphSchema = z.object({
 });
 
 export const neighbourQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(GRAPH_MAX_NODE_LIMIT).default(100),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(GRAPH_MAX_NODE_LIMIT)
+    .default(GRAPH_DEFAULT_NEIGHBOUR_LIMIT),
 });
+
+/** Sparse by design: a relationship absent from a project has no key. */
+export const relationshipCountsSchema = z.partialRecord(
+  z.enum(CODE_RELATIONSHIPS),
+  z.number().int(),
+);
 
 export const graphSummarySchema = z.object({
   nodeCount: z.number().int(),
   edgeCount: z.number().int(),
   rootNodeId: z.string().nullable(),
   nodeTypeCounts: nodeTypeCountsSchema,
+  relationshipCounts: relationshipCountsSchema,
 });
 
+/**
+ * A neighbour plus how it is related, so the inspector can show
+ * "CreatorRepository.create() — CALLS, scip/high" without a second request.
+ */
+export const relatedNodeSchema = codeNodeSchema.extend({
+  relationship: z.enum(CODE_RELATIONSHIPS),
+  direction: z.enum(['incoming', 'outgoing']),
+  confidence: z.enum(CONFIDENCE_LEVELS).optional(),
+  evidenceSource: z.string().optional(),
+});
+
+/**
+ * The node inspector's payload. `callers`, `callees` and `references` are the
+ * original three sections and keep their exact shape; the sections added since
+ * carry the relationship alongside each neighbour.
+ */
 export const nodeDetailSchema = z.object({
   node: codeNodeSchema,
   callers: z.array(codeNodeSchema),
   callees: z.array(codeNodeSchema),
   references: z.array(codeNodeSchema),
+  dependencies: z.array(relatedNodeSchema),
+  dependents: z.array(relatedNodeSchema),
+  apis: z.array(relatedNodeSchema),
+  databases: z.array(relatedNodeSchema),
 });
 
 export type CreateProjectBody = z.infer<typeof createProjectBodySchema>;
@@ -209,10 +270,14 @@ export type ListProjectsQuery = z.infer<typeof listProjectsQuerySchema>;
 export type CreateRepositoryBody = z.infer<typeof createRepositoryBodySchema>;
 export type CreateAnalysisBody = z.infer<typeof createAnalysisBodySchema>;
 export type GraphQuery = z.infer<typeof graphQuerySchema>;
+export type GraphSearchQuery = z.infer<typeof graphSearchQuerySchema>;
 export type NeighbourQuery = z.infer<typeof neighbourQuerySchema>;
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
+export type RelatedNode = z.infer<typeof relatedNodeSchema>;
+export type GraphSummary = z.infer<typeof graphSummarySchema>;
 
 export const GRAPH_QUERY_DEFAULTS = {
   depth: GRAPH_DEFAULT_DEPTH,
   limit: GRAPH_DEFAULT_NODE_LIMIT,
+  direction: GRAPH_DEFAULT_DIRECTION,
 } as const;

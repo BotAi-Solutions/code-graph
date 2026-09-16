@@ -7,7 +7,8 @@ import type {
 } from '@ckg/database';
 import { LanguageDetectionService } from '@ckg/language-detection';
 import { readScipIndexFile, type ScipIndexerRegistry } from '@ckg/scip';
-import { ScipGraphBuilder } from '@ckg/graph';
+import { CodeGraphAssembler, ScipAnalyzer, type CodeAnalyzer } from '@ckg/graph';
+import { createDefaultAnalyzers, loadSourceFiles } from '@ckg/analysis';
 import { AnalysisWorkspace } from '../services/analysis-workspace.js';
 import { RepositoryLoader } from '../services/repository-loader.js';
 
@@ -15,7 +16,13 @@ import { RepositoryLoader } from '../services/repository-loader.js';
  * The analysis pipeline.
  *
  *   load repository -> detect language -> select indexer -> run SCIP ->
- *   parse index.scip -> build graph -> persist nodes and edges -> complete
+ *   parse index.scip -> build graph -> run source analyzers -> merge ->
+ *   persist nodes and edges -> complete
+ *
+ * SCIP remains the code-intelligence stage and the authority on symbols; the
+ * analyzers add the architectural layer — routes, data stores, integrations,
+ * queues — that no compiler can report. Both enter the graph through the same
+ * `CodeAnalyzer` seam, and `CodeGraphAssembler` owns the merge.
  *
  * Every dependency is injected, so the whole pipeline can be exercised with a
  * fake command runner and an in-memory database. Nothing here knows about HTTP,
@@ -33,6 +40,12 @@ export interface AnalyzeRepositoryJobDependencies {
   workspace: AnalysisWorkspace;
   logger: Logger;
   scipTimeoutMs: number;
+  /**
+   * Source analyzers to run after SCIP. Defaults to the standard set; a test
+   * or a future configuration can pass a narrower one, and passing `[]` gives
+   * exactly the SCIP-only graph this pipeline produced before they existed.
+   */
+  analyzers?: readonly CodeAnalyzer[] | undefined;
 }
 
 export class AnalysisFailedError extends Error {
@@ -92,15 +105,32 @@ export class AnalyzeRepositoryJob {
 
     // --- build ----------------------------------------------------------
     await this.setStatus(job.id, 'BUILDING_GRAPH');
-    const builder = new ScipGraphBuilder({
+
+    // One pass over the source, shared by every analyzer.
+    const sources = await loadSourceFiles(loaded.path);
+
+    const assembler = new CodeGraphAssembler({
       identity: { projectId: job.projectId, repositoryId: repository.id },
       repositoryName: loaded.name,
+      repositoryPath: loaded.path,
+      language,
+      sources,
+      analyzers: [new ScipAnalyzer({ index }), ...(this.deps.analyzers ?? createDefaultAnalyzers())],
     });
-    const graph = builder.build(index);
+
+    const graph = await assembler.assemble();
+
     log.info(
-      { nodes: graph.stats.nodeCount, edges: graph.stats.edgeCount },
+      {
+        nodes: graph.stats.nodeCount,
+        edges: graph.stats.edgeCount,
+        analyzers: graph.analyzersRun,
+        counters: graph.stats.counters,
+        droppedEdges: graph.stats.droppedEdgeCount,
+      },
       'code knowledge graph built',
     );
+    for (const diagnostic of graph.diagnostics) log.warn({ diagnostic }, 'analysis diagnostic');
 
     // --- persist --------------------------------------------------------
     await this.setStatus(job.id, 'PERSISTING');

@@ -65,6 +65,9 @@ export interface AnalysisStats {
 /** Counts of graph nodes per node type, for a project. */
 export type NodeTypeCounts = Partial<Record<import('./graph.js').CodeNodeType, number>>;
 
+/** Counts of graph edges per relationship, for a project. */
+export type RelationshipCounts = Partial<Record<import('./graph.js').CodeRelationship, number>>;
+
 /**
  * A project plus everything the dashboard shows about it, assembled server side
  * so the listing is one request rather than one per project.

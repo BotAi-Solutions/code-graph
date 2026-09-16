@@ -16,6 +16,7 @@ const alias = {
   ).pathname,
   '@ckg/scip': new URL('./packages/scip/src/index.ts', import.meta.url).pathname,
   '@ckg/graph': new URL('./packages/graph/src/index.ts', import.meta.url).pathname,
+  '@ckg/analysis': new URL('./packages/analysis/src/index.ts', import.meta.url).pathname,
   '@ckg/database': new URL('./packages/database/src/index.ts', import.meta.url).pathname,
 };
 
@@ -63,6 +64,15 @@ export default defineConfig({
       {
         resolve: { alias },
         test: {
+          name: 'analysis',
+          root: './packages/analysis',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
+        resolve: { alias },
+        test: {
           name: 'database',
           root: './packages/database',
           environment: 'node',
@@ -83,6 +93,18 @@ export default defineConfig({
         test: {
           name: 'worker',
           root: './apps/worker',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
+        // The web project's pure view logic: what the canvas is handed, and
+        // what it is drawn with. The components themselves are exercised by
+        // running the app, not by a simulated DOM.
+        resolve: { alias },
+        test: {
+          name: 'web',
+          root: './apps/web',
           environment: 'node',
           include: ['tests/**/*.test.ts'],
         },

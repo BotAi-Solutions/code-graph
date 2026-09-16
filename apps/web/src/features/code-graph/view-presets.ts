@@ -1,80 +1,47 @@
-import type { CodeNodeType, CodeRelationship } from '../../types/index.js';
+import { DEFAULT_GRAPH_PROJECTION_ID, GRAPH_PROJECTIONS, graphProjection } from '@ckg/shared';
+import type { CodeNodeType, CodeRelationship, GraphProjection, GraphProjectionId } from '../../types/index.js';
 
 /**
- * Named starting points for the filters.
+ * The toolbar's views, which are the server's projections.
  *
- * A repository graph answers several different questions and they want
- * different slices of it. Presets are just filter combinations — nothing here
- * is a separate code path — but they save a new user from having to guess which
- * of ten node types and six relationships they need.
+ * These used to be client-side filter combinations. They are now the same
+ * definitions the API reads, imported rather than restated, so "Architecture"
+ * in the toolbar and `?projection=architecture` on the wire cannot drift apart —
+ * and so the server can *rank* an overview by what the projection is about,
+ * which no client-side filter could do.
  */
-export interface ViewPreset {
-  id: string;
-  label: string;
-  title: string;
-  nodeTypes: CodeNodeType[];
-  relationships: CodeRelationship[];
+export type ViewPreset = GraphProjection;
+
+export const VIEW_PRESETS: readonly GraphProjection[] = GRAPH_PROJECTIONS;
+
+export const DEFAULT_PRESET_ID: GraphProjectionId = DEFAULT_GRAPH_PROJECTION_ID;
+
+export function defaultPreset(): GraphProjection {
+  return graphProjection(DEFAULT_GRAPH_PROJECTION_ID);
 }
 
-/**
- * The view a project opens on.
- *
- * Not "everything": an unfiltered overview of a real repository is a hairball
- * of methods and variables, and a hairball is not an introduction. Architecture
- * answers the question someone actually arrives with — how is this system put
- * together — and every other view is one click away.
- */
-export const DEFAULT_PRESET_ID = 'architecture';
-
-export const VIEW_PRESETS: ViewPreset[] = [
-  {
-    id: 'everything',
-    label: 'Everything',
-    title: 'No filters: every node type and relationship',
-    nodeTypes: [],
-    relationships: [],
-  },
-  {
-    id: 'architecture',
-    label: 'Architecture',
-    title: 'Types and the behaviour between them — how the system is composed',
-    nodeTypes: ['class', 'interface', 'type'],
-    relationships: ['CALLS', 'REFERENCES', 'IMPLEMENTS', 'EXTENDS'],
-  },
-  {
-    id: 'calls',
-    label: 'Call graph',
-    title: 'Functions and methods, and what calls what',
-    nodeTypes: ['class', 'interface', 'function', 'method'],
-    relationships: ['CALLS'],
-  },
-  {
-    id: 'files',
-    label: 'Files',
-    title: 'The source tree and its file-level dependencies',
-    nodeTypes: ['repository', 'directory', 'file', 'module'],
-    relationships: ['CONTAINS', 'IMPORTS'],
-  },
-];
+export function presetById(id: GraphProjectionId): GraphProjection {
+  return graphProjection(id);
+}
 
 const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && [...a].sort().join() === [...b].sort().join();
 
-/** Which preset the current filters correspond to, if any. */
+/**
+ * Which projection the current filters correspond to, if any.
+ *
+ * The active projection is tracked explicitly by the page, so this only has to
+ * answer the other question: has the user edited the filters away from what the
+ * projection prescribes? When they have, no button is lit.
+ */
 export function matchPreset(
   nodeTypes: readonly CodeNodeType[],
   relationships: readonly CodeRelationship[],
-): string | null {
+): GraphProjectionId | null {
   return (
     VIEW_PRESETS.find(
       (preset) =>
         sameSet(preset.nodeTypes, nodeTypes) && sameSet(preset.relationships, relationships),
     )?.id ?? null
   );
-}
-
-export function defaultPreset(): ViewPreset {
-  const preset = VIEW_PRESETS.find((candidate) => candidate.id === DEFAULT_PRESET_ID);
-  if (!preset) throw new Error(`unknown default preset: ${DEFAULT_PRESET_ID}`);
-  return preset;
 }
