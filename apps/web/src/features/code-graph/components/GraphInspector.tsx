@@ -1,5 +1,11 @@
 import { useMemo } from 'react';
-import type { CodeNode, ConfidenceLevel, NodeDetail, RelatedNode } from '../../../types/index.js';
+import type {
+  CodeNode,
+  ConfidenceLevel,
+  NodeDetail,
+  RelatedNode,
+  SymbolInfo,
+} from '../../../types/index.js';
 import { edgeEvidence } from '../../../types/index.js';
 import { shortenPath } from '../../../utils/format.js';
 import type { CodeGraphModel, GraphEdge, GraphNode } from '../model/graph-types.js';
@@ -40,7 +46,9 @@ export interface GraphInspectorProps {
   focused: boolean;
   focusDepth: number;
   onSelectNode: (nodeId: string) => void;
-  onExpand: (nodeId: string) => void;
+  /** Opens the source viewer at this node's indexed range. */
+  onOpenSource: (nodeId: string) => void;
+  onExpand: (nodeId: string, depth: number) => void;
   onToggleFocus: (nodeId: string) => void;
   onChangeFocusDepth: (depth: number) => void;
   onReroot: (nodeId: string) => void;
@@ -94,6 +102,7 @@ function NodeBody({
   focused,
   focusDepth,
   onSelectNode,
+  onOpenSource,
   onExpand,
   onToggleFocus,
   onChangeFocusDepth,
@@ -103,6 +112,8 @@ function NodeBody({
   onPathTo,
 }: GraphInspectorProps & { node: GraphNode; detail: NodeDetail }): React.JSX.Element {
   const source = detail.node;
+  const symbol = detail.symbol;
+  const definition = detail.definition;
   const link = editorLink(repositoryPath, source);
 
   /** What this node contains, according to the graph on screen. */
@@ -125,7 +136,12 @@ function NodeBody({
     architecture.length === 0 &&
     detail.dependencies.length === 0 &&
     detail.dependents.length === 0 &&
+    detail.implementations.length === 0 &&
+    detail.children.length === 0 &&
     members.length === 0;
+
+  /** True when the indexer gave this node a place in a file to open. */
+  const hasSource = definition?.filePath != null;
 
   return (
     <div className="inspector">
@@ -164,10 +180,34 @@ function NodeBody({
         {expanded && <span className="badge-role badge-role--muted">expanded</span>}
       </div>
 
-      {source.filePath && (
-        <p className="inspector__path" title={source.filePath}>
-          {source.filePath}
-          {source.startLine !== undefined && `:${String(source.startLine)}`}
+      {/* The definition line: where this symbol is written, and a way there.
+          It is a button rather than a caption because "file:line" is the one
+          thing on this panel a reader always wants to act on. */}
+      {hasSource ? (
+        <button
+          type="button"
+          className="inspector__definition"
+          title={`Open ${definition?.filePath ?? ''}`}
+          onClick={() => {
+            onOpenSource(node.id);
+          }}
+        >
+          <span className="inspector__definition-path">{definition?.filePath}</span>
+          {definition?.startLine != null && (
+            <span className="inspector__definition-line">:{definition.startLine}</span>
+          )}
+        </button>
+      ) : (
+        source.filePath && (
+          <p className="inspector__path" title={source.filePath}>
+            {source.filePath}
+          </p>
+        )
+      )}
+
+      {symbol.qualifiedName && symbol.qualifiedName !== symbol.name && (
+        <p className="inspector__qualified" title={symbol.qualifiedName}>
+          {symbol.qualifiedName}
         </p>
       )}
 
@@ -184,38 +224,16 @@ function NodeBody({
       </div>
 
       <div className="inspector__actions">
-        {link ? (
-          <a className="button" href={link} title={`Open ${source.filePath ?? ''} in your editor`}>
-            Open source
-          </a>
-        ) : (
-          source.filePath && (
-            <button
-              type="button"
-              className="button"
-              title="Copy the file path"
-              onClick={() => {
-                const path = source.filePath ?? '';
-                void navigator.clipboard?.writeText(
-                  source.startLine === undefined
-                    ? path
-                    : `${path}:${String(source.startLine)}`,
-                );
-              }}
-            >
-              Copy path
-            </button>
-          )
-        )}
         <button
           type="button"
           className="button"
-          title="Pull this node's neighbours onto the canvas"
+          disabled={!hasSource}
+          title={hasSource ? 'Read this symbol where it is written' : 'No indexed source for this node'}
           onClick={() => {
-            onExpand(node.id);
+            onOpenSource(node.id);
           }}
         >
-          Expand
+          Open source
         </button>
         <button
           type="button"
@@ -226,7 +244,27 @@ function NodeBody({
             onToggleFocus(node.id);
           }}
         >
-          Focus
+          Focus graph
+        </button>
+        <button
+          type="button"
+          className="button"
+          title="Pull this node's neighbours onto the canvas"
+          onClick={() => {
+            onExpand(node.id, 1);
+          }}
+        >
+          Expand 1 hop
+        </button>
+        <button
+          type="button"
+          className="button"
+          title="Pull in everything within two hops"
+          onClick={() => {
+            onExpand(node.id, 2);
+          }}
+        >
+          Expand 2 hops
         </button>
         <button
           type="button"
@@ -238,6 +276,11 @@ function NodeBody({
         >
           Find references
         </button>
+        {link && (
+          <a className="button button--quiet" href={link} title="Open in your editor">
+            Editor
+          </a>
+        )}
       </div>
 
       <div className="inspector__depth">
@@ -292,19 +335,57 @@ function NodeBody({
         </button>
       </div>
 
-      <Facts node={node} source={source} />
+      <Facts node={node} symbol={symbol} detail={detail} onSelectNode={onSelectNode} />
 
-      <NodeList title="Symbols" hint="in this view" nodes={members} onSelectNode={onSelectNode} />
-      <ApiNodeList title="Calls" nodes={detail.callees} onSelectNode={onSelectNode} />
-      <ApiNodeList title="Called by" nodes={detail.callers} onSelectNode={onSelectNode} />
-      <RelatedList title="Architecture" nodes={architecture} onSelectNode={onSelectNode} />
-      <RelatedList title="Depends on" nodes={detail.dependencies} onSelectNode={onSelectNode} />
+      <ApiNodeList
+        title="Callers"
+        nodes={detail.callers}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <ApiNodeList
+        title="Callees"
+        nodes={detail.callees}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <ApiNodeList
+        title="References"
+        nodes={detail.references}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
       <RelatedList
-        title="Depended on by"
+        title="Dependencies"
+        nodes={detail.dependencies}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <RelatedList
+        title="Dependents"
         nodes={detail.dependents}
         onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
       />
-      <ApiNodeList title="References" nodes={detail.references} onSelectNode={onSelectNode} />
+      <RelatedList
+        title="Implements"
+        nodes={detail.implementations}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <RelatedList
+        title="Architecture"
+        nodes={architecture}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <ApiNodeList
+        title="Members"
+        nodes={detail.children}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <NodeList title="Symbols" hint="in this view" nodes={members} onSelectNode={onSelectNode} />
 
       {nothingElse && (
         <p className="inspector__empty">Nothing else in the graph touches this node.</p>
@@ -335,49 +416,101 @@ function Metric({
   );
 }
 
-function Facts({ node, source }: { node: GraphNode; source: CodeNode }): React.JSX.Element {
+/**
+ * The named facts about a symbol, straight from the API's `symbol` block.
+ *
+ * Nothing is derived here and nothing is inferred: a row appears when the
+ * server reported a value and is absent when it reported null, which is what
+ * keeps the panel from quietly asserting that an un-analysed symbol is
+ * un-exported or belongs to no framework.
+ */
+function Facts({
+  node,
+  symbol,
+  detail,
+  onSelectNode,
+}: {
+  node: GraphNode;
+  symbol: SymbolInfo;
+  detail: NodeDetail;
+  onSelectNode: (nodeId: string) => void;
+}): React.JSX.Element {
   const metadata = node.metadata;
+  const parent = detail.parent;
 
   return (
     <dl className="inspector__facts">
-      {source.qualifiedName && source.qualifiedName !== source.name && (
+      {parent && (
         <>
-          <dt>Name</dt>
-          <dd className="inspector__mono">{source.qualifiedName}</dd>
+          <dt>Declared in</dt>
+          <dd>
+            <button
+              type="button"
+              className="inspector__inline-link"
+              title={nodeFullName(parent)}
+              onClick={() => {
+                onSelectNode(parent.id);
+              }}
+            >
+              {nodeFullName(parent)}
+            </button>
+          </dd>
         </>
       )}
       <dt>Module</dt>
-      <dd>{node.moduleLabel}</dd>
-      {source.startLine !== undefined && (
+      <dd>{symbol.module ?? node.moduleLabel}</dd>
+      {symbol.startLine !== null && (
         <>
           <dt>Lines</dt>
-          <dd>{lineRange(source)}</dd>
+          <dd>{lineRange(detail.node)}</dd>
         </>
       )}
-      {node.type === 'api' && metadata.httpMethod !== undefined && (
+      {symbol.exported === true && (
+        <>
+          <dt>Exported</dt>
+          <dd>Imported by name elsewhere</dd>
+        </>
+      )}
+      {symbol.visibility !== null && (
+        <>
+          <dt>Visibility</dt>
+          <dd>{symbol.visibility}</dd>
+        </>
+      )}
+      {symbol.apiRoute && (
         <>
           <dt>Route</dt>
           <dd className="inspector__mono">
-            {String(metadata.httpMethod)} {String(metadata.path ?? '')}
+            {symbol.apiRoute.method ?? ''} {symbol.apiRoute.path ?? ''}
           </dd>
+        </>
+      )}
+      {symbol.framework !== null && (
+        <>
           <dt>Framework</dt>
-          <dd>{String(metadata.framework ?? 'unknown')}</dd>
+          <dd>{symbol.framework}</dd>
         </>
       )}
-      {metadata.provider !== undefined && (
+      {symbol.databaseResource !== null && (
         <>
-          <dt>Provider</dt>
-          <dd>{String(metadata.provider)}</dd>
+          <dt>Data store</dt>
+          <dd className="inspector__mono">{symbol.databaseResource}</dd>
         </>
       )}
-      {metadata.vendor !== undefined && (
+      {symbol.externalService !== null && (
         <>
-          <dt>Vendor</dt>
+          <dt>External service</dt>
           <dd>
-            {String(metadata.vendor)}
+            {symbol.externalService}
             {metadata.host !== undefined ? ` · ${String(metadata.host)}` : ''}
             {metadata.package !== undefined ? ` · ${String(metadata.package)}` : ''}
           </dd>
+        </>
+      )}
+      {symbol.messagingResource !== null && (
+        <>
+          <dt>Messaging</dt>
+          <dd className="inspector__mono">{symbol.messagingResource}</dd>
         </>
       )}
       {Array.isArray(metadata.frameworks) && metadata.frameworks.length > 0 && (
@@ -386,16 +519,16 @@ function Facts({ node, source }: { node: GraphNode; source: CodeNode }): React.J
           <dd>{metadata.frameworks.map(String).join(', ')}</dd>
         </>
       )}
-      {metadata.scipSymbol !== undefined && (
+      {symbol.scipSymbol !== null && (
         <>
           <dt>SCIP symbol</dt>
-          <dd className="inspector__mono">{String(metadata.scipSymbol)}</dd>
+          <dd className="inspector__mono">{symbol.scipSymbol}</dd>
         </>
       )}
-      {metadata.language !== undefined && (
+      {symbol.language !== null && (
         <>
           <dt>Language</dt>
-          <dd>{String(metadata.language)}</dd>
+          <dd>{symbol.language}</dd>
         </>
       )}
     </dl>
@@ -462,15 +595,25 @@ function NodeList({
   );
 }
 
-/** A section of plain API nodes: callers, callees, references. */
+/**
+ * A section of plain API nodes: callers, callees, references, members.
+ *
+ * Every row does two things, because those are the two questions someone has
+ * about a caller: *what is it* (select it, and the panel and the canvas both
+ * move to it) and *where is it* (open its source). Splitting them into two
+ * targets rather than one is what lets a reader walk a call chain without
+ * losing the graph.
+ */
 function ApiNodeList({
   title,
   nodes,
   onSelectNode,
+  onOpenSource,
 }: {
   title: string;
   nodes: CodeNode[];
   onSelectNode: (nodeId: string) => void;
+  onOpenSource: (nodeId: string) => void;
 }): React.JSX.Element | null {
   if (nodes.length === 0) return null;
 
@@ -478,7 +621,7 @@ function ApiNodeList({
     <Section title={title} count={nodes.length}>
       <ul className="inspector__list">
         {nodes.map((node) => (
-          <li key={node.id}>
+          <li key={node.id} className="inspector__row">
             <button
               type="button"
               className="inspector__link"
@@ -491,8 +634,10 @@ function ApiNodeList({
               <span className="inspector__link-name">{nodeFullName(node)}</span>
               <span className="inspector__link-meta">
                 {node.filePath ? shortenPath(node.filePath, 26) : nodeTypeLabel(node.type)}
+                {node.startLine !== undefined && `:${String(node.startLine)}`}
               </span>
             </button>
+            <SourceButton node={node} onOpenSource={onOpenSource} />
           </li>
         ))}
       </ul>
@@ -505,10 +650,12 @@ function RelatedList({
   title,
   nodes,
   onSelectNode,
+  onOpenSource,
 }: {
   title: string;
   nodes: RelatedNode[];
   onSelectNode: (nodeId: string) => void;
+  onOpenSource: (nodeId: string) => void;
 }): React.JSX.Element | null {
   if (nodes.length === 0) return null;
 
@@ -516,7 +663,7 @@ function RelatedList({
     <Section title={title} count={nodes.length}>
       <ul className="inspector__list">
         {nodes.map((node) => (
-          <li key={`${node.id}-${node.relationship}`}>
+          <li key={`${node.id}-${node.relationship}-${node.direction}`} className="inspector__row">
             <button
               type="button"
               className="inspector__link"
@@ -534,15 +681,41 @@ function RelatedList({
                   className="inspector__relationship"
                   style={{ color: relationshipColor(node.relationship) }}
                 >
-                  {node.relationship}
+                  {node.direction === 'incoming' ? '←' : '→'} {node.relationship}
                 </span>
                 <ConfidenceMark level={node.confidence} />
               </span>
             </button>
+            <SourceButton node={node} onOpenSource={onOpenSource} />
           </li>
         ))}
       </ul>
     </Section>
+  );
+}
+
+/** The "where is it" half of a row, for a node the indexer gave a file. */
+function SourceButton({
+  node,
+  onOpenSource,
+}: {
+  node: CodeNode;
+  onOpenSource: (nodeId: string) => void;
+}): React.JSX.Element | null {
+  if (!node.filePath) return null;
+
+  return (
+    <button
+      type="button"
+      className="inspector__row-source"
+      title={`Open ${node.filePath}${node.startLine === undefined ? '' : `:${String(node.startLine)}`}`}
+      aria-label={`Open the source of ${nodeFullName(node)}`}
+      onClick={() => {
+        onOpenSource(node.id);
+      }}
+    >
+      source
+    </button>
   );
 }
 

@@ -8,13 +8,20 @@ import {
   GRAPH_DEFAULT_DIRECTION,
   GRAPH_DEFAULT_NEIGHBOUR_LIMIT,
   GRAPH_DEFAULT_NODE_LIMIT,
+  GRAPH_DEFAULT_PATH_DEPTH,
+  GRAPH_DEFAULT_PATH_DIRECTION,
   GRAPH_DEFAULT_SEARCH_LIMIT,
   GRAPH_DIRECTIONS,
   GRAPH_MAX_DEPTH,
   GRAPH_MAX_NODE_LIMIT,
+  GRAPH_MAX_PATH_DEPTH,
   GRAPH_MAX_SEARCH_LIMIT,
+  GRAPH_PATH_DIRECTIONS,
+  SOURCE_TREE_DEFAULT_LIMIT,
+  SOURCE_TREE_MAX_LIMIT,
 } from '../constants/graph.js';
 import { GRAPH_PROJECTION_IDS } from '../constants/projections.js';
+import { SOURCE_DEFAULT_CONTEXT_LINES } from '../constants/source.js';
 
 /**
  * Wire contracts shared by the API and the web client. Defining them once means
@@ -349,12 +356,70 @@ export const relatedNodeSchema = codeNodeSchema.extend({
 });
 
 /**
+ * Where a symbol is written down.
+ *
+ * Every field is nullable and every value is copied from what the indexer
+ * recorded — a symbol whose range SCIP did not carry reports nulls rather than
+ * a guessed line. `fileNodeId` is the `file` node that CONTAINS the
+ * definition, which is what makes "open the file this came from" one lookup.
+ */
+export const definitionSchema = z.object({
+  nodeId: z.string(),
+  name: z.string(),
+  qualifiedName: z.string().nullable(),
+  type: z.enum(CODE_NODE_TYPES),
+  language: z.string().nullable(),
+  filePath: z.string().nullable(),
+  startLine: z.number().int().nullable(),
+  startCharacter: z.number().int().nullable(),
+  endLine: z.number().int().nullable(),
+  endCharacter: z.number().int().nullable(),
+  fileNodeId: z.string().nullable(),
+});
+
+/**
+ * The identity and metadata the inspector prints, flattened out of the node's
+ * free-form `metadata` bag into named fields.
+ *
+ * Nullable throughout on purpose: a property an analyzer never recorded is
+ * `null`, never a plausible-looking default. Reading it here rather than in the
+ * UI means one place decides what `metadata.httpMethod` means.
+ */
+export const symbolInfoSchema = z.object({
+  name: z.string(),
+  qualifiedName: z.string().nullable(),
+  type: z.enum(CODE_NODE_TYPES),
+  language: z.string().nullable(),
+  filePath: z.string().nullable(),
+  startLine: z.number().int().nullable(),
+  startCharacter: z.number().int().nullable(),
+  endLine: z.number().int().nullable(),
+  endCharacter: z.number().int().nullable(),
+  exported: z.boolean().nullable(),
+  visibility: z.string().nullable(),
+  module: z.string().nullable(),
+  framework: z.string().nullable(),
+  apiRoute: z
+    .object({ method: z.string().nullable(), path: z.string().nullable() })
+    .nullable(),
+  databaseResource: z.string().nullable(),
+  externalService: z.string().nullable(),
+  messagingResource: z.string().nullable(),
+  scipSymbol: z.string().nullable(),
+  role: z.string().nullable(),
+});
+
+/**
  * The node inspector's payload. `callers`, `callees` and `references` are the
  * original three sections and keep their exact shape; the sections added since
  * carry the relationship alongside each neighbour.
  */
 export const nodeDetailSchema = z.object({
   node: codeNodeSchema,
+  /** Named metadata, so the panel never parses the metadata bag itself. */
+  symbol: symbolInfoSchema,
+  /** Where this symbol is declared, or null when no range was indexed. */
+  definition: definitionSchema.nullable(),
   callers: z.array(codeNodeSchema),
   callees: z.array(codeNodeSchema),
   references: z.array(codeNodeSchema),
@@ -362,6 +427,161 @@ export const nodeDetailSchema = z.object({
   dependents: z.array(relatedNodeSchema),
   apis: z.array(relatedNodeSchema),
   databases: z.array(relatedNodeSchema),
+  /** Both directions: what implements or extends this, and what it implements. */
+  implementations: z.array(relatedNodeSchema),
+  /** The node that CONTAINS this one — its class, its file, its directory. */
+  parent: codeNodeSchema.nullable(),
+  children: z.array(codeNodeSchema),
+});
+
+// --- Path -----------------------------------------------------------------
+
+export const graphPathBodySchema = z.object({
+  from: z.string().min(1).max(512),
+  to: z.string().min(1).max(512),
+  maxDepth: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(GRAPH_MAX_PATH_DEPTH)
+    .default(GRAPH_DEFAULT_PATH_DEPTH),
+  /**
+   * `outgoing` follows the flow and falls back to an undirected search when
+   * nothing directed exists, saying so in the result; `both` ignores direction
+   * from the start.
+   */
+  direction: z.enum(GRAPH_PATH_DIRECTIONS).default(GRAPH_DEFAULT_PATH_DIRECTION),
+  /** Narrows which edges the walk may cross. Defaults to every relationship. */
+  relationships: z.array(z.enum(CODE_RELATIONSHIPS)).nonempty().optional(),
+  nodeTypes: z.array(z.enum(CODE_NODE_TYPES)).nonempty().optional(),
+  /** Supplies the two filters above when the caller sends neither. */
+  projection: z.enum(GRAPH_PROJECTION_IDS).optional(),
+});
+
+/** One hop of a found route: the edge taken, and the evidence behind it. */
+export const graphPathStepSchema = z.object({
+  edgeId: z.string(),
+  sourceNodeId: z.string(),
+  targetNodeId: z.string(),
+  relationship: z.enum(CODE_RELATIONSHIPS),
+  /** True when the route crossed this edge against its direction. */
+  reversed: z.boolean(),
+  confidence: z.enum(CONFIDENCE_LEVELS).nullable(),
+  evidenceSource: z.string().nullable(),
+});
+
+export const graphPathSchema = z.object({
+  found: z.boolean(),
+  from: z.string(),
+  to: z.string(),
+  /** Hops on the route. Zero when `from` and `to` are the same node. */
+  depth: z.number().int(),
+  /** True when no directed route existed and direction was ignored. */
+  undirected: z.boolean(),
+  /** The route's nodes, in order from `from` to `to`. */
+  nodes: z.array(codeNodeSchema),
+  /** The route's edges, in the order they are crossed. */
+  edges: z.array(codeEdgeSchema),
+  steps: z.array(graphPathStepSchema),
+  /** Distinct relationships along the route, in order of first use. */
+  relationships: z.array(z.enum(CODE_RELATIONSHIPS)),
+  /** True when the search hit its node budget before proving there is no route. */
+  truncated: z.boolean(),
+});
+
+// --- Source tree ----------------------------------------------------------
+
+/**
+ * One level of the repository tree, derived from the `file` and `directory`
+ * nodes the indexer already produced. Asking for a level at a time is what
+ * keeps opening a project from shipping its whole tree.
+ */
+export const sourceTreeQuerySchema = z.object({
+  /** Repository-relative directory. Omitted or empty means the root. */
+  path: z.string().trim().max(1024).default(''),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(SOURCE_TREE_MAX_LIMIT)
+    .default(SOURCE_TREE_DEFAULT_LIMIT),
+});
+
+export const sourceTreeEntrySchema = z.object({
+  /** Repository-relative POSIX path. Never an absolute machine path. */
+  path: z.string(),
+  name: z.string(),
+  type: z.enum(['directory', 'file']),
+  /** The graph node for this entry, so clicking it can select it. */
+  nodeId: z.string().nullable(),
+});
+
+export const sourceTreeSchema = z.object({
+  path: z.string(),
+  parentPath: z.string().nullable(),
+  entries: z.array(sourceTreeEntrySchema),
+  truncated: z.boolean(),
+});
+
+// --- Source retrieval -----------------------------------------------------
+
+/**
+ * A window onto one indexed file.
+ *
+ * Either `file` or `nodeId` says which file; `nodeId` additionally supplies the
+ * range, so "show me this symbol" needs nothing else. Both may be given, in
+ * which case the node only contributes its range.
+ */
+export const sourceQuerySchema = z
+  .object({
+    /** Repository-relative path. Absolute paths and `..` are rejected. */
+    file: z.string().trim().min(1).max(1024).optional(),
+    /** A graph node, whose indexed range becomes the window. */
+    nodeId: z.string().min(1).max(512).optional(),
+    /** 1-based and inclusive, matching how an editor counts. */
+    startLine: z.coerce.number().int().min(1).optional(),
+    endLine: z.coerce.number().int().min(1).optional(),
+    /** Extra lines either side of a symbol range. Ignored for an explicit range. */
+    context: z.coerce.number().int().min(0).max(200).default(SOURCE_DEFAULT_CONTEXT_LINES),
+  })
+  .refine(
+    (value) => value.file !== undefined || value.nodeId !== undefined,
+    'either file or nodeId is required',
+  )
+  .refine(
+    (value) =>
+      value.startLine === undefined ||
+      value.endLine === undefined ||
+      value.endLine >= value.startLine,
+    'endLine must not be before startLine',
+  );
+
+export const sourceLineSchema = z.object({
+  line: z.number().int(),
+  text: z.string(),
+});
+
+export const sourceSchema = z.object({
+  /** Repository-relative, so nothing about the host's layout leaks. */
+  file: z.string(),
+  language: z.string().nullable(),
+  startLine: z.number().int(),
+  endLine: z.number().int(),
+  /** Lines in the whole file, so a viewer can say "38-62 of 410". */
+  totalLines: z.number().int(),
+  /** True when the requested range was wider than one response may carry. */
+  truncated: z.boolean(),
+  /** The symbol range that motivated the window, when a node id was given. */
+  highlight: z
+    .object({
+      nodeId: z.string().nullable(),
+      startLine: z.number().int(),
+      startCharacter: z.number().int().nullable(),
+      endLine: z.number().int(),
+      endCharacter: z.number().int().nullable(),
+    })
+    .nullable(),
+  lines: z.array(sourceLineSchema),
 });
 
 export type CreateProjectBody = z.infer<typeof createProjectBodySchema>;
@@ -376,6 +596,17 @@ export type NeighbourQuery = z.infer<typeof neighbourQuerySchema>;
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 export type RelatedNode = z.infer<typeof relatedNodeSchema>;
 export type GraphSummary = z.infer<typeof graphSummarySchema>;
+export type Definition = z.infer<typeof definitionSchema>;
+export type SymbolInfo = z.infer<typeof symbolInfoSchema>;
+export type GraphPathBody = z.infer<typeof graphPathBodySchema>;
+export type GraphPathStep = z.infer<typeof graphPathStepSchema>;
+export type GraphPath = z.infer<typeof graphPathSchema>;
+export type SourceTreeQuery = z.infer<typeof sourceTreeQuerySchema>;
+export type SourceTreeEntry = z.infer<typeof sourceTreeEntrySchema>;
+export type SourceTree = z.infer<typeof sourceTreeSchema>;
+export type SourceQuery = z.infer<typeof sourceQuerySchema>;
+export type SourceLine = z.infer<typeof sourceLineSchema>;
+export type SourceWindow = z.infer<typeof sourceSchema>;
 
 export const GRAPH_QUERY_DEFAULTS = {
   depth: GRAPH_DEFAULT_DEPTH,

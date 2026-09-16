@@ -318,7 +318,7 @@ describe('GET /api/filesystem/directories', () => {
 
     const response = await app.inject({
       method: 'GET',
-      url: `/api/filesystem/directories?path=${encodeURIComponent('/tmp/ /etc')}`,
+      url: `/api/filesystem/directories?path=${encodeURIComponent('/tmp/\u0000/etc')}`,
     });
 
     expect(response.statusCode).toBe(400);

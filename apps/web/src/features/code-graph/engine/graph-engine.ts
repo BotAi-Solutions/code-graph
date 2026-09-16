@@ -83,6 +83,18 @@ export interface SetModelOptions {
   animateFlow: boolean;
 }
 
+/**
+ * Emphasis by distance from the anchor: the node itself, one hop, two hops.
+ *
+ * Not a smooth falloff. Three values that are obviously different from each
+ * other is what makes "these three things touch it, those six are behind them"
+ * readable at a glance; an interpolated ramp reads as a blur.
+ */
+const ATTENTION_BY_HOP = [1, 1, 0.45] as const;
+
+/** Everything further away than two hops. Visible as shape, not as detail. */
+const ATTENTION_ELSEWHERE = 0.12;
+
 const DEFAULT_STATE: GraphRenderState = {
   selectedNodeId: null,
   selectedEdgeId: null,
@@ -118,7 +130,17 @@ export class GraphEngine {
   private detailLevel: DetailLevel = 'overview';
 
   /** Recomputed only when the hover or selection changes, not per node. */
-  private attentionNodes: ReadonlySet<string> | null = null;
+  /**
+   * How loudly each node is drawn relative to the anchor, by distance from it.
+   *
+   * Three tiers rather than two. A selected node with only its direct
+   * neighbours lit answers "what touches this"; the useful question when
+   * reading unfamiliar code is "what is around this", and the second hop is
+   * where the answer usually is. Drawing it at reduced emphasis — visible,
+   * clearly further away — is what turns a selection into a neighbourhood
+   * without turning it back into the hairball the selection was escaping.
+   */
+  private attentionNodes: ReadonlyMap<string, number> | null = null;
   private attentionEdges: ReadonlySet<string> | null = null;
 
   private animationFrame: number | null = null;
@@ -363,16 +385,33 @@ export class GraphEngine {
 
     const anchor = state.hoveredNodeId ?? state.selectedNodeId;
     if (anchor && this.model) {
-      const nodes = new Set<string>([anchor]);
+      const nodes = new Map<string, number>([[anchor, ATTENTION_BY_HOP[0]]]);
       const edges = new Set<string>();
+      const firstHop: string[] = [];
 
       for (const edge of this.model.edges) {
         if (edge.source === anchor) {
-          nodes.add(edge.target);
+          if (!nodes.has(edge.target)) {
+            nodes.set(edge.target, ATTENTION_BY_HOP[1]);
+            firstHop.push(edge.target);
+          }
           edges.add(edge.id);
         } else if (edge.target === anchor) {
-          nodes.add(edge.source);
+          if (!nodes.has(edge.source)) {
+            nodes.set(edge.source, ATTENTION_BY_HOP[1]);
+            firstHop.push(edge.source);
+          }
           edges.add(edge.id);
+        }
+      }
+
+      // The second hop comes from the model's adjacency rather than a second
+      // pass over every edge, so a dense graph costs one lookup per neighbour
+      // instead of another full scan.
+      for (const id of firstHop) {
+        for (const neighbour of this.model.adjacency.get(id) ?? []) {
+          if (nodes.has(neighbour)) continue;
+          nodes.set(neighbour, ATTENTION_BY_HOP[2]);
         }
       }
 
@@ -445,7 +484,7 @@ export class GraphEngine {
     const inScope = inDetailScope(node, this.detailLevel, state.priorityNodeTypes);
 
     let attention = 1;
-    if (this.attentionNodes && !this.attentionNodes.has(id)) attention = 0.16;
+    if (this.attentionNodes) attention = this.attentionNodes.get(id) ?? ATTENTION_ELSEWHERE;
     if (state.pathNodeIds) attention = Math.min(attention, inPath ? 1 : 0.12);
     if (!inScope) attention = Math.min(attention, 0.3);
     if (selected || hovered || matched) attention = 1;

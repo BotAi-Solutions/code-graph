@@ -354,6 +354,50 @@ Identical in the recursive CTE (`packages/database`) and in memory
   endpoints are.
 - **Order** is nearest-first for a traversal, rank-first for an overview.
 
+### Paths
+
+A path query is a separate walk with separate guarantees, and it is also
+implemented twice — `GraphRepository.findPath` in SQL,
+`findGraphPath` in `packages/graph/src/traversal` in memory — with the same
+semantics, so the two can be checked against each other.
+
+- **Breadth-first, level by level**, so the route returned is the one with the
+  fewest hops. Deliberately not a single recursive CTE carrying its own path
+  array: that is exponential on a graph with cycles, and a hub node in a real
+  repository reaches most of the graph within three hops.
+- **Bounded twice** — by `maxDepth` (1–12, default 6) and by a node budget
+  (20 000). Spending the budget reports `truncated: true` and `found: false`,
+  which means *the search could not conclude*, not *there is no route*.
+- **Directed first, undirected as a fallback.** `outgoing` asks the question a
+  trace usually is. When nothing directed exists the search repeats ignoring
+  direction and the answer says `undirected: true`, marking each hop it crossed
+  backwards with `reversed: true`.
+- **Deterministic predecessors.** Within a level, the node that introduces a
+  neighbour is chosen by a total order over
+  `(neighbour, reversed, relationship, source, target, edge)` — never by
+  whatever the planner returned first. Two runs over the same graph return the
+  same route, and so does the in-memory search given the same rows.
+- **Relationship and node-type filters** apply to the walk, exactly as they do
+  to a traversal.
+- **Every hop is an edge that exists**, returned with the evidence and
+  confidence it was recorded with. No step of a path is ever inferred.
+
+### Definitions and the source tree
+
+Two things the explorer needs are read off the graph rather than added to it:
+
+- **A definition** is not a separate record, because a node *is* one. SCIP
+  reports the range a symbol occupies and the builder stores it as
+  `startLine`/`startCharacter`/`endLine`/`endCharacter`, so "where is this
+  defined" is the node's own columns plus the id of the `file` node that
+  `CONTAINS` it. A node the indexer gave no range reports nulls; nothing is
+  reconstructed from a name.
+- **The repository tree** is the `directory` and `file` nodes the builder
+  already creates for every document, queried one level at a time by path
+  prefix. There is no second filesystem walk, which is also why every row of the
+  tree carries a node id: a file in the tree and a file in the graph are the
+  same thing.
+
 ## Worked example
 
 `test-repositories/express-postgres-sample` — a layered Express service —

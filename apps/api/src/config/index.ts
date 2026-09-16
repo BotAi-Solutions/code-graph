@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { findWorkspaceRoot } from '@ckg/shared/node';
 import {
   apiEnvSchema,
   databaseEnvSchema,
@@ -19,7 +21,15 @@ export interface ApiConfig {
   runtime: RuntimeEnv;
   database: DatabaseEnv;
   http: ApiEnv & { corsOrigins: string[] };
-  filesystem: FilesystemEnv;
+  filesystem: FilesystemEnv & {
+    /**
+     * Base a relative repository `sourcePath` resolves against, so the API and
+     * the worker agree on which directory the bundled samples live in. Both
+     * derive it the same way rather than trusting the process working
+     * directory, which differs between `pnpm dev` and a package script.
+     */
+    repositoryBaseDirectory: string;
+  };
 }
 
 const apiEnvSchemaFull = runtimeEnvSchema
@@ -29,8 +39,12 @@ const apiEnvSchemaFull = runtimeEnvSchema
 
 export function loadApiConfig(
   source: Record<string, string | undefined> = process.env,
+  options: { repositoryBaseDirectory?: string } = {},
 ): ApiConfig {
   const env = parseEnv(apiEnvSchemaFull, source);
+  const repositoryBaseDirectory = path.resolve(
+    options.repositoryBaseDirectory ?? findWorkspaceRoot(),
+  );
 
   return {
     runtime: { NODE_ENV: env.NODE_ENV, LOG_LEVEL: env.LOG_LEVEL },
@@ -46,6 +60,7 @@ export function loadApiConfig(
     filesystem: {
       LOCAL_FILESYSTEM_ENABLED: env.LOCAL_FILESYSTEM_ENABLED,
       DIRECTORY_PICKER_TIMEOUT_MS: env.DIRECTORY_PICKER_TIMEOUT_MS,
+      repositoryBaseDirectory,
     },
   };
 }

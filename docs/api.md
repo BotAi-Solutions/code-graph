@@ -44,6 +44,8 @@ mode and depth, a request id on errors.
 | `INVALID_PROJECT_PATH` | 400 | The path exists but is a file, not a project folder |
 | `FILESYSTEM_ACCESS_DISABLED` | 403 | `LOCAL_FILESYSTEM_ENABLED=false` on this server |
 | `DIRECTORY_NOT_READABLE` | 403 | Permission denied on the project directory |
+| `SOURCE_PATH_NOT_ALLOWED` | 403 | A source path resolved outside the project's repository |
+| `SOURCE_NOT_READABLE` | 403 | Permission denied on a source file, or the repository is a git clone |
 | `NOT_FOUND` | 404 | Unknown route |
 | `PROJECT_NOT_FOUND` | 404 | No such project |
 | `REPOSITORY_NOT_FOUND` | 404 | The project has no repository configured |
@@ -51,6 +53,7 @@ mode and depth, a request id on errors.
 | `NODE_NOT_FOUND` | 404 | No such graph node in this project |
 | `REPOSITORY_PATH_NOT_FOUND` | 404 | The worker could not read the repository path |
 | `DIRECTORY_NOT_FOUND` | 404 | No such directory on the machine running the API |
+| `SOURCE_FILE_NOT_FOUND` | 404 | No such file in the project's repository |
 | `CONFLICT` | 409 | Generic state conflict |
 | `ANALYSIS_ALREADY_RUNNING` | 409 | A non-terminal analysis already exists for the project |
 | `REPOSITORY_NOT_CONFIGURED` | 409 | An operation needs a repository that is not attached |
@@ -60,6 +63,7 @@ mode and depth, a request id on errors.
 | `SCIP_PARSE_FAILED` | 422 | `index.scip` could not be decoded |
 | `GRAPH_BUILD_FAILED` | 422 | The builder could not assemble a graph |
 | `NO_SOURCE_FILES` | 422 | The chosen folder holds nothing in a language we support |
+| `SOURCE_FILE_TOO_LARGE` | 422 | The file is larger than source retrieval will read |
 | `DIRECTORY_PICKER_UNAVAILABLE` | 501 | This host has no native folder dialog to open |
 | `DATABASE_ERROR` | 500 | The database rejected an operation |
 | `CONFIGURATION_ERROR` | 500 | Invalid configuration detected at runtime |
@@ -417,10 +421,23 @@ path**, which between them cover every way a person refers to a piece of code:
 | `POST /users` | the API route |
 | `table` | every node of that type |
 
-Exact matches rank first, then prefix matches, then the rest, shortest names
-first. `meta` carries `{ total, limit, offset }`; `total` is the full match
-count, not the page, so a client can say "showing 15 of 42" rather than
-silently truncating.
+Ranking is a fixed ladder, so the same term always produces the same page:
+
+| Rank | Match |
+| --- | --- |
+| 0 | the symbol's own name, exactly (`UserService`) |
+| 1 | its qualified name, exactly (`UserService.getUser`) |
+| 2 | a file, by full path or by file name (`user.service.ts`) |
+| 3 | a name prefix |
+| 4 | a qualified-name prefix |
+| 5 | a path prefix |
+| 6 | a dotted token of a qualified name (`getUser` inside `X.getUser`) |
+| 7 | anything else containing the term |
+
+Ties break on name length, then name, then id — so nothing a caller can see is
+decided by the query planner's row order. `meta` carries
+`{ total, limit, offset }`; `total` is the full match count, not the page, so a
+client can say "showing 15 of 42" rather than silently truncating.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId` → `200`
 
@@ -435,6 +452,20 @@ query, not one per section:
             "startLine": 8, "startCharacter": 13, "endLine": 55, "endCharacter": 1,
             "metadata": { "scipSymbol": "…", "role": "repository",
                           "roleEvidence": "it reads or writes a database table" } },
+  "symbol":       { "name": "UserRepository", "qualifiedName": "UserRepository",
+                    "type": "class", "language": "typescript",
+                    "filePath": "src/repositories/user.repository.ts",
+                    "startLine": 8, "startCharacter": 13, "endLine": 55, "endCharacter": 1,
+                    "exported": null, "visibility": null, "module": "src/repositories",
+                    "framework": null, "apiRoute": null, "databaseResource": null,
+                    "externalService": null, "messagingResource": null,
+                    "scipSymbol": "…", "role": "repository" },
+  "definition":   { "nodeId": "…", "name": "UserRepository",
+                    "qualifiedName": "UserRepository", "type": "class",
+                    "language": "typescript",
+                    "filePath": "src/repositories/user.repository.ts",
+                    "startLine": 8, "startCharacter": 13,
+                    "endLine": 55, "endCharacter": 1, "fileNodeId": "…" },
   "callers":      [ { "type": "class", "name": "UserService" } ],
   "callees":      [ ],
   "references":   [ { "type": "method", "name": "create" } ],
@@ -443,10 +474,23 @@ query, not one per section:
   "apis":         [ ],
   "databases":    [ { "type": "table", "name": "users", "relationship": "WRITES_TO",
                       "direction": "outgoing", "confidence": "high",
-                      "evidenceSource": "database-analyzer" } ]
+                      "evidenceSource": "database-analyzer" } ],
+  "implementations": [ { "type": "interface", "name": "UserStore",
+                         "relationship": "IMPLEMENTS", "direction": "outgoing" } ],
+  "parent":       { "type": "file", "name": "user.repository.ts" },
+  "children":     [ { "type": "method", "name": "findById" } ]
 }
 ```
 
+- **symbol** — the node's metadata, read into named fields. Every value is
+  copied, never inferred; a property no analyzer recorded is `null`. `module` is
+  the one computed field, and only from a fact the indexer stored: the directory
+  the file sits in. `exported` is `true` when an `EXPORTS` edge points at the
+  node and `null` otherwise — never `false` from absence, which would claim
+  every symbol in an un-analysed project is private.
+- **definition** — where the symbol is written, plus the id of the `file` node
+  that contains it. `null` for a node with no file (a table, an external
+  package); null coordinates for one the indexer gave no range.
 - **callers** — incoming `CALLS`
 - **callees** — outgoing `CALLS`
 - **references** — incoming `REFERENCES`, i.e. what uses this node without
@@ -456,19 +500,196 @@ query, not one per section:
 - **apis** — `api` nodes that `ROUTES_TO` this node
 - **databases** — `database`, `table`, `queue` and `event` nodes this node
   `READS_FROM`, `WRITES_TO`, `PUBLISHES` or `SUBSCRIBES`
+- **implementations** — both directions of `IMPLEMENTS` and `EXTENDS`.
+  `direction: incoming` is something that implements or extends this node;
+  `outgoing` is what this node implements or extends.
+- **parent** / **children** — the `CONTAINS` edge either way: the class a method
+  belongs to, the members of a class, the symbols of a file.
 
-The first three keep the plain node shape they have always had. The sections
-added since carry `relationship`, `direction` and the edge's evidence with each
-entry, because "depends on" covers four different relationships and a client
-should be able to say which. A section with nothing in it is `[]`, never absent.
+`callers`, `callees` and `references` keep the plain node shape they have always
+had. The sections carrying a relationship add `relationship`, `direction` and
+the edge's evidence to each entry, because "depends on" covers four different
+relationships and a client should be able to say which. A section with nothing
+in it is `[]`, never absent.
 
 Query: `limit` (default 100) caps each list.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/callers` → `200`
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/callees` → `200`
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/references` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/dependencies` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/dependents` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/implementations` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/children` → `200`
 
-The same lists on their own routes, for clients that want one of them.
+The same lists on their own routes, for clients that want one of them — or want
+more of one than the detail's per-section `limit` carried. `dependencies`,
+`dependents` and `implementations` return the related-node shape with its
+evidence; the rest return plain nodes. Query: `limit` (default 100).
+
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/definition` → `200`
+
+Where the node is written down, as the `definition` block above — or `null`.
+
+There is no separate definition *record* in this graph, and there should not be:
+a node **is** a definition. SCIP recorded the range it occupies and the builder
+stored it, so this route reports the node's own coordinates rather than
+resolving anything.
+
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/parents` → `200`
+
+The containment chain above the node, nearest first — method → class → file →
+directory → repository. `limit` (default 100) caps how far up the chain is
+walked.
+
+### `GET /api/projects/:projectId/graph/tree` → `200`
+
+One level of the repository tree, derived from the `directory` and `file` nodes
+the indexer already produced. Query: `path` (repository-relative; omit for the
+root), `limit` (1–2000, default 500).
+
+```json
+{
+  "path": "src",
+  "parentPath": "",
+  "entries": [
+    { "path": "src/services", "name": "services", "type": "directory", "nodeId": "…" },
+    { "path": "src/app.ts", "name": "app.ts", "type": "file", "nodeId": "…" }
+  ],
+  "truncated": false
+}
+```
+
+Directories come before files, each alphabetically. One level per request, not
+a whole tree: a mid-sized repository has thousands of path nodes, and shipping
+all of them to draw twelve rows would be the most expensive thing on the screen.
+Every entry carries its `nodeId`, so a row in the tree is also a node on the
+graph — opening a file can select it.
+
+Paths are always repository-relative. The API never returns an absolute path.
+
+### `POST /api/projects/:projectId/graph/path` → `200`
+
+The shortest route between two nodes, walked breadth-first on the server.
+
+**Request**
+
+```json
+{
+  "from": "0293…",
+  "to": "77ab…",
+  "maxDepth": 6,
+  "direction": "outgoing",
+  "relationships": ["ROUTES_TO", "CALLS", "WRITES_TO"],
+  "nodeTypes": ["api", "class", "table"],
+  "projection": "dataflow"
+}
+```
+
+Only `from` and `to` are required. `maxDepth` is 1–12 (default 6). `direction`
+is `outgoing` (default) or `both`. `relationships` and `nodeTypes` narrow which
+edges and nodes the walk may cross; `projection` supplies both when neither is
+given, and an explicit filter always wins.
+
+**Response**
+
+```json
+{
+  "found": true,
+  "from": "0293…", "to": "77ab…",
+  "depth": 4,
+  "undirected": false,
+  "truncated": false,
+  "nodes": [ /* in order, from `from` to `to` */ ],
+  "edges": [ /* in the order they are crossed */ ],
+  "steps": [
+    { "edgeId": "…", "sourceNodeId": "…", "targetNodeId": "…",
+      "relationship": "ROUTES_TO", "reversed": false,
+      "confidence": "high", "evidenceSource": "api-analyzer" }
+  ],
+  "relationships": ["ROUTES_TO", "CALLS", "READS_FROM"]
+}
+```
+
+`steps[i]` is the hop *out of* `nodes[i]`, so the last node has none.
+`relationships` is the distinct set in order of first use — the shape of the
+trace, without repeating `CALLS` four times for a four-hop call chain.
+
+`direction: outgoing` asks the question a trace usually is: how does a request
+get from the controller to the table. When no directed route exists the search
+is repeated ignoring direction and the answer comes back with
+`undirected: true` and `reversed: true` on the hops it crossed backwards — two
+pieces of code can be genuinely related without one reaching the other, and
+reporting that is more useful than reporting nothing.
+
+`found: false` with `truncated: true` means the search spent its node budget
+before it could conclude, **not** that no route exists.
+
+Nothing is inferred: every hop is an edge that is in the graph, with the
+evidence it was recorded with.
+
+---
+
+## Source
+
+### `GET /api/projects/:projectId/source` → `200`
+
+A window onto one file in the project's repository. Read-only; there is no
+write counterpart and no other route in the API opens a file.
+
+Query — one of `file` or `nodeId` is required:
+
+| Parameter | Meaning |
+| --- | --- |
+| `file` | repository-relative path |
+| `nodeId` | a graph node, whose indexed range becomes the window and the highlight |
+| `startLine`, `endLine` | 1-based, inclusive; honoured exactly as given |
+| `context` | lines either side of a symbol range (0–200, default 12); ignored for an explicit range |
+
+```json
+{
+  "file": "src/services/user.service.ts",
+  "language": "typescript",
+  "startLine": 39,
+  "endLine": 47,
+  "totalLines": 68,
+  "truncated": false,
+  "highlight": { "nodeId": "…", "startLine": 41, "startCharacter": 2,
+                 "endLine": 45, "endCharacter": 3 },
+  "lines": [
+    { "line": 39, "text": "  }" },
+    { "line": 41, "text": "  async getUser(id: string): Promise<User> {" }
+  ]
+}
+```
+
+`highlight` is the symbol range that motivated the window, so a viewer can
+scroll to it and mark it; `null` when the request named a file rather than a
+node, or when the indexer recorded no range. `truncated` is true when the
+requested range exceeded the 2000-line response ceiling.
+
+#### The sandbox
+
+Source retrieval is the most sensitive route in the API, and four things keep
+it narrow:
+
+1. **The root comes from the project, never the request.** A caller says
+   `src/services/user.service.ts`; which disk that lands on is decided by the
+   repository record attached to the project.
+2. **The path is checked twice** — once after normalising, which catches `..`
+   and absolute paths, and again after resolving symlinks, because a link inside
+   the tree is an ordinary way to point at `/etc/passwd`. Both return
+   `403 SOURCE_PATH_NOT_ALLOWED`.
+3. **Nothing about the host's layout is returned.** Responses carry the
+   repository-relative path, so the browser never learns where the repository
+   sits on disk.
+4. **`LOCAL_FILESYSTEM_ENABLED=false` disables it entirely**, with
+   `403 FILESYSTEM_ACCESS_DISABLED`.
+
+A repository with `sourceType: git` returns `403 SOURCE_NOT_READABLE`: the
+worker shallow-clones it into scratch space and deletes it when the run
+finishes, so there is nothing left to read, and saying so is better than reading
+whatever happens to sit at that path now.
 
 ---
 

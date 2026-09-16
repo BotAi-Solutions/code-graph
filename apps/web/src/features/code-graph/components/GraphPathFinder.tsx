@@ -1,53 +1,72 @@
-import { useMemo, useState } from 'react';
-import type { CodeGraphModel, GraphNode } from '../model/graph-types.js';
-import type { PathResult } from '../utils/graph-traversal.js';
-import { nodeTypeLabel } from '../model/node-types.js';
+import { useEffect, useMemo, useState } from 'react';
+import { searchNodes } from '../../../api/graph.api.js';
+import { shortenPath } from '../../../utils/format.js';
+import type { CodeNode, GraphPath } from '../../../types/index.js';
+import type { CodeGraphModel } from '../model/graph-types.js';
+import { nodeFullName, nodeTypeLabel } from '../model/node-types.js';
+import { pathRows, pathSummary } from '../model/navigation.js';
+import { relationshipColor } from '../model/edge-types.js';
 import { nodeColor } from '../utils/graph-colors.js';
 
 /**
  * "Is there a route from here to there, and what is on it?"
  *
- * The search is breadth-first over the graph on screen, so the answer is the
- * shortest route *through what you are looking at*. Direction is tried first,
- * because "how does a request get from the controller to the repository" is a
- * question about flow; when no directed route exists the search is repeated
- * ignoring direction and the result says so, which is more useful than "no
- * path" — two components can be related without one reaching the other.
+ * The search runs on the server, over the whole repository, and that is the
+ * point: a route from a controller to a table runs through a service and a
+ * repository that the current projection very likely is not drawing, and a
+ * search restricted to the canvas would answer "no route" about a route that
+ * plainly exists.
  *
- * Both endpoints are picked from the displayed graph rather than from the
- * project, because a path to a node that is not drawn could not be shown.
+ * So both endpoints are picked from the *project* — the same search the top bar
+ * uses — and the found route is merged onto the canvas by the workspace, which
+ * is why choosing two nodes you cannot currently see still draws you a path.
+ *
+ * Direction is tried first, because "how does a request get from the controller
+ * to the repository" is a question about flow. When no directed route exists
+ * the server repeats the search ignoring direction and says so, which is more
+ * useful than "no path": two components can be related without one reaching
+ * the other.
  */
 
 export interface GraphPathFinderProps {
+  projectId: string;
   model: CodeGraphModel;
   from: string | null;
   to: string | null;
-  path: PathResult | null;
+  path: GraphPath | null;
+  loading: boolean;
+  error: string | null;
   selectedNodeId: string | null;
   onChangeFrom: (nodeId: string | null) => void;
   onChangeTo: (nodeId: string | null) => void;
   onSelectNode: (nodeId: string) => void;
+  onOpenSource: (nodeId: string) => void;
   onClear: () => void;
 }
 
 export function GraphPathFinder({
+  projectId,
   model,
   from,
   to,
   path,
+  loading,
+  error,
   selectedNodeId,
   onChangeFrom,
   onChangeTo,
   onSelectNode,
+  onOpenSource,
   onClear,
 }: GraphPathFinderProps): React.JSX.Element {
-  const found = path && path.nodeIds.length > 0;
+  const found = path?.found === true;
 
   return (
     <div className="pathfinder">
       <div className="pathfinder__row">
         <NodePicker
           label="From"
+          projectId={projectId}
           model={model}
           value={from}
           selectedNodeId={selectedNodeId}
@@ -55,25 +74,26 @@ export function GraphPathFinder({
         />
         <NodePicker
           label="To"
+          projectId={projectId}
           model={model}
           value={to}
           selectedNodeId={selectedNodeId}
           onChange={onChangeTo}
         />
-        <button
-          type="button"
-          className="button"
-          disabled={!from && !to}
-          onClick={onClear}
-        >
+        <button type="button" className="button" disabled={!from && !to} onClick={onClear}>
           Clear
         </button>
       </div>
 
-      {from && to && !found && (
+      {error && <p className="pathfinder__empty">{error}</p>}
+
+      {loading && <p className="pathfinder__note">Searching the graph…</p>}
+
+      {from && to && !loading && !error && path && !found && (
         <p className="pathfinder__empty">
-          No route between these two in the current view. Try a mode with more relationships, or
-          expand a node between them.
+          {path.truncated
+            ? 'The search reached its limit before finding a route. Try two nodes closer together.'
+            : 'No route between these two, in either direction, within the search depth.'}
         </p>
       )}
 
@@ -84,27 +104,63 @@ export function GraphPathFinder({
               No directed route exists; this is the shortest one ignoring direction.
             </p>
           )}
-          <ol className="pathfinder__steps">
-            {path.nodeIds.map((id, index) => {
-              const node = model.nodesById.get(id);
-              if (!node) return null;
 
+          <p className="pathfinder__summary">{pathSummary(path)}</p>
+
+          <ol className="pathfinder__steps">
+            {pathRows(path).map(({ node, step }) => {
               return (
-                <li key={id}>
-                  <button
-                    type="button"
-                    className="pathfinder__step"
-                    onClick={() => {
-                      onSelectNode(id);
-                    }}
-                  >
-                    <span className="swatch" style={{ background: nodeColor(node.type) }} />
-                    <span className="pathfinder__step-name">{node.label}</span>
-                    <span className="pathfinder__step-type">{nodeTypeLabel(node.type)}</span>
-                  </button>
-                  {index < path.nodeIds.length - 1 && (
-                    <span className="pathfinder__arrow" aria-hidden="true">
-                      ↓
+                <li key={node.id}>
+                  <div className="pathfinder__step-row">
+                    <button
+                      type="button"
+                      className="pathfinder__step"
+                      title={nodeFullName(node)}
+                      onClick={() => {
+                        onSelectNode(node.id);
+                      }}
+                    >
+                      <span className="swatch" style={{ background: nodeColor(node.type) }} />
+                      <span className="pathfinder__step-name">{nodeFullName(node)}</span>
+                      <span className="pathfinder__step-type">{nodeTypeLabel(node.type)}</span>
+                    </button>
+
+                    {node.filePath && (
+                      <button
+                        type="button"
+                        className="pathfinder__step-source"
+                        title={`Open ${node.filePath}`}
+                        onClick={() => {
+                          onOpenSource(node.id);
+                        }}
+                      >
+                        source
+                      </button>
+                    )}
+                  </div>
+
+                  {step && (
+                    <span className="pathfinder__arrow">
+                      <span aria-hidden="true">↓</span>
+                      <span
+                        className="pathfinder__relationship"
+                        style={{ color: relationshipColor(step.relationship) }}
+                      >
+                        {step.relationship}
+                      </span>
+                      {step.reversed && (
+                        <span className="pathfinder__reversed" title="Crossed against its direction">
+                          reversed
+                        </span>
+                      )}
+                      {step.evidenceSource && (
+                        <span className="pathfinder__evidence" title="How this relationship was found">
+                          {step.evidenceSource}
+                          {step.confidence && step.confidence !== 'high'
+                            ? ` · ${step.confidence}`
+                            : ''}
+                        </span>
+                      )}
                     </span>
                   )}
                 </li>
@@ -118,21 +174,25 @@ export function GraphPathFinder({
 }
 
 const PICKER_LIMIT = 12;
+const DEBOUNCE_MS = 180;
 
 /**
- * A typeahead over the nodes on screen.
+ * A typeahead over the whole project.
  *
- * Deliberately not the project-wide search: choosing a node the canvas does not
- * hold would produce a path that could not be drawn.
+ * With no term it offers the nodes on screen, ranked by importance, because
+ * "connect these two things I am looking at" is the common case. Typing hands
+ * the question to the server, so a node that is not drawn is still reachable.
  */
 function NodePicker({
   label,
+  projectId,
   model,
   value,
   selectedNodeId,
   onChange,
 }: {
   label: string;
+  projectId: string;
   model: CodeGraphModel;
   value: string | null;
   selectedNodeId: string | null;
@@ -140,33 +200,45 @@ function NodePicker({
 }): React.JSX.Element {
   const [term, setTerm] = useState('');
   const [open, setOpen] = useState(false);
+  const [results, setResults] = useState<CodeNode[]>([]);
 
   const chosen = value ? model.nodesById.get(value) : undefined;
 
-  const matches = useMemo(() => {
-    const needle = term.trim().toLowerCase();
-    if (needle.length === 0) {
-      // With no term, offer the nodes most worth connecting.
-      return [...model.nodes]
+  const onCanvas = useMemo(
+    () =>
+      [...model.nodes]
         .sort((a, b) => b.metrics.importance - a.metrics.importance)
-        .slice(0, PICKER_LIMIT);
+        .slice(0, PICKER_LIMIT)
+        .map((node) => node.source),
+    [model],
+  );
+
+  useEffect(() => {
+    const trimmed = term.trim();
+    if (trimmed.length === 0) {
+      setResults([]);
+      return;
     }
 
-    const hits: GraphNode[] = [];
-    for (const node of model.nodes) {
-      if (
-        node.fullLabel.toLowerCase().includes(needle) ||
-        (node.file?.toLowerCase().includes(needle) ?? false)
-      ) {
-        hits.push(node);
-        if (hits.length >= PICKER_LIMIT * 3) break;
-      }
-    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      searchNodes(projectId, trimmed, { limit: PICKER_LIMIT }, controller.signal)
+        .then((page) => {
+          if (!controller.signal.aborted) setResults(page.nodes);
+        })
+        .catch(() => {
+          // A failed lookup leaves the last results in place; the picker is a
+          // convenience and an error toast here would be noise.
+        });
+    }, DEBOUNCE_MS);
 
-    return hits
-      .sort((a, b) => b.metrics.importance - a.metrics.importance)
-      .slice(0, PICKER_LIMIT);
-  }, [model, term]);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [projectId, term]);
+
+  const matches = term.trim().length === 0 ? onCanvas : results;
 
   return (
     <div className="picker">
@@ -188,13 +260,30 @@ function NodePicker({
             ×
           </span>
         </button>
+      ) : value ? (
+        // Chosen, but not on the canvas: the server found it and the workspace
+        // has not merged it yet, or a filter is hiding it.
+        <button
+          type="button"
+          className="picker__chosen"
+          title="Chosen from search"
+          onClick={() => {
+            onChange(null);
+            setTerm('');
+          }}
+        >
+          <span className="picker__chosen-offscreen">selected</span>
+          <span className="picker__clear" aria-hidden="true">
+            ×
+          </span>
+        </button>
       ) : (
         <div className="picker__field">
           <input
             className="picker__input"
             type="text"
             value={term}
-            placeholder="node on canvas…"
+            placeholder="search the project…"
             aria-label={`${label} node`}
             onChange={(event) => {
               setTerm(event.target.value);
@@ -231,7 +320,7 @@ function NodePicker({
                   <button
                     type="button"
                     className="picker__result"
-                    title={node.fullLabel}
+                    title={nodeFullName(node)}
                     onClick={() => {
                       onChange(node.id);
                       setOpen(false);
@@ -239,8 +328,10 @@ function NodePicker({
                     }}
                   >
                     <span className="swatch" style={{ background: nodeColor(node.type) }} />
-                    <span className="picker__result-name">{node.label}</span>
-                    <span className="picker__result-type">{nodeTypeLabel(node.type)}</span>
+                    <span className="picker__result-name">{nodeFullName(node)}</span>
+                    <span className="picker__result-type">
+                      {node.filePath ? shortenPath(node.filePath, 22) : nodeTypeLabel(node.type)}
+                    </span>
                   </button>
                 </li>
               ))}

@@ -40,6 +40,14 @@ export interface CodeGraphParams {
   refreshToken: number;
   repository: string | null;
   commit: string | null;
+  /**
+   * Nodes and edges to draw alongside the fetched view, whatever the filters.
+   *
+   * A found path is the case this exists for: the server walks the whole
+   * repository, so a route routinely passes through nodes the current
+   * projection is not drawing — and a path you cannot see is not an answer.
+   */
+  overlay?: CodeGraph | null;
 }
 
 export interface CodeGraphView {
@@ -56,7 +64,7 @@ export interface CodeGraphView {
    */
   viewKey: string;
   reload: () => void;
-  expandNode: (nodeId: string) => void;
+  expandNode: (nodeId: string, depth?: number) => void;
   resetExpansions: () => void;
 }
 
@@ -100,11 +108,12 @@ export function useCodeGraph(params: CodeGraphParams): CodeGraphView {
   const base = graphState.data?.graph ?? EMPTY_GRAPH;
   const meta = graphState.data?.meta ?? null;
 
-  /** The base view plus every expansion, merged by id. */
-  const graph = useMemo(
-    () => (expansions.size === 0 ? base : mergeGraphs(base, ...expansions.values())),
-    [base, expansions],
-  );
+  /** The base view, every expansion and any overlay, merged by id. */
+  const overlay = params.overlay ?? null;
+  const graph = useMemo(() => {
+    const extra = [...expansions.values(), ...(overlay ? [overlay] : [])];
+    return extra.length === 0 ? base : mergeGraphs(base, ...extra);
+  }, [base, expansions, overlay]);
 
   /**
    * Normalisation is the expensive step — degree, PageRank, modules — so it is
@@ -119,7 +128,10 @@ export function useCodeGraph(params: CodeGraphParams): CodeGraphView {
     [graph, params.repository, params.commit],
   );
 
-  const expandedNodeIds = useMemo(() => new Set(expansions.keys()), [expansions]);
+  const expandedNodeIds = useMemo(
+    () => new Set([...expansions.keys()].map((key) => key.slice(0, key.lastIndexOf('@')))),
+    [expansions],
+  );
 
   const viewKey = [
     params.projectId,
@@ -133,8 +145,12 @@ export function useCodeGraph(params: CodeGraphParams): CodeGraphView {
   ].join('/');
 
   const expandNode = useCallback(
-    (nodeId: string) => {
-      if (expansions.has(nodeId)) return;
+    (nodeId: string, depth: number = GRAPH_EXPANSION_DEPTH) => {
+      // Keyed by node *and* depth: expanding to two hops after one has to be
+      // able to fetch, rather than being mistaken for the expansion already
+      // held. Merging is by id, so the overlap costs nothing.
+      const key = `${nodeId}@${String(depth)}`;
+      if (expansions.has(key)) return;
 
       setExpanding(true);
       fetchNeighbourhood(
@@ -145,10 +161,10 @@ export function useCodeGraph(params: CodeGraphParams): CodeGraphView {
           nodeTypes: params.nodeTypes,
           relationships: params.relationships,
         },
-        { depth: GRAPH_EXPANSION_DEPTH },
+        { depth },
       )
         .then((result) => {
-          setExpansions((current) => new Map(current).set(nodeId, result.graph));
+          setExpansions((current) => new Map(current).set(key, result.graph));
         })
         .catch(() => {
           // A failed expansion leaves the base view untouched: the node simply

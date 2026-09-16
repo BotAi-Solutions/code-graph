@@ -15,6 +15,7 @@ import { GraphService } from './modules/graph/index.js';
 import { HealthService } from './modules/health/index.js';
 import { ProjectService } from './modules/projects/index.js';
 import { RepositoryService } from './modules/repositories/index.js';
+import { SourceService } from './modules/source/index.js';
 
 /**
  * Composition root. This is the only file that knows both how to reach the
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
     new SourceRepositoryRepository(database),
     projects,
   );
+  const graph = new GraphService(new GraphRepository(database), projects);
 
   const services: AppServices = {
     filesystem: new FilesystemService({
@@ -50,7 +52,11 @@ async function main(): Promise<void> {
     projects,
     repositories,
     analysis: new AnalysisService(new AnalysisJobRepository(database), projects, repositories),
-    graph: new GraphService(new GraphRepository(database), projects),
+    graph,
+    source: new SourceService(repositories, graph, {
+      enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
+      repositoryBaseDirectory: config.filesystem.repositoryBaseDirectory,
+    }),
     health: new HealthService(database),
   };
 

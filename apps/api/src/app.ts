@@ -18,6 +18,7 @@ import { graphRoutes, type GraphService } from './modules/graph/index.js';
 import { healthRoutes, type HealthService } from './modules/health/index.js';
 import { projectRoutes, type ProjectService } from './modules/projects/index.js';
 import { repositoryRoutes, type RepositoryService } from './modules/repositories/index.js';
+import { sourceRoutes, type SourceService } from './modules/source/index.js';
 
 /**
  * Assembles the HTTP layer from already-constructed services.
@@ -33,6 +34,7 @@ export interface AppServices {
   repositories: RepositoryService;
   analysis: AnalysisService;
   graph: GraphService;
+  source: SourceService;
   health: HealthService;
 }
 
@@ -89,6 +91,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         { name: 'repositories', description: 'Source repositories attached to a project' },
         { name: 'analysis', description: 'Analysis runs' },
         { name: 'graph', description: 'Code knowledge graph queries' },
+        {
+          name: 'source',
+          description: 'Reading source from a project\u2019s indexed repository',
+        },
       ],
     },
     transform: jsonSchemaTransform,
@@ -106,6 +112,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await api.register(repositoryRoutes(services.repositories));
       await api.register(analysisRoutes(services.analysis));
       await api.register(graphRoutes(services.graph));
+      await api.register(sourceRoutes(services.source));
     },
     { prefix: API_PREFIX },
   );

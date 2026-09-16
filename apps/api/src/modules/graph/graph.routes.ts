@@ -3,13 +3,19 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import {
   codeGraphSchema,
   codeNodeSchema,
+  definitionSchema,
   graphNodeParamsSchema,
+  graphPathBodySchema,
+  graphPathSchema,
   graphQuerySchema,
   graphSearchQuerySchema,
   graphSummarySchema,
   neighbourQuerySchema,
   nodeDetailSchema,
   projectIdParamSchema,
+  relatedNodeSchema,
+  sourceTreeQuerySchema,
+  sourceTreeSchema,
 } from '@ckg/shared';
 import { commonErrorResponses, envelopeSchema, success } from '../../common/utils/response.js';
 import type { GraphService } from './graph.service.js';
@@ -198,6 +204,205 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           request.query.limit,
         );
         return reply.send(success(nodes, { total: nodes.length }));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/definition',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'Where this node is written down',
+          description:
+            'The node\u2019s own source coordinates as the indexer recorded them, plus the id of the `file` node that contains it. `null` for a node with no file \u2014 a table, an external package \u2014 and null coordinates for one the indexer gave no range; neither is ever guessed at.',
+          params: graphNodeParamsSchema,
+          response: {
+            200: envelopeSchema(definitionSchema.nullable()),
+            ...commonErrorResponses,
+          },
+        },
+      },
+      async (request, reply) => {
+        const definition = await service.getDefinition(
+          request.params.projectId,
+          request.params.nodeId,
+        );
+        return reply.send(success(definition));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/dependencies',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'What this node depends on',
+          description:
+            'Outgoing DEPENDS_ON, DEPENDS_ON_SERVICE, IMPORTS and USES edges. Each entry carries the relationship that produced it and its evidence, because \u201cdepends on\u201d covers four different facts and the caller should be told which.',
+          params: graphNodeParamsSchema,
+          querystring: neighbourQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const nodes = await service.getDependencies(
+          request.params.projectId,
+          request.params.nodeId,
+          request.query.limit,
+        );
+        return reply.send(success(nodes, { total: nodes.length }));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/dependents',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'What depends on this node',
+          description: 'The same four relationships as `dependencies`, read the other way.',
+          params: graphNodeParamsSchema,
+          querystring: neighbourQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const nodes = await service.getDependents(
+          request.params.projectId,
+          request.params.nodeId,
+          request.query.limit,
+        );
+        return reply.send(success(nodes, { total: nodes.length }));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/parents',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'The containment chain above this node, nearest first',
+          description:
+            'Method \u2192 class \u2192 file \u2192 directory \u2192 repository, following CONTAINS upward. `limit` caps how far up the chain is walked.',
+          params: graphNodeParamsSchema,
+          querystring: neighbourQuerySchema,
+          response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const nodes = await service.getParents(
+          request.params.projectId,
+          request.params.nodeId,
+          request.query.limit,
+        );
+        return reply.send(success(nodes, { total: nodes.length }));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/children',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'Nodes this one contains',
+          description:
+            'The members of a class, the symbols of a file, the entries of a directory \u2014 in source order where the indexer recorded positions.',
+          params: graphNodeParamsSchema,
+          querystring: neighbourQuerySchema,
+          response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const nodes = await service.getChildren(
+          request.params.projectId,
+          request.params.nodeId,
+          request.query.limit,
+        );
+        return reply.send(success(nodes, { total: nodes.length }));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/implementations',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'What implements or extends this node, and what it implements',
+          description:
+            'Both directions of IMPLEMENTS and EXTENDS in one list. `direction: incoming` is something that implements or extends this node; `outgoing` is what this node implements or extends.',
+          params: graphNodeParamsSchema,
+          querystring: neighbourQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const nodes = await service.getImplementations(
+          request.params.projectId,
+          request.params.nodeId,
+          request.query.limit,
+        );
+        return reply.send(success(nodes, { total: nodes.length }));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/tree',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'One level of the repository tree',
+          description:
+            'Derived from the `directory` and `file` nodes the indexer already produced, so the tree costs a query rather than a second filesystem walk. One level per request: omit `path` for the root. Paths are repository-relative.',
+          params: projectIdParamSchema,
+          querystring: sourceTreeQuerySchema,
+          response: { 200: envelopeSchema(sourceTreeSchema), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const level = await service.tree(
+          request.params.projectId,
+          request.query.path,
+          request.query.limit,
+        );
+        return reply.send(
+          success(level, { total: level.entries.length, truncated: level.truncated }),
+        );
+      },
+    );
+
+    app.post(
+      '/projects/:projectId/graph/path',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'The shortest route between two nodes',
+          description:
+            'Breadth-first, server side, bounded by `maxDepth` and by a node budget. Directed by default \u2014 which is what a request-to-store trace means \u2014 falling back to an undirected search when no directed route exists and reporting `undirected: true` when it did. `found: false` with `truncated: true` means the budget ran out before the search could conclude, not that no route exists. No route is ever inferred: every hop is an edge in the graph, with its evidence.',
+          params: projectIdParamSchema,
+          body: graphPathBodySchema,
+          response: { 200: envelopeSchema(graphPathSchema), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const path = await service.findPath({
+          projectId: request.params.projectId,
+          from: request.body.from,
+          to: request.body.to,
+          maxDepth: request.body.maxDepth,
+          direction: request.body.direction,
+          relationships: request.body.relationships,
+          nodeTypes: request.body.nodeTypes,
+          projection: request.body.projection,
+        });
+
+        return reply.send(
+          success(path, {
+            found: path.found,
+            depth: path.depth,
+            undirected: path.undirected,
+            maxDepth: request.body.maxDepth,
+          }),
+        );
       },
     );
   };

@@ -1,4 +1,4 @@
-import type { CodeGraphModel, GraphPath } from '../model/graph-types.js';
+import type { CodeGraphModel, ViewPath } from '../model/graph-types.js';
 
 /**
  * Walks over the displayed graph.
@@ -108,7 +108,7 @@ function adjacencyList(model: CodeGraphModel, directed: boolean): Map<string, Ar
   return arcs;
 }
 
-export interface PathResult extends GraphPath {
+export interface PathResult extends ViewPath {
   /** True when no directed route existed and the search ignored direction. */
   undirected: boolean;
 }

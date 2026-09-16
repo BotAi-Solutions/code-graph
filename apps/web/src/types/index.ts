@@ -16,10 +16,13 @@ export type {
   CodeNodeType,
   CodeRelationship,
   ConfidenceLevel,
+  Definition,
   DirectoryEntry,
   DirectoryListing,
   EdgeEvidence,
   GraphDirection,
+  GraphPath,
+  GraphPathStep,
   GraphProjection,
   GraphProjectionId,
   IndexingError,
@@ -36,7 +39,12 @@ export type {
   Repository,
   RepositorySourceType,
   SelectedDirectory,
+  SourceLine,
+  SourceTree,
+  SourceTreeEntry,
+  SourceWindow,
   SupportedLanguage,
+  SymbolInfo,
 } from '@ckg/shared';
 
 export {

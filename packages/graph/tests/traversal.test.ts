@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { neighbours, serializeGraph, deserializeGraph, traverseGraph } from '@ckg/graph';
+import {
+  findGraphPath,
+  neighbours,
+  serializeGraph,
+  deserializeGraph,
+  traverseGraph,
+} from '@ckg/graph';
 import type { CodeEdge, CodeGraph, CodeNode, CodeRelationship } from '@ckg/graph';
 
 /**
@@ -171,6 +177,119 @@ describe('neighbours', () => {
 
   it('returns nothing when no edge of that relationship exists', () => {
     expect(neighbours(GRAPH, 'Model', 'outgoing', ['CALLS'])).toEqual([]);
+  });
+});
+
+describe('findGraphPath', () => {
+  /** A second route to Model, so "shortest" has something to choose between. */
+  const FORKED: CodeGraph = {
+    nodes: [...GRAPH.nodes, node('Mapper', 'class')],
+    edges: [
+      ...GRAPH.edges,
+      edge('Controller', 'CALLS', 'Mapper'),
+      edge('Mapper', 'REFERENCES', 'Model'),
+    ],
+  };
+
+  it('follows the direction of the edges', () => {
+    const path = findGraphPath(GRAPH, 'Controller', 'Model');
+
+    expect(path.found).toBe(true);
+    expect(path.nodeIds).toEqual(['Controller', 'Service', 'Repository', 'Model']);
+    expect(path.hops.map((hop) => hop.relationship)).toEqual([
+      'CALLS',
+      'CALLS',
+      'REFERENCES',
+    ]);
+    expect(path.hops.every((hop) => !hop.reversed)).toBe(true);
+  });
+
+  it('finds no directed route against the arrows', () => {
+    expect(findGraphPath(GRAPH, 'Model', 'Controller').found).toBe(false);
+  });
+
+  it('finds the same pair undirected, marking the reversed hops', () => {
+    const path = findGraphPath(GRAPH, 'Model', 'Controller', { directed: false });
+
+    expect(path.found).toBe(true);
+    expect(path.nodeIds).toEqual(['Model', 'Repository', 'Service', 'Controller']);
+    expect(path.hops.every((hop) => hop.reversed)).toBe(true);
+  });
+
+  it('takes the shortest of several routes', () => {
+    const path = findGraphPath(FORKED, 'Controller', 'Model');
+
+    expect(path.nodeIds).toEqual(['Controller', 'Mapper', 'Model']);
+    expect(path.hops).toHaveLength(2);
+  });
+
+  it('returns a route of no hops from a node to itself', () => {
+    const path = findGraphPath(GRAPH, 'Service', 'Service');
+
+    expect(path).toEqual({ found: true, nodeIds: ['Service'], hops: [], truncated: false });
+  });
+
+  it('visits every node on the route exactly once', () => {
+    const path = findGraphPath(GRAPH, 'Controller', 'Model');
+    expect(new Set(path.nodeIds).size).toBe(path.nodeIds.length);
+    expect(new Set(path.hops.map((hop) => hop.edgeId)).size).toBe(path.hops.length);
+  });
+
+  it('will not walk further than the depth allows', () => {
+    expect(findGraphPath(GRAPH, 'Controller', 'Model', { maxDepth: 2 }).found).toBe(false);
+    expect(findGraphPath(GRAPH, 'Controller', 'Model', { maxDepth: 3 }).found).toBe(true);
+  });
+
+  it('restricts the walk to the requested relationships', () => {
+    const calls = findGraphPath(GRAPH, 'Controller', 'Model', { relationships: ['CALLS'] });
+    expect(calls.found).toBe(false);
+
+    const both = findGraphPath(GRAPH, 'Controller', 'Model', {
+      relationships: ['CALLS', 'REFERENCES'],
+    });
+    expect(both.found).toBe(true);
+  });
+
+  it('will not route through an excluded node type', () => {
+    const path = findGraphPath(GRAPH, 'Controller', 'Model', {
+      nodeTypes: ['class'],
+    });
+    expect(path.found).toBe(false);
+  });
+
+  it('finds no route to a disconnected node', () => {
+    expect(findGraphPath(GRAPH, 'Controller', 'orphan', { directed: false }).found).toBe(false);
+  });
+
+  it('finds no route to a node that is not in the graph', () => {
+    expect(findGraphPath(GRAPH, 'Controller', 'nope').found).toBe(false);
+  });
+
+  it('terminates on a cycle', () => {
+    const cyclic: CodeGraph = {
+      nodes: [node('a', 'class'), node('b', 'class'), node('c', 'class')],
+      edges: [edge('a', 'CALLS', 'b'), edge('b', 'CALLS', 'a'), edge('b', 'CALLS', 'c')],
+    };
+
+    expect(findGraphPath(cyclic, 'a', 'c').nodeIds).toEqual(['a', 'b', 'c']);
+  });
+
+  it('gives up, and says so, once the node budget is spent', () => {
+    const path = findGraphPath(GRAPH, 'Controller', 'Model', { nodeBudget: 2 });
+
+    expect(path.found).toBe(false);
+    expect(path.truncated).toBe(true);
+  });
+
+  it('is deterministic across runs, whatever the input order', () => {
+    const shuffled: CodeGraph = {
+      nodes: [...FORKED.nodes].reverse(),
+      edges: [...FORKED.edges].reverse(),
+    };
+
+    expect(findGraphPath(shuffled, 'Controller', 'Model')).toEqual(
+      findGraphPath(FORKED, 'Controller', 'Model'),
+    );
   });
 });
 

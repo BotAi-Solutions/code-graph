@@ -276,7 +276,10 @@ export class InMemoryGraphStore {
     };
   }
 
-  /** Mirrors the SQL: matches name, qualified name and path, and pages. */
+  /**
+   * Mirrors the SQL: matches name, qualified name and path, ranks the result
+   * down the same ladder, and pages.
+   */
   async searchNodes(
     projectId: string,
     term: string,
@@ -293,6 +296,13 @@ export class InMemoryGraphStore {
           (node.qualifiedName ?? '').toLowerCase().includes(needle) ||
           (node.filePath ?? '').toLowerCase().includes(needle) ||
           node.type === needle,
+      )
+      .sort(
+        (a, b) =>
+          searchRank(a, needle) - searchRank(b, needle) ||
+          a.name.length - b.name.length ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
       );
 
     return {
@@ -527,6 +537,313 @@ export class InMemoryGraphStore {
   async references(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
     return this.neighbours(projectId, nodeId, 'incoming', 'REFERENCES', limit);
   }
+
+  /** Mirrors `GraphRepository.relatedNeighbours`, ordering included. */
+  private related(
+    projectId: string,
+    nodeId: string,
+    relationships: readonly CodeRelationship[],
+    direction: 'incoming' | 'outgoing' | 'both',
+    limit: number,
+  ): RelatedNode[] {
+    const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+    const allowed = new Set(relationships);
+    const matched: RelatedNode[] = [];
+
+    for (const edge of this.edgesOf(projectId)) {
+      if (!allowed.has(edge.relationship)) continue;
+
+      const outgoing = edge.sourceNodeId === nodeId;
+      const incoming = edge.targetNodeId === nodeId;
+      if (!outgoing && !incoming) continue;
+      if (outgoing && direction === 'incoming') continue;
+      if (incoming && direction === 'outgoing') continue;
+
+      const other = nodes.get(outgoing ? edge.targetNodeId : edge.sourceNodeId);
+      if (!other) continue;
+
+      matched.push({
+        ...other,
+        relationship: edge.relationship,
+        direction: outgoing ? 'outgoing' : 'incoming',
+        ...(typeof edge.metadata?.confidence === 'string'
+          ? { confidence: edge.metadata.confidence as RelatedNode['confidence'] }
+          : {}),
+        ...(typeof edge.metadata?.source === 'string'
+          ? { evidenceSource: edge.metadata.source }
+          : {}),
+      });
+    }
+
+    return matched
+      .sort(
+        (a, b) =>
+          a.direction.localeCompare(b.direction) ||
+          a.relationship.localeCompare(b.relationship) ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
+      )
+      .slice(0, limit);
+  }
+
+  async dependencies(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', limit);
+  }
+
+  async dependents(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', limit);
+  }
+
+  async implementations(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, ['IMPLEMENTS', 'EXTENDS'], 'both', limit);
+  }
+
+  async parent(projectId: string, nodeId: string): Promise<CodeNode | null> {
+    const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+
+    const owners = this.edgesOf(projectId)
+      .filter((edge) => edge.relationship === 'CONTAINS' && edge.targetNodeId === nodeId)
+      .map((edge) => nodes.get(edge.sourceNodeId))
+      .filter((node): node is CodeNode => node !== undefined)
+      .sort((a, b) => a.id.localeCompare(b.id));
+
+    return owners[0] ?? null;
+  }
+
+  async children(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
+    const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+
+    return this.edgesOf(projectId)
+      .filter((edge) => edge.relationship === 'CONTAINS' && edge.sourceNodeId === nodeId)
+      .map((edge) => nodes.get(edge.targetNodeId))
+      .filter((node): node is CodeNode => node !== undefined)
+      .sort(
+        (a, b) =>
+          (a.startLine ?? Number.MAX_SAFE_INTEGER) - (b.startLine ?? Number.MAX_SAFE_INTEGER) ||
+          a.name.localeCompare(b.name) ||
+          a.id.localeCompare(b.id),
+      )
+      .slice(0, limit);
+  }
+
+  async findFileNode(projectId: string, filePath: string): Promise<CodeNode | null> {
+    return (
+      this.nodesOf(projectId)
+        .filter((node) => node.type === 'file' && node.filePath === filePath)
+        .sort((a, b) => a.id.localeCompare(b.id))[0] ?? null
+    );
+  }
+
+  /** Mirrors `GraphRepository.treeLevel`: one level, directories before files. */
+  async treeLevel(
+    projectId: string,
+    directoryPath: string,
+    limit: number,
+  ): Promise<{
+    path: string;
+    parentPath: string | null;
+    entries: Array<{ path: string; name: string; type: 'directory' | 'file'; nodeId: string }>;
+    truncated: boolean;
+  }> {
+    const normalized = directoryPath.replace(/^\/+|\/+$/g, '');
+    const prefix = normalized === '' ? '' : `${normalized}/`;
+
+    const matched = this.nodesOf(projectId)
+      .filter((node) => node.type === 'directory' || node.type === 'file')
+      .filter((node) => node.filePath !== undefined)
+      .filter((node) => (node.filePath as string).startsWith(prefix))
+      .filter((node) => {
+        const rest = (node.filePath as string).slice(prefix.length);
+        return rest.length > 0 && !rest.includes('/');
+      })
+      .sort(
+        (a, b) =>
+          a.type.localeCompare(b.type) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+      );
+
+    const truncated = matched.length > limit;
+
+    return {
+      path: normalized,
+      parentPath:
+        normalized === ''
+          ? null
+          : normalized.includes('/')
+            ? normalized.slice(0, normalized.lastIndexOf('/'))
+            : '',
+      entries: matched.slice(0, limit).map((node) => ({
+        path: node.filePath as string,
+        name: node.name,
+        type: node.type === 'directory' ? 'directory' : 'file',
+        nodeId: node.id,
+      })),
+      truncated,
+    };
+  }
+
+  /**
+   * Mirrors `GraphRepository.findPath`: breadth-first, level by level, with the
+   * same total order over candidate edges so both pick the same predecessor.
+   */
+  async findPath(
+    projectId: string,
+    from: string,
+    to: string,
+    options: {
+      maxDepth: number;
+      directed: boolean;
+      relationships?: CodeRelationship[] | undefined;
+      nodeTypes?: CodeNodeType[] | undefined;
+      nodeBudget?: number | undefined;
+    },
+  ): Promise<{
+    found: boolean;
+    nodeIds: string[];
+    hops: Array<{
+      edgeId: string;
+      sourceNodeId: string;
+      targetNodeId: string;
+      relationship: CodeRelationship;
+      reversed: boolean;
+      metadata: Record<string, unknown> | null;
+    }>;
+    truncated: boolean;
+  }> {
+    type Hop = {
+      edgeId: string;
+      sourceNodeId: string;
+      targetNodeId: string;
+      relationship: CodeRelationship;
+      reversed: boolean;
+      metadata: Record<string, unknown> | null;
+    };
+
+    if (from === to) return { found: true, nodeIds: [from], hops: [], truncated: false };
+
+    const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+    const edges = this.edgesOf(projectId);
+    const allowedRelationships = options.relationships ? new Set(options.relationships) : null;
+    const allowedTypes = options.nodeTypes ? new Set(options.nodeTypes) : null;
+    const budget = options.nodeBudget ?? Number.MAX_SAFE_INTEGER;
+
+    const cameFrom = new Map<string, Hop>();
+    const seen = new Set<string>([from]);
+    let frontier = [from];
+    let truncated = false;
+
+    const otherOf = (hop: Hop): string => (hop.reversed ? hop.sourceNodeId : hop.targetNodeId);
+
+    for (let depth = 0; depth < options.maxDepth && frontier.length > 0; depth += 1) {
+      const anchors = new Set(frontier);
+      const candidates: Hop[] = [];
+
+      for (const edge of edges) {
+        if (allowedRelationships && !allowedRelationships.has(edge.relationship)) continue;
+
+        const hop = (reversed: boolean): Hop => ({
+          edgeId: edge.id,
+          sourceNodeId: edge.sourceNodeId,
+          targetNodeId: edge.targetNodeId,
+          relationship: edge.relationship,
+          reversed,
+          metadata: edge.metadata ?? null,
+        });
+
+        if (anchors.has(edge.sourceNodeId)) {
+          const target = nodes.get(edge.targetNodeId);
+          if (target && (!allowedTypes || allowedTypes.has(target.type))) candidates.push(hop(false));
+        }
+        if (!options.directed && anchors.has(edge.targetNodeId)) {
+          const source = nodes.get(edge.sourceNodeId);
+          if (source && (!allowedTypes || allowedTypes.has(source.type))) candidates.push(hop(true));
+        }
+      }
+
+      candidates.sort(
+        (a, b) =>
+          otherOf(a).localeCompare(otherOf(b)) ||
+          Number(a.reversed) - Number(b.reversed) ||
+          a.relationship.localeCompare(b.relationship) ||
+          a.sourceNodeId.localeCompare(b.sourceNodeId) ||
+          a.targetNodeId.localeCompare(b.targetNodeId) ||
+          a.edgeId.localeCompare(b.edgeId),
+      );
+
+      const next: string[] = [];
+
+      for (const hop of candidates) {
+        const other = otherOf(hop);
+        if (seen.has(other)) continue;
+
+        if (seen.size >= budget) {
+          truncated = true;
+          break;
+        }
+
+        seen.add(other);
+        cameFrom.set(other, hop);
+
+        if (other === to) {
+          const nodeIds = [to];
+          const hops: Hop[] = [];
+          let cursor = to;
+          while (cursor !== from) {
+            const step = cameFrom.get(cursor);
+            if (!step) break;
+            hops.push(step);
+            cursor = step.reversed ? step.targetNodeId : step.sourceNodeId;
+            nodeIds.push(cursor);
+          }
+          nodeIds.reverse();
+          hops.reverse();
+          return { found: true, nodeIds, hops, truncated };
+        }
+
+        next.push(other);
+      }
+
+      if (truncated) break;
+      frontier = next;
+    }
+
+    return { found: false, nodeIds: [], hops: [], truncated };
+  }
+
+  async loadPathGraph(
+    projectId: string,
+    nodeIds: readonly string[],
+    edgeIds: readonly string[],
+  ): Promise<CodeGraph> {
+    const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+    const edges = new Map(this.edgesOf(projectId).map((edge) => [edge.id, edge]));
+
+    return {
+      nodes: nodeIds.map((id) => nodes.get(id)).filter((node): node is CodeNode => node !== undefined),
+      edges: edgeIds.map((id) => edges.get(id)).filter((edge): edge is CodeEdge => edge !== undefined),
+    };
+  }
+}
+
+/**
+ * The ORDER BY in `GraphRepository.searchNodes`, as a function.
+ *
+ * Kept beside the fake rather than imported from the repository because the
+ * repository expresses it in SQL; if the two ever disagree, the integration
+ * suite against a real PostgreSQL is what catches it.
+ */
+function searchRank(node: CodeNode, needle: string): number {
+  const name = node.name.toLowerCase();
+  const qualified = (node.qualifiedName ?? '').toLowerCase();
+  const file = (node.filePath ?? '').toLowerCase();
+
+  if (name === needle) return 0;
+  if (qualified === needle) return 1;
+  if (file === needle || file.endsWith(`/${needle}`)) return 2;
+  if (name.startsWith(needle)) return 3;
+  if (qualified.startsWith(needle)) return 4;
+  if (file.startsWith(needle)) return 5;
+  if (qualified.endsWith(`.${needle}`)) return 6;
+  return 7;
 }
 
 export class StubHealthProbe {

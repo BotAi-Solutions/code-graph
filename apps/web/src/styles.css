@@ -1437,7 +1437,9 @@ code {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .search__spinner {
+  .search__spinner,
+  .source__spinner,
+  .filetree__spinner {
     animation: none;
   }
 }
@@ -1703,26 +1705,34 @@ code {
   color: var(--text-muted);
 }
 
+/* The route runs down the panel, not across it: each hop now carries a
+   relationship and its evidence, which is more text than fits between two
+   chips on one line. */
 .pathfinder__steps {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 12px 0 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  margin: 10px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .pathfinder__steps li {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
 }
 
 .pathfinder__step {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
   background: var(--surface-sunken);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -1739,20 +1749,19 @@ code {
 
 .pathfinder__step-name {
   font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pathfinder__step-type {
+  flex: none;
+  margin-left: auto;
   font-size: 10px;
   color: var(--text-muted);
 }
 
-/* The route reads left to right, so the connector is a turn rather than a
-   literal downward arrow. */
-.pathfinder__arrow {
-  color: var(--text-muted);
-  font-size: 12px;
-  transform: rotate(-90deg);
-}
+
 
 .picker {
   display: flex;
@@ -2979,6 +2988,392 @@ code {
   color: var(--text-muted);
 }
 
+/* --- the file tree -------------------------------------------------------
+
+   A column beside the canvas, not an overlay: it is somewhere you come back to
+   while reading, and a panel that covered the graph every time you opened a
+   folder would be the wrong trade. Narrow on purpose — it lists names, and the
+   full path is in the row's title and in the inspector.
+   ------------------------------------------------------------------------- */
+
+.workspace__tree {
+  flex: 0 0 var(--tree-width, 232px);
+  width: var(--tree-width, 232px);
+  min-width: 0;
+  margin-right: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.workspace__tree[hidden] {
+  display: none;
+}
+
+.filetree {
+  padding: 6px 4px;
+}
+
+.filetree__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.filetree__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.filetree__row:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+/* The selected row is marked by a rule as well as a wash: colour alone would
+   be the only channel saying which file the inspector is describing. */
+.filetree__row--selected {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.filetree__mark {
+  flex: none;
+  width: 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.filetree__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filetree__spinner {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-left: auto;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: search-spin 620ms linear infinite;
+}
+
+.filetree__empty,
+.filetree__error {
+  margin: 6px 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.filetree__error {
+  color: var(--danger);
+}
+
+.filetree__empty--nested {
+  list-style: none;
+  margin-left: 22px;
+}
+
+/* --- the source band -----------------------------------------------------
+
+   Present only while a file is open, so the canvas keeps its full height until
+   someone is actually reading. Capped rather than resizable: the graph stays
+   the larger half of the screen by construction.
+   ------------------------------------------------------------------------- */
+
+.source {
+  display: flex;
+  flex-direction: column;
+  max-height: min(42vh, 460px);
+  min-height: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.source__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-sunken);
+}
+
+.source__file {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A window onto a file that does not say it is a window reads as a truncated
+   file, so the range is always stated. */
+.source__range {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.source__truncated {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+  font-size: 10px;
+}
+
+.source__spacer {
+  flex: 1;
+}
+
+.source__spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: search-spin 620ms linear infinite;
+}
+
+.source__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.source__code {
+  margin: 0;
+  padding: 6px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+.source__line {
+  display: flex;
+  gap: 12px;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+/* The symbol the graph pointed at. A left rule as well as a wash, so the
+   highlight survives a display that renders the tint as near-nothing. */
+.source__line--lit {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.source__gutter {
+  flex: none;
+  min-width: 3.5ch;
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.source__text {
+  color: var(--text);
+}
+
+.source__message {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.source__message--error {
+  color: var(--danger);
+}
+
+/* --- inspector additions -------------------------------------------------- */
+
+/* The definition line is a control, not a caption: "file:line" is the one thing
+   on the panel a reader almost always wants to act on. */
+.inspector__definition {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 6px;
+  margin-bottom: 2px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.inspector__definition:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.inspector__definition-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector__definition-line {
+  flex: none;
+  color: var(--accent);
+}
+
+.inspector__qualified {
+  margin: 0 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Two targets per row: what it is, and where it is. */
+.inspector__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.inspector__row .inspector__link {
+  min-width: 0;
+}
+
+.inspector__row-source {
+  flex: none;
+  padding: 3px 6px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.inspector__row:hover .inspector__row-source,
+.inspector__row-source:focus-visible {
+  opacity: 1;
+}
+
+.inspector__row-source:hover {
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
+.inspector__inline-link {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.inspector__inline-link:hover {
+  text-decoration: underline;
+}
+
+/* --- path finder additions ------------------------------------------------ */
+
+.pathfinder__summary {
+  margin: 2px 0 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.pathfinder__step-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.pathfinder__step-row .pathfinder__step {
+  min-width: 0;
+}
+
+.pathfinder__step-source {
+  flex: none;
+  padding: 3px 6px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.pathfinder__step-source:hover {
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
+/* The arrow carries the relationship and its evidence, because a route drawn
+   as bare names says that two things are connected without saying how. */
+.pathfinder__arrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0 2px 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.pathfinder__relationship {
+  font-family: var(--mono);
+  letter-spacing: 0.03em;
+}
+
+.pathfinder__reversed {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--warn);
+}
+
+.pathfinder__evidence {
+  color: var(--text-muted);
+}
+
+.picker__chosen-offscreen {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
 /* --- narrow screens ------------------------------------------------------
 
    Below this the inspector stops being a column and becomes a slide-over, so
@@ -3006,6 +3401,24 @@ code {
 
   .workspace__resizer {
     display: none;
+  }
+
+  /* The tree does what the sidebar does, for the same reason: at this width a
+     column for it leaves the canvas too narrow to read. */
+  .workspace__tree {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 30;
+    flex: none;
+    width: min(232px, 78%);
+    margin-right: 0;
+    box-shadow: 14px 0 34px rgb(0 0 0 / 45%);
+  }
+
+  .source {
+    max-height: 38vh;
   }
 
   .graph-overlay {

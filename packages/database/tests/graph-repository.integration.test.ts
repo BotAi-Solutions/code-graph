@@ -414,6 +414,259 @@ suite('GraphRepository against PostgreSQL', () => {
     });
   });
 
+  describe('relations', () => {
+    it('reports dependencies and dependents with their evidence', async () => {
+      const dependencies = await graph.dependencies(projectId, `${projectId}-svc`, 10);
+      const dependents = await graph.dependents(projectId, `${projectId}-pkg`, 10);
+
+      expect(dependencies.map((node) => node.name)).toEqual(['express']);
+      expect(dependencies[0]).toMatchObject({
+        relationship: 'DEPENDS_ON',
+        direction: 'outgoing',
+        confidence: 'high',
+        evidenceSource: 'import-analyzer',
+      });
+      expect(dependents.map((node) => node.name)).toEqual(['users-service']);
+      expect(dependents[0]?.direction).toBe('incoming');
+    });
+
+    it('reads both directions of the inheritance relation in one query', async () => {
+      const result = await graph.implementations(projectId, `${projectId}-service`, 10);
+      // The fixture has no IMPLEMENTS or EXTENDS edge, so the honest answer is
+      // an empty list rather than the containment edges that do exist.
+      expect(result).toEqual([]);
+    });
+
+    it('reports the node that contains one, and the nodes it contains', async () => {
+      const parent = await graph.parent(projectId, `${projectId}-method`);
+      const children = await graph.children(projectId, `${projectId}-file`, 10);
+
+      expect(parent?.id).toBe(`${projectId}-service`);
+      expect(children.map((node) => node.name)).toEqual(['UserService']);
+    });
+
+    it('has no parent for the repository root', async () => {
+      expect(await graph.parent(projectId, `${projectId}-repo`)).toBeNull();
+    });
+
+    it('finds the file node behind a path', async () => {
+      const file = await graph.findFileNode(projectId, 'src/services/user.service.ts');
+      expect(file?.id).toBe(`${projectId}-file`);
+      expect(await graph.findFileNode(projectId, 'src/nope.ts')).toBeNull();
+    });
+  });
+
+  describe('tree', () => {
+    it('lists one level, directories before files', async () => {
+      const root = await graph.treeLevel(projectId, '', 100);
+
+      expect(root.path).toBe('');
+      expect(root.parentPath).toBeNull();
+      // The fixture has no `directory` nodes, so the root level is whatever
+      // path node sits at depth one — here, nothing, since every file is nested.
+      expect(root.entries.every((entry) => !entry.path.includes('/'))).toBe(true);
+    });
+
+    it('does not reach past the level it was asked for', async () => {
+      const level = await graph.treeLevel(projectId, 'src/services', 100);
+
+      expect(level.parentPath).toBe('src');
+      expect(level.entries.map((entry) => entry.path)).toEqual([
+        'src/services/user.service.ts',
+      ]);
+    });
+
+    it('is empty for a directory with nothing under it', async () => {
+      const level = await graph.treeLevel(projectId, 'does/not/exist', 100);
+      expect(level.entries).toEqual([]);
+    });
+
+    it('treats a path containing a LIKE wildcard as a literal', async () => {
+      const level = await graph.treeLevel(projectId, 'src/%', 100);
+      expect(level.entries).toEqual([]);
+    });
+  });
+
+  describe('path', () => {
+    const strip = (ids: readonly string[]): string[] =>
+      ids.map((id) => id.replace(`${projectId}-`, ''));
+
+    it('traces a route from the API to the table, following the arrows', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-api`,
+        `${projectId}-table`,
+        { maxDepth: 6, directed: true },
+      );
+
+      expect(result.found).toBe(true);
+      expect(strip(result.nodeIds)).toEqual(['api', 'controller', 'service', 'repository', 'table']);
+      expect(result.hops.map((hop) => hop.relationship)).toEqual([
+        'ROUTES_TO',
+        'CALLS',
+        'CALLS',
+        'WRITES_TO',
+      ]);
+      expect(result.hops.every((hop) => !hop.reversed)).toBe(true);
+    });
+
+    it('carries the edge metadata each hop was recorded with', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-api`,
+        `${projectId}-table`,
+        { maxDepth: 6, directed: true },
+      );
+
+      expect(result.hops.at(-1)?.metadata).toMatchObject({
+        source: 'database-analyzer',
+        confidence: 'high',
+        statement: 'INSERT',
+      });
+    });
+
+    it('finds nothing against the arrows, and everything with them ignored', async () => {
+      const directed = await graph.findPath(
+        projectId,
+        `${projectId}-table`,
+        `${projectId}-api`,
+        { maxDepth: 6, directed: true },
+      );
+      expect(directed.found).toBe(false);
+
+      const undirected = await graph.findPath(
+        projectId,
+        `${projectId}-table`,
+        `${projectId}-api`,
+        { maxDepth: 6, directed: false },
+      );
+      expect(undirected.found).toBe(true);
+      expect(undirected.hops.every((hop) => hop.reversed)).toBe(true);
+    });
+
+    it('reports a node reaching itself as a route of no hops', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-service`,
+        `${projectId}-service`,
+        { maxDepth: 6, directed: true },
+      );
+
+      expect(result).toEqual({
+        found: true,
+        nodeIds: [`${projectId}-service`],
+        hops: [],
+        truncated: false,
+      });
+    });
+
+    it('will not walk further than maxDepth', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-api`,
+        `${projectId}-table`,
+        { maxDepth: 2, directed: true },
+      );
+      expect(result.found).toBe(false);
+    });
+
+    it('honours the relationship filter', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-api`,
+        `${projectId}-table`,
+        { maxDepth: 6, directed: true, relationships: ['CALLS'] },
+      );
+      expect(result.found).toBe(false);
+    });
+
+    it('will not route through an excluded node type', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-api`,
+        `${projectId}-table`,
+        { maxDepth: 6, directed: true, nodeTypes: ['api', 'table'] },
+      );
+      expect(result.found).toBe(false);
+    });
+
+    it('gives up, and says so, once the node budget is spent', async () => {
+      const result = await graph.findPath(
+        projectId,
+        `${projectId}-api`,
+        `${projectId}-table`,
+        { maxDepth: 6, directed: true, nodeBudget: 1 },
+      );
+
+      expect(result.found).toBe(false);
+      expect(result.truncated).toBe(true);
+    });
+
+    it('returns the same route every time', async () => {
+      const once = await graph.findPath(projectId, `${projectId}-api`, `${projectId}-table`, {
+        maxDepth: 6,
+        directed: true,
+      });
+      const twice = await graph.findPath(projectId, `${projectId}-api`, `${projectId}-table`, {
+        maxDepth: 6,
+        directed: true,
+      });
+      expect(once).toEqual(twice);
+    });
+
+    it('loads the route\u2019s nodes and edges in the order it walked them', async () => {
+      const result = await graph.findPath(projectId, `${projectId}-api`, `${projectId}-table`, {
+        maxDepth: 6,
+        directed: true,
+      });
+      const loaded = await graph.loadPathGraph(
+        projectId,
+        result.nodeIds,
+        result.hops.map((hop) => hop.edgeId),
+      );
+
+      expect(loaded.nodes.map((node) => node.id)).toEqual(result.nodeIds);
+      expect(loaded.edges.map((edge) => edge.id)).toEqual(result.hops.map((hop) => hop.edgeId));
+    });
+  });
+
+  describe('search ranking', () => {
+    const ids = (nodes: CodeNode[]): string[] =>
+      nodes.map((node) => node.id.replace(`${projectId}-`, ''));
+
+    it('puts an exact name first', async () => {
+      const result = await graph.searchNodes(projectId, 'UserService', { limit: 10, offset: 0 });
+      expect(ids(result.nodes)[0]).toBe('service');
+    });
+
+    it('puts an exact qualified name first', async () => {
+      const result = await graph.searchNodes(projectId, 'postgresql.users', {
+        limit: 10,
+        offset: 0,
+      });
+      expect(ids(result.nodes)[0]).toBe('table');
+    });
+
+    it('finds a file by its name alone', async () => {
+      const result = await graph.searchNodes(projectId, 'user.service.ts', {
+        limit: 10,
+        offset: 0,
+      });
+      expect(ids(result.nodes)[0]).toBe('file');
+    });
+
+    it('finds a member by its last dotted segment', async () => {
+      const result = await graph.searchNodes(projectId, 'create', { limit: 10, offset: 0 });
+      expect(ids(result.nodes)).toContain('method');
+    });
+
+    it('returns the same page for the same term', async () => {
+      const once = await graph.searchNodes(projectId, 'user', { limit: 10, offset: 0 });
+      const twice = await graph.searchNodes(projectId, 'user', { limit: 10, offset: 0 });
+      expect(ids(once.nodes)).toEqual(ids(twice.nodes));
+    });
+  });
+
   describe('indexes', () => {
     it('uses an index for the queries the graph API runs hot', async () => {
       const plans = await Promise.all([

@@ -52,3 +52,34 @@ export const GRAPH_OVERVIEW_NODE_TYPES = [
   'queue',
   'event',
 ] as const;
+
+/**
+ * Bounded path search between two nodes.
+ *
+ * A path query is a breadth-first walk, so it is bounded twice: by how many
+ * hops it may take, and by how many nodes it may visit before giving up. Both
+ * matter — a hub node in a real repository reaches most of the graph in three
+ * hops, and an unbounded search would happily prove it.
+ */
+export const GRAPH_DEFAULT_PATH_DEPTH = 6;
+export const GRAPH_MAX_PATH_DEPTH = 12;
+/** Nodes one path search may visit before it reports `truncated`. */
+export const GRAPH_PATH_NODE_BUDGET = 20_000;
+
+/**
+ * Which way a path search may follow an edge.
+ *
+ * `outgoing` asks the question that a trace is usually about — how does a
+ * request get from the controller to the table — and falls back to an
+ * undirected search when no directed route exists, saying so in the result.
+ * `both` ignores direction from the start.
+ */
+export const GRAPH_PATH_DIRECTIONS = ['outgoing', 'both'] as const;
+
+export type GraphPathDirection = (typeof GRAPH_PATH_DIRECTIONS)[number];
+
+export const GRAPH_DEFAULT_PATH_DIRECTION: GraphPathDirection = 'outgoing';
+
+/** Entries one level of the source tree returns. */
+export const SOURCE_TREE_DEFAULT_LIMIT = 500;
+export const SOURCE_TREE_MAX_LIMIT = 2000;

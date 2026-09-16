@@ -3,6 +3,7 @@ import { GRAPH_DEFAULT_DEPTH } from '@ckg/shared';
 import { SidebarSection } from '../../components/index.js';
 import type { CodeNode, CodeNodeType, GraphDirection, GraphSummary } from '../../types/index.js';
 import { CodeGraph, type GraphControls } from './components/CodeGraph.js';
+import { FileTree } from './components/FileTree.js';
 import { GraphFilters } from './components/GraphFilters.js';
 import { GraphInspector } from './components/GraphInspector.js';
 import { GraphLegend } from './components/GraphLegend.js';
@@ -11,14 +12,19 @@ import { GraphPathFinder } from './components/GraphPathFinder.js';
 import { GraphSearch } from './components/GraphSearch.js';
 import { GraphStats } from './components/GraphStats.js';
 import { GraphToolbar, type GraphViewToggles } from './components/GraphToolbar.js';
+import { SourcePanel } from './components/SourcePanel.js';
 import type { GraphRenderState } from './engine/graph-engine.js';
 import { useCodeGraph } from './hooks/useCodeGraph.js';
+import { useFileTree } from './hooks/useFileTree.js';
 import { useGraphFocus } from './hooks/useGraphFocus.js';
+import { useGraphPath } from './hooks/useGraphPath.js';
 import { useGraphSearch } from './hooks/useGraphSearch.js';
 import { useGraphSelection } from './hooks/useGraphSelection.js';
 import { useSidebarLayout } from './hooks/useSidebarLayout.js';
+import { useSourceView } from './hooks/useSourceView.js';
 import { DEFAULT_MODE_ID, graphMode, matchMode, type GraphModeId } from './model/graph-modes.js';
 import type { GraphFilterState } from './model/graph-types.js';
+import { searchSelectionAction, sourceTargetForNode } from './model/navigation.js';
 import { withinHops } from './utils/graph-traversal.js';
 
 /**
@@ -92,9 +98,14 @@ export function GraphWorkspace({
 
   const [panel, setPanel] = useState<Panel>(null);
   const [immersive, setImmersive] = useState(false);
+  const [treeOpen, setTreeOpen] = useState(true);
 
   const sidebar = useSidebarLayout();
   const controls = useRef<GraphControls>(null);
+
+  // Find Path runs on the server, so its route can include nodes this view
+  // never fetched. Those come back with the answer and are drawn alongside it.
+  const path = useGraphPath(projectId, mode);
 
   const view = useCodeGraph({
     projectId,
@@ -107,6 +118,7 @@ export function GraphWorkspace({
     refreshToken,
     repository: repositoryPath,
     commit: commitHash,
+    overlay: path.graph,
   });
 
   const { model } = view;
@@ -114,6 +126,8 @@ export function GraphWorkspace({
   const selection = useGraphSelection(projectId, model, refreshToken);
   const focus = useGraphFocus(model);
   const search = useGraphSearch(projectId, model);
+  const source = useSourceView(projectId);
+  const tree = useFileTree(projectId, refreshToken);
 
   // Clicking a node is a request to see what it is. A collapsed sidebar would
   // swallow that silently, so picking something opens it.
@@ -167,8 +181,13 @@ export function GraphWorkspace({
     // inspector is describing leaves the two panels contradicting each other.
     if (selection.selectedNodeId) keep.add(selection.selectedNodeId);
 
+    // And so does a found route. The server searched the whole repository, so a
+    // route routinely runs through a module or an external package the current
+    // filters exclude; dropping those nodes would draw a path with holes in it.
+    for (const id of path.pathNodeIds ?? []) keep.add(id);
+
     return keep;
-  }, [model, filters, selection.selectedNodeId]);
+  }, [model, filters, selection.selectedNodeId, path.pathNodeIds]);
 
   const exportsUnavailable = useMemo(
     () => !model.edges.some((edge) => edge.type === 'EXPORTS'),
@@ -189,8 +208,8 @@ export function GraphWorkspace({
       selectedEdgeId: selection.selectedEdgeId,
       hoveredNodeId: selection.hoveredNodeId,
       focusNodeIds: focus.focusNodeIds,
-      pathNodeIds: focus.pathNodeIds,
-      pathEdgeIds: focus.pathEdgeIds,
+      pathNodeIds: path.pathNodeIds,
+      pathEdgeIds: path.pathEdgeIds,
       visibleNodeIds,
       expandedNodeIds: view.expandedNodeIds,
       matchedNodeIds: search.matchedNodeIds,
@@ -205,8 +224,8 @@ export function GraphWorkspace({
       selection.selectedEdgeId,
       selection.hoveredNodeId,
       focus.focusNodeIds,
-      focus.pathNodeIds,
-      focus.pathEdgeIds,
+      path.pathNodeIds,
+      path.pathEdgeIds,
       visibleNodeIds,
       view.expandedNodeIds,
       search.matchedNodeIds,
@@ -231,15 +250,45 @@ export function GraphWorkspace({
     }));
   }, []);
 
+  /**
+   * Make a node the question: re-query the server rooted there.
+   *
+   * With one correction, which is what stops the graph going blank. The active
+   * projection is a filter on node *types*, and a search result is very often a
+   * type it excludes — a method, under Architecture. Re-rooting there while
+   * keeping the filter asks the server for a neighbourhood it must then throw
+   * away, and the canvas answers with nothing. A projection that hides the node
+   * you just navigated to is no longer describing the question you asked, so it
+   * is dropped rather than obeyed.
+   */
   const reroot = useCallback(
-    (nodeId: string) => {
+    (nodeId: string, nodeType?: CodeNodeType) => {
+      const type = nodeType ?? model.nodesById.get(nodeId)?.type;
+      const excluded =
+        type !== undefined &&
+        filters.nodeTypes.length > 0 &&
+        !filters.nodeTypes.includes(type);
+
       setRootNodeId(nodeId);
       setDirection('both');
       setDepth(focus.focusDepth);
+
+      if (excluded) {
+        setMode(null);
+        setFilters((current) => ({
+          ...current,
+          nodeTypes: [],
+          relationships: [],
+          // Module ids are derived per view, so one chosen under the old slice
+          // may not exist in the new one.
+          modules: [],
+        }));
+      }
+
       view.resetExpansions();
       selection.selectNode(nodeId);
     },
-    [focus.focusDepth, view, selection],
+    [focus.focusDepth, filters.nodeTypes, model, view, selection],
   );
 
   const findReferences = useCallback(
@@ -260,16 +309,37 @@ export function GraphWorkspace({
     [view, selection],
   );
 
+  /**
+   * Show a node's source, and reveal it in the tree.
+   *
+   * Addressed by node id rather than by path, so the server resolves the file
+   * *and* the symbol's range from what it indexed — which is what makes "go to
+   * definition" land on the right line rather than the top of the file.
+   */
+  const openSource = useCallback(
+    (nodeId: string) => {
+      const node = model.nodesById.get(nodeId);
+      source.show(sourceTargetForNode({ id: nodeId, ...(node?.file ? { filePath: node.file } : {}) }));
+      if (node?.file) tree.revealFile(node.file);
+    },
+    [model, source, tree],
+  );
+
+  /**
+   * Choosing a search result: select it, show it, and take it as the question.
+   *
+   * A result already on the canvas is a camera move; one that is not has to be
+   * fetched, and re-rooting there is what puts the thing you searched for in
+   * the middle of the view rather than leaving you to find it.
+   */
   const onSearchSelect = useCallback(
     (node: CodeNode) => {
-      if (model.nodesById.has(node.id)) {
-        // Already drawn: this is a camera move and a selection, not a fetch.
+      if (searchSelectionAction(model, node.id) === 'focus') {
         selection.selectNode(node.id);
         controls.current?.focusNode(node.id);
         return;
       }
-      // Not in this slice, so the only way to show it is to ask for it.
-      reroot(node.id);
+      reroot(node.id, node.type);
     },
     [model, selection, reroot],
   );
@@ -294,12 +364,13 @@ export function GraphWorkspace({
     setPanel(null);
     selection.clear();
     focus.setFocus(null);
-    focus.clearPath();
+    path.clear();
     search.clear();
+    source.close();
     view.resetExpansions();
     applyMode(DEFAULT_MODE_ID);
     controls.current?.reset();
-  }, [applyMode, focus, search, selection, view]);
+  }, [applyMode, focus, path, search, selection, source, view]);
 
   const onChangeFilters = useCallback((next: GraphFilterState) => {
     setFilters(next);
@@ -356,7 +427,10 @@ export function GraphWorkspace({
           Find path
         </button>
 
-        {(rootNodeId !== null || focus.focusNodeId !== null || view.expandedNodeIds.size > 0) && (
+        {(rootNodeId !== null ||
+          focus.focusNodeId !== null ||
+          path.from !== null ||
+          view.expandedNodeIds.size > 0) && (
           <button type="button" className="button button--quiet" onClick={resetView}>
             Back to overview
           </button>
@@ -367,6 +441,19 @@ export function GraphWorkspace({
         <span className="workbar__status" title="How this slice was fetched">
           {status}
         </span>
+
+        <button
+          type="button"
+          className={`button button--quiet${treeOpen ? ' button--active' : ''}`}
+          aria-expanded={treeOpen}
+          aria-controls="workspace-tree"
+          title={treeOpen ? 'Hide the file tree' : 'Show the file tree'}
+          onClick={() => {
+            setTreeOpen((current) => !current);
+          }}
+        >
+          Files
+        </button>
 
         <button
           type="button"
@@ -381,6 +468,29 @@ export function GraphWorkspace({
       </div>
 
       <div className="workspace__body">
+        {/* The tree is a column, not an overlay: it is a place you come back
+            to while reading, and a panel that covered the graph every time you
+            opened a folder would be the wrong trade. It collapses away for
+            anyone who wants the canvas back. */}
+        <aside
+          id="workspace-tree"
+          className="workspace__tree"
+          aria-label="Repository files"
+          hidden={!treeOpen}
+        >
+          <FileTree
+            tree={tree}
+            selectedNodeId={selection.selectedNodeId}
+            onOpenFile={(entry) => {
+              source.show({ file: entry.path, label: entry.name });
+            }}
+            onSelectNode={(nodeId) => {
+              selection.selectNode(nodeId);
+              if (model.nodesById.has(nodeId)) controls.current?.focusNode(nodeId);
+            }}
+          />
+        </aside>
+
         <div className="workspace__canvas">
           {view.error ? (
             <div className="panel panel--error">
@@ -446,18 +556,22 @@ export function GraphWorkspace({
                 />
               ) : (
                 <GraphPathFinder
+                  projectId={projectId}
                   model={model}
-                  from={focus.pathFrom}
-                  to={focus.pathTo}
-                  path={focus.path}
+                  from={path.from}
+                  to={path.to}
+                  path={path.path}
+                  loading={path.loading}
+                  error={path.error}
                   selectedNodeId={selection.selectedNodeId}
-                  onChangeFrom={focus.setPathFrom}
-                  onChangeTo={focus.setPathTo}
+                  onChangeFrom={path.setFrom}
+                  onChangeTo={path.setTo}
                   onSelectNode={(nodeId) => {
                     selection.selectNode(nodeId);
                     controls.current?.focusNode(nodeId);
                   }}
-                  onClear={focus.clearPath}
+                  onOpenSource={openSource}
+                  onClear={path.clear}
                 />
               )}
             </div>
@@ -535,23 +649,34 @@ export function GraphWorkspace({
                 selection.selectNode(nodeId);
                 if (model.nodesById.has(nodeId)) controls.current?.focusNode(nodeId);
               }}
+              onOpenSource={openSource}
               onExpand={view.expandNode}
               onToggleFocus={toggleFocus}
               onChangeFocusDepth={focus.setFocusDepth}
               onReroot={reroot}
               onFindReferences={findReferences}
               onPathFrom={(nodeId) => {
-                focus.setPathFrom(nodeId);
+                path.setFrom(nodeId);
                 setPanel('path');
               }}
               onPathTo={(nodeId) => {
-                focus.setPathTo(nodeId);
+                path.setTo(nodeId);
                 setPanel('path');
               }}
             />
           </SidebarSection>
         </aside>
       </div>
+
+      {/* Below everything, and only while something is open: the canvas keeps
+          its full height until a file is actually being read. */}
+      <SourcePanel
+        view={source}
+        onFocusNode={(nodeId) => {
+          selection.selectNode(nodeId);
+          if (model.nodesById.has(nodeId)) controls.current?.focusNode(nodeId);
+        }}
+      />
     </div>
   );
 }

@@ -1,8 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
-import { fetchNodeDetail } from '../../../api/graph.api.js';
-import { useAsync } from '../../../hooks/useAsync.js';
 import type { NodeDetail } from '../../../types/index.js';
 import type { CodeGraphModel, GraphEdge, GraphNode } from '../model/graph-types.js';
+import { useNodeDetail } from './useNodeDetail.js';
 
 /**
  * What is selected, and everything the inspector needs about it.
@@ -40,11 +39,9 @@ export function useGraphSelection(
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
-  const detailState = useAsync(
-    (signal) => fetchNodeDetail(projectId, selectedNodeId as string, signal),
-    [projectId, selectedNodeId, refreshToken],
-    { enabled: selectedNodeId !== null },
-  );
+  // Cached, because exploring means selecting the same handful of nodes over
+  // and over and the answer cannot change between analyses.
+  const detailState = useNodeDetail(projectId, selectedNodeId, refreshToken);
 
   const selectedEdge = useMemo(() => {
     if (!selectedEdgeId) return null;
@@ -80,7 +77,7 @@ export function useGraphSelection(
     hoveredNode: hoveredNodeId ? (model.nodesById.get(hoveredNodeId) ?? null) : null,
     selectedNode: selectedNodeId ? (model.nodesById.get(selectedNodeId) ?? null) : null,
     selectedEdge,
-    detail: detailState.data,
+    detail: detailState.detail,
     detailLoading: detailState.loading,
     detailError: detailState.error,
     selectNode,

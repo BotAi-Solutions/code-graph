@@ -244,11 +244,25 @@ in a local-first tool — opens the OS dialog and lists directories, behind thre
 constraints:
 
 - **No route reads a file.** Listings are directories only; the scan counts.
-  The only thing that opens source is the worker.
 - **No request input reaches a command line.** The dialog runs through
   `execFile` with a constant argument list and no shell.
 - **One switch turns it all off.** `LOCAL_FILESYSTEM_ENABLED=false` is what you
   set when the API stops being the user's own machine.
+
+`modules/source` is the second, and narrower, exception. A code explorer that
+can show you a symbol's callers but not the symbol has stopped halfway, so the
+API reads source — but only ever *inside a repository the user registered for
+this project*, addressed by a repository-relative path, and read-only:
+
+- **The root comes from the project, never from the request.** A caller names a
+  path within a repository; which disk that is, the repository record decides.
+- **The resolved path is checked against that root twice** — after normalising,
+  which catches `..` and absolute paths, and again after resolving symlinks,
+  because a link inside the tree is an ordinary way out of it.
+- **Nothing about the host's layout crosses the wire.** Responses carry the
+  repository-relative path. The browser never learns where the repository sits.
+- **The same switch turns it off.** Reading the user's working tree is local
+  filesystem access, and there is one place to decline it.
 
 ### `apps/worker`
 
@@ -345,7 +359,20 @@ returns `202` with a `QUEUED` job; the client polls.
 either traverses from a root node with a small default depth, or asks for the
 ranked overview. Both are capped, and the response says when it was truncated.
 The UI grows a view by expanding one node at a time — the same endpoint at depth
-1, merged client-side by id — rather than by fetching more.
+1 or 2, merged client-side by id — rather than by fetching more. The same rule
+holds for everything added since: the repository tree is fetched one directory
+level at a time, source is fetched one bounded window at a time and only when
+someone asks to read it, and a path search is bounded twice — by hops and by a
+node budget — because a hub node reaches most of a real graph in three hops.
+
+**One traversal, one answer.** Walking the repository graph is the server's job
+and happens in exactly one place per question: the recursive CTE for
+neighbourhoods, the level-by-level breadth-first search for paths. The client's
+own walks (`utils/graph-traversal`) answer only questions about the slice on
+screen — what dims when I hover this, what is within two hops of my selection.
+Find Path is *not* one of those: a route from a controller to a table runs
+through nodes the current projection is very likely not drawing, so asking the
+canvas would reliably answer "no route" about a route that plainly exists.
 
 **Evidence.** Every edge records what observed it and how much that observer
 trusts it. An analyzer that cannot resolve a reference emits nothing rather than

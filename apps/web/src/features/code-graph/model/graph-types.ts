@@ -163,8 +163,14 @@ export interface GraphSelection {
   edgeId: string | null;
 }
 
-/** A found route between two nodes in the displayed graph. */
-export interface GraphPath {
+/**
+ * A found route between two nodes *in the displayed graph*.
+ *
+ * Distinct from `GraphPath` on the wire, which is the server's answer over the
+ * whole repository and carries relationship evidence with it. This one exists
+ * for what the canvas can answer by itself.
+ */
+export interface ViewPath {
   from: string;
   to: string;
   /** Node ids, from `from` to `to` inclusive. Empty when there is no route. */

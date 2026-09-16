@@ -13,6 +13,7 @@ import {
   BEHAVIOURAL_RELATIONSHIPS,
   DEPENDENCY_RELATIONSHIPS,
   GRAPH_OVERVIEW_NODE_TYPES,
+  GRAPH_PATH_NODE_BUDGET,
   isCodeNodeType,
   STRUCTURAL_RELATIONSHIPS,
 } from '@ckg/shared';
@@ -44,6 +45,18 @@ const DATA_RELATIONSHIPS: readonly CodeRelationship[] = [
 
 /** Node types that count as a data store for the purposes of the above. */
 const DATA_NODE_TYPES: readonly CodeNodeType[] = ['database', 'table', 'queue', 'event'];
+
+/**
+ * Relationships that answer "what implements this, and what does it implement".
+ *
+ * Both directions are meaningful and the caller is told which it got, so an
+ * interface lists its implementers and a class lists what it conforms to
+ * without two endpoints saying almost the same thing.
+ */
+const IMPLEMENTATION_RELATIONSHIPS: readonly CodeRelationship[] = ['IMPLEMENTS', 'EXTENDS'];
+
+/** Node types that make up the repository tree. */
+const TREE_NODE_TYPES: readonly CodeNodeType[] = ['directory', 'file'];
 
 export interface TraverseOptions {
   rootNodeId: string;
@@ -101,6 +114,68 @@ export interface NodeRelations {
 }
 
 export type NeighbourDirection = 'incoming' | 'outgoing';
+
+/** One level of the repository tree, derived from the graph's path nodes. */
+export interface TreeEntry {
+  path: string;
+  name: string;
+  type: 'directory' | 'file';
+  nodeId: string;
+}
+
+export interface TreeLevel {
+  path: string;
+  parentPath: string | null;
+  entries: TreeEntry[];
+  truncated: boolean;
+}
+
+export interface PathOptions {
+  maxDepth: number;
+  /** False walks edges both ways, which is the undirected fallback. */
+  directed: boolean;
+  relationships?: CodeRelationship[] | undefined;
+  nodeTypes?: CodeNodeType[] | undefined;
+  /** Nodes the search may visit before giving up. */
+  nodeBudget?: number | undefined;
+}
+
+/** One edge crossed by a route, and which way it was crossed. */
+export interface PathHop {
+  edgeId: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  relationship: CodeRelationship;
+  /** True when the route crossed this edge against its direction. */
+  reversed: boolean;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface PathResult {
+  found: boolean;
+  /** Node ids from `from` to `to` inclusive; empty when there is no route. */
+  nodeIds: string[];
+  hops: PathHop[];
+  /** True when the node budget ran out before the search could conclude. */
+  truncated: boolean;
+}
+
+interface TreeRow {
+  id: string;
+  name: string;
+  file_path: string;
+  node_type: string;
+}
+
+interface PathEdgeRow {
+  edge_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  relationship: string;
+  metadata: Record<string, unknown> | null;
+  other_id: string;
+  reversed: boolean;
+}
 
 function chunk<T>(items: readonly T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -217,8 +292,17 @@ export class GraphRepository {
    * A term that names a node type (`api`, `table`) also matches every node of
    * that type, so "show me the APIs" works from the same box.
    *
-   * Ordering puts exact matches first, then prefix matches, then the rest, so
-   * the obvious answer is never buried under substring noise.
+   * Ordering is a fixed ladder, so the same term always produces the same page:
+   *
+   *   0  the symbol's own name, exactly
+   *   1  its qualified name, exactly (`UserService.getUser`)
+   *   2  a file, by full path or by file name (`user.service.ts`)
+   *   3  a name prefix, 4 a qualified-name prefix, 5 a path prefix
+   *   6  a dotted token of a qualified name (`getUser` inside `X.getUser`)
+   *   7  everything else that merely contains the term
+   *
+   * Shorter names win a tie, then name, then id — which leaves no room for the
+   * planner's row order to decide anything a caller can see.
    */
   async searchNodes(
     projectId: string,
@@ -228,6 +312,10 @@ export class GraphRepository {
     const needle = term.trim().toLowerCase();
     const contains = `%${needle}%`;
     const prefix = `${needle}%`;
+    // `%/user.service.ts` — a path ending in the term is a file match by name.
+    const fileName = `%/${needle}`;
+    // `%.getUser` — the term is the last dotted segment of a qualified name.
+    const token = `%.${needle}`;
     const nodeTypes = options.nodeTypes ?? null;
     // A term that is itself a node type is treated as a type filter as well as
     // a text match.
@@ -260,15 +348,30 @@ export class GraphRepository {
             CASE
               WHEN lower(name) = $3 THEN 0
               WHEN lower(coalesce(qualified_name, '')) = $3 THEN 1
-              WHEN lower(name) LIKE $4 THEN 2
-              WHEN lower(coalesce(file_path, '')) LIKE $4 THEN 3
-              ELSE 4
+              WHEN lower(coalesce(file_path, '')) = $3
+                OR lower(coalesce(file_path, '')) LIKE $9 THEN 2
+              WHEN lower(name) LIKE $4 THEN 3
+              WHEN lower(coalesce(qualified_name, '')) LIKE $4 THEN 4
+              WHEN lower(coalesce(file_path, '')) LIKE $4 THEN 5
+              WHEN lower(coalesce(qualified_name, '')) LIKE $10 THEN 6
+              ELSE 7
             END,
             length(name),
             name,
             id
           LIMIT $7 OFFSET $8`,
-        [projectId, contains, needle, prefix, nodeTypes, typeTerm, options.limit, options.offset],
+        [
+          projectId,
+          contains,
+          needle,
+          prefix,
+          nodeTypes,
+          typeTerm,
+          options.limit,
+          options.offset,
+          fileName,
+          token,
+        ],
       ),
       this.db.query<{ total: number }>(
         `SELECT count(*)::bigint AS total FROM code_nodes ${matchClause(1, 2, 3, 4)}`,
@@ -598,6 +701,316 @@ export class GraphRepository {
   async references(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
     return this.neighbours(projectId, nodeId, 'incoming', ['REFERENCES'], limit);
   }
+
+  /**
+   * Neighbours along specific relationships, each carrying the relationship and
+   * its evidence.
+   *
+   * `both` reads the two directions in one statement rather than two round
+   * trips, and every caller is told which direction an entry came from — which
+   * is what lets "implementations" mean both "implements this" and "is
+   * implemented by this" without the reader having to guess.
+   */
+  async relatedNeighbours(
+    projectId: string,
+    nodeId: string,
+    relationships: readonly CodeRelationship[],
+    direction: NeighbourDirection | 'both',
+    limit: number,
+  ): Promise<RelatedNode[]> {
+    const result = await this.db.query<RelatedNodeRow>(
+      `SELECT ${prefixed(CODE_NODE_COLUMNS, 'n')}, x.relationship, x.direction,
+              x.metadata AS edge_metadata
+         FROM (
+           SELECT target_node_id AS id, relationship, 'outgoing' AS direction, metadata
+             FROM code_edges
+            WHERE project_id = $1 AND source_node_id = $2
+              AND relationship = ANY($3::text[])
+              AND $5 <> 'incoming'
+           UNION ALL
+           SELECT source_node_id AS id, relationship, 'incoming' AS direction, metadata
+             FROM code_edges
+            WHERE project_id = $1 AND target_node_id = $2
+              AND relationship = ANY($3::text[])
+              AND $5 <> 'outgoing'
+         ) x
+         JOIN code_nodes n ON n.id = x.id AND n.project_id = $1
+        ORDER BY x.direction, x.relationship, n.name, n.id
+        LIMIT $4`,
+      [projectId, nodeId, relationships, limit, direction],
+    );
+
+    return result.rows.map(toRelatedNode);
+  }
+
+  /** What this node depends on, along the dependency-bearing relationships. */
+  async dependencies(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', limit);
+  }
+
+  /** What depends on this node. */
+  async dependents(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', limit);
+  }
+
+  /**
+   * Both sides of the inheritance relation: incoming entries implement or
+   * extend this node, outgoing entries are what it implements or extends.
+   */
+  async implementations(
+    projectId: string,
+    nodeId: string,
+    limit: number,
+  ): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, IMPLEMENTATION_RELATIONSHIPS, 'both', limit);
+  }
+
+  /**
+   * The node that CONTAINS this one: its class, its file, its directory.
+   *
+   * At most one, because containment is a tree — the builder emits exactly one
+   * CONTAINS edge into every node below the repository root.
+   */
+  async parent(projectId: string, nodeId: string): Promise<CodeNode | null> {
+    const result = await this.db.query<CodeNodeRow>(
+      `SELECT ${prefixed(CODE_NODE_COLUMNS, 'n')}
+         FROM code_edges e
+         JOIN code_nodes n ON n.id = e.source_node_id AND n.project_id = $1
+        WHERE e.project_id = $1
+          AND e.target_node_id = $2
+          AND e.relationship = 'CONTAINS'
+        ORDER BY n.id
+        LIMIT 1`,
+      [projectId, nodeId],
+    );
+    const row = result.rows[0];
+    return row ? toCodeNode(row) : null;
+  }
+
+  /** Nodes this one CONTAINS, in source order where positions were indexed. */
+  async children(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
+    const result = await this.db.query<CodeNodeRow>(
+      `SELECT ${prefixed(CODE_NODE_COLUMNS, 'n')}
+         FROM code_edges e
+         JOIN code_nodes n ON n.id = e.target_node_id AND n.project_id = $1
+        WHERE e.project_id = $1
+          AND e.source_node_id = $2
+          AND e.relationship = 'CONTAINS'
+        ORDER BY n.start_line NULLS LAST, n.name, n.id
+        LIMIT $3`,
+      [projectId, nodeId, limit],
+    );
+    return result.rows.map(toCodeNode);
+  }
+
+  /** The `file` node for a repository-relative path, if the graph has one. */
+  async findFileNode(projectId: string, filePath: string): Promise<CodeNode | null> {
+    const result = await this.db.query<CodeNodeRow>(
+      `SELECT ${CODE_NODE_COLUMNS} FROM code_nodes
+        WHERE project_id = $1 AND node_type = 'file' AND file_path = $2
+        ORDER BY id
+        LIMIT 1`,
+      [projectId, filePath],
+    );
+    const row = result.rows[0];
+    return row ? toCodeNode(row) : null;
+  }
+
+  /**
+   * One level of the repository tree, read off the `directory` and `file` nodes
+   * the builder already created.
+   *
+   * A level at a time, not a whole tree: the point of deriving this from the
+   * graph is that opening a project costs one small query rather than a second
+   * filesystem walk. Prefix matching is done with `left(...) =` rather than
+   * `LIKE` so a path containing `%` cannot widen its own query.
+   */
+  async treeLevel(projectId: string, directoryPath: string, limit: number): Promise<TreeLevel> {
+    const normalized = directoryPath.replace(/^\/+|\/+$/g, '');
+    const prefix = normalized === '' ? '' : `${normalized}/`;
+    // Where the child's own name starts, 1-based for `substr`.
+    const nameOffset = prefix.length + 1;
+
+    const result = await this.db.query<TreeRow>(
+      `SELECT id, name, file_path, node_type
+         FROM code_nodes
+        WHERE project_id = $1
+          AND node_type = ANY($2::text[])
+          AND file_path IS NOT NULL
+          AND ($3 = '' OR left(file_path, $4) = $3)
+          AND length(file_path) > $4
+          AND position('/' in substr(file_path, $5)) = 0
+        ORDER BY node_type, name, id
+        LIMIT $6`,
+      [projectId, TREE_NODE_TYPES, prefix, prefix.length, nameOffset, limit + 1],
+    );
+
+    const truncated = result.rows.length > limit;
+    const rows = truncated ? result.rows.slice(0, limit) : result.rows;
+
+    const parentPath =
+      normalized === '' ? null : normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '';
+
+    return {
+      path: normalized,
+      parentPath,
+      entries: rows.map((row) => ({
+        path: row.file_path,
+        name: row.name,
+        // `node_type` is constrained to the two tree types by the query.
+        type: row.node_type === 'directory' ? 'directory' : 'file',
+        nodeId: row.id,
+      })),
+      truncated,
+    };
+  }
+
+  /**
+   * The shortest route between two nodes, walked breadth-first one level at a
+   * time.
+   *
+   * Level-by-level rather than a single recursive CTE on purpose. A CTE that
+   * carries its own path array is exponential on a graph with cycles, and a hub
+   * node in a real repository reaches most of the graph within three hops —
+   * which is exactly the query someone types first. Expanding a level per
+   * statement keeps the work proportional to the frontier, lets the search stop
+   * the moment the target appears, and gives the node budget somewhere to bite.
+   *
+   * Determinism comes from the ORDER BY: the first row that introduces a node
+   * is its predecessor, and that row is chosen by a total order over
+   * (node, direction, relationship, anchor, edge) rather than by whatever the
+   * planner returned first.
+   */
+  async findPath(
+    projectId: string,
+    from: string,
+    to: string,
+    options: PathOptions,
+  ): Promise<PathResult> {
+    if (from === to) {
+      return { found: true, nodeIds: [from], hops: [], truncated: false };
+    }
+
+    const relationships = options.relationships ?? null;
+    const nodeTypes = options.nodeTypes ?? null;
+    const budget = options.nodeBudget ?? GRAPH_PATH_NODE_BUDGET;
+    const directed = options.directed;
+
+    const cameFrom = new Map<string, PathHop>();
+    const seen = new Set<string>([from]);
+    let frontier: string[] = [from];
+    let truncated = false;
+
+    for (let depth = 0; depth < options.maxDepth && frontier.length > 0; depth += 1) {
+      const level = await this.db.query<PathEdgeRow>(
+        `SELECT e.id AS edge_id, e.source_node_id, e.target_node_id, e.relationship,
+                e.metadata, e.target_node_id AS other_id, false AS reversed
+           FROM code_edges e
+           JOIN code_nodes n ON n.id = e.target_node_id AND n.project_id = $1
+          WHERE e.project_id = $1
+            AND e.source_node_id = ANY($2::text[])
+            AND ($3::text[] IS NULL OR e.relationship = ANY($3::text[]))
+            AND ($4::text[] IS NULL OR n.node_type = ANY($4::text[]))
+          UNION ALL
+         SELECT e.id AS edge_id, e.source_node_id, e.target_node_id, e.relationship,
+                e.metadata, e.source_node_id AS other_id, true AS reversed
+           FROM code_edges e
+           JOIN code_nodes n ON n.id = e.source_node_id AND n.project_id = $1
+          WHERE $5::boolean = false
+            AND e.project_id = $1
+            AND e.target_node_id = ANY($2::text[])
+            AND ($3::text[] IS NULL OR e.relationship = ANY($3::text[]))
+            AND ($4::text[] IS NULL OR n.node_type = ANY($4::text[]))
+          ORDER BY other_id, reversed, relationship, source_node_id, target_node_id, edge_id`,
+        [projectId, frontier, relationships, nodeTypes, directed],
+      );
+
+      const next: string[] = [];
+
+      for (const row of level.rows) {
+        if (seen.has(row.other_id)) continue;
+
+        if (seen.size >= budget) {
+          truncated = true;
+          break;
+        }
+
+        seen.add(row.other_id);
+        cameFrom.set(row.other_id, {
+          edgeId: row.edge_id,
+          sourceNodeId: row.source_node_id,
+          targetNodeId: row.target_node_id,
+          relationship: row.relationship as CodeRelationship,
+          reversed: row.reversed,
+          metadata: row.metadata,
+        });
+
+        if (row.other_id === to) {
+          return { ...rebuildPath(cameFrom, from, to), truncated };
+        }
+
+        next.push(row.other_id);
+      }
+
+      if (truncated) break;
+      frontier = next;
+    }
+
+    return { found: false, nodeIds: [], hops: [], truncated };
+  }
+
+  /** Nodes and edges for an already-found route, in the order it is walked. */
+  async loadPathGraph(
+    projectId: string,
+    nodeIds: readonly string[],
+    edgeIds: readonly string[],
+  ): Promise<CodeGraph> {
+    if (nodeIds.length === 0) return { nodes: [], edges: [] };
+
+    const [nodes, edges] = await Promise.all([
+      this.db.query<CodeNodeRow>(
+        `SELECT ${CODE_NODE_COLUMNS} FROM code_nodes
+          WHERE project_id = $1 AND id = ANY($2::text[])
+          ORDER BY array_position($2::text[], id)`,
+        [projectId, nodeIds],
+      ),
+      edgeIds.length === 0
+        ? Promise.resolve({ rows: [] as CodeEdgeRow[] })
+        : this.db.query<CodeEdgeRow>(
+            `SELECT ${CODE_EDGE_COLUMNS} FROM code_edges
+              WHERE project_id = $1 AND id = ANY($2::text[])
+              ORDER BY array_position($2::text[], id)`,
+            [projectId, edgeIds],
+          ),
+    ]);
+
+    return { nodes: nodes.rows.map(toCodeNode), edges: edges.rows.map(toCodeEdge) };
+  }
+}
+
+/** Walks the predecessor map back from the target and reverses it. */
+function rebuildPath(
+  cameFrom: ReadonlyMap<string, PathHop>,
+  from: string,
+  to: string,
+): { found: boolean; nodeIds: string[]; hops: PathHop[] } {
+  const nodeIds: string[] = [to];
+  const hops: PathHop[] = [];
+
+  let cursor = to;
+  // Bounded by the map: every step removes one node that can never recur,
+  // because a node enters `cameFrom` exactly once.
+  while (cursor !== from) {
+    const hop = cameFrom.get(cursor);
+    if (!hop) return { found: false, nodeIds: [], hops: [] };
+    hops.push(hop);
+    cursor = hop.reversed ? hop.targetNodeId : hop.sourceNodeId;
+    nodeIds.push(cursor);
+  }
+
+  nodeIds.reverse();
+  hops.reverse();
+  return { found: true, nodeIds, hops };
 }
 
 /** `id, name` -> `n.id, n.name`, for queries that join. */

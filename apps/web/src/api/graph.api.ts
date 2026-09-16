@@ -1,13 +1,19 @@
 import { api, queryString } from './client.js';
 import type {
   CodeGraph,
+  CodeNode,
   CodeNodeType,
+  Definition,
   GraphDirection,
   GraphMeta,
+  GraphPath,
+  GraphProjectionId,
   GraphSearchPage,
   GraphSummary,
   GraphViewState,
   NodeDetail,
+  RelatedNode,
+  SourceTree,
 } from '../types/index.js';
 
 export interface GraphResponse {
@@ -127,4 +133,102 @@ export async function searchNodes(
     limit,
     offset,
   };
+}
+
+/**
+ * One section of a node's relationships, fetched on its own.
+ *
+ * The node-detail endpoint already returns every section in one round trip, so
+ * this exists for the cases where a panel wants *more* of one section than the
+ * detail's per-section limit carried — "show all 74 references" — rather than
+ * as the normal way to read them.
+ */
+export async function fetchNodeSection<TNode extends CodeNode | RelatedNode>(
+  projectId: string,
+  nodeId: string,
+  section: NodeSection,
+  options: { limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<TNode[]> {
+  const { data } = await api.get<TNode[]>(
+    `/api/projects/${projectId}/graph/nodes/${encodeURIComponent(nodeId)}/${section}${queryString({
+      ...(options.limit ? { limit: options.limit } : {}),
+    })}`,
+    signal,
+  );
+  return data;
+}
+
+export type NodeSection =
+  | 'callers'
+  | 'callees'
+  | 'references'
+  | 'dependencies'
+  | 'dependents'
+  | 'parents'
+  | 'children'
+  | 'implementations';
+
+/** Where a node is written down, for "go to definition". */
+export async function fetchDefinition(
+  projectId: string,
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<Definition | null> {
+  const { data } = await api.get<Definition | null>(
+    `/api/projects/${projectId}/graph/nodes/${encodeURIComponent(nodeId)}/definition`,
+    signal,
+  );
+  return data;
+}
+
+/**
+ * One level of the repository tree.
+ *
+ * A level per request, because the tree is derived from the graph's own file
+ * and directory nodes and a large repository has tens of thousands of them.
+ * Expanding a folder is what fetches it.
+ */
+export async function fetchTree(
+  projectId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<SourceTree> {
+  const { data } = await api.get<SourceTree>(
+    `/api/projects/${projectId}/graph/tree${queryString(path ? { path } : {})}`,
+    signal,
+  );
+  return data;
+}
+
+/**
+ * The shortest route between two nodes, found by the server.
+ *
+ * Server-side because the answer is about the repository, not about the slice
+ * on screen: two nodes can be four hops apart in the graph and unconnected in
+ * the current view, and the useful answer is the first one.
+ */
+export async function findPath(
+  projectId: string,
+  request: {
+    from: string;
+    to: string;
+    maxDepth?: number;
+    direction?: 'outgoing' | 'both';
+    projection?: GraphProjectionId | null;
+  },
+  signal?: AbortSignal,
+): Promise<GraphPath> {
+  const { data } = await api.post<GraphPath>(
+    `/api/projects/${projectId}/graph/path`,
+    {
+      from: request.from,
+      to: request.to,
+      ...(request.maxDepth ? { maxDepth: request.maxDepth } : {}),
+      ...(request.direction ? { direction: request.direction } : {}),
+      ...(request.projection ? { projection: request.projection } : {}),
+    },
+    signal,
+  );
+  return data;
 }
