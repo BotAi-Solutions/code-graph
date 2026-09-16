@@ -2,6 +2,41 @@
 
 Turns a source repository into a queryable graph of its own code.
 
+## Run it
+
+```bash
+cp .env.example .env  # first time only — DATABASE_URL has no default
+pnpm install          # first time only
+docker compose up -d  # PostgreSQL
+pnpm db:migrate       # create or update the schema
+pnpm dev              # API, worker and web, in watch mode
+```
+
+Then open **<http://localhost:5173>** and click **Select project**.
+
+After the first run, `pnpm dev` on its own is enough — as long as Docker is
+still up. Ports come from `.env`; the web dev server reads the API's `PORT` from
+there and proxies to it, so you only ever open 5173.
+
+<details>
+<summary>Other commands</summary>
+
+```bash
+pnpm dev:api      # just the API        → /docs for the OpenAPI UI
+pnpm dev:worker   # just the worker
+pnpm dev:web      # just the web app
+pnpm test         # the whole suite
+pnpm typecheck    # type-check everything
+pnpm build        # type-check, emit packages, build the web app
+pnpm db:status    # applied / pending migrations
+docker compose down          # stop PostgreSQL, keep the data
+docker compose down -v       # stop it and throw the data away
+```
+
+</details>
+
+---
+
 A repository is indexed with [SCIP](https://github.com/sourcegraph/scip) for its
 compiler-level facts, read again by source analyzers for the facts no compiler
 has an opinion about, and normalised into one language-neutral **code knowledge
@@ -84,16 +119,8 @@ why the boundaries fall where they do.
 
 ## Quick start
 
-Requirements: Node 20.11+, pnpm 9+, Docker (for PostgreSQL).
-
-```bash
-pnpm install                 # installs workspace deps, including the SCIP indexer
-docker compose up -d         # PostgreSQL on localhost:5432
-pnpm db:migrate              # create or update the schema
-pnpm dev                     # API :3000, worker, web :5173
-```
-
-Then open <http://localhost:5173>.
+Requirements: Node 20.11+, pnpm 9+, Docker (for PostgreSQL). The commands are at
+the [top of this file](#run-it); what follows is what to do once it is running.
 
 **The dashboard** (`#/`) leads with **Select project**, and lists every project
 already indexed with the size and composition of its graph, its source
