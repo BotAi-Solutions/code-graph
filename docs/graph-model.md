@@ -67,9 +67,11 @@ file should not be two nodes.
 
 Twenty-one types cannot have twenty-one distinguishable colours, so they are
 grouped into six families in two categories, and the UI encodes
-**hue = family, shape = member, badge = type**. See
-`packages/shared/src/constants/node-families.ts` for the grouping and
-`apps/web/src/features/code-graph/graph-style.ts` for the reasoning.
+**hue = family, silhouette = member, size and glow = importance, label =
+identity**. See `packages/shared/src/constants/node-families.ts` for the
+grouping, `apps/web/src/features/code-graph/utils/graph-colors.ts` for the
+colour reasoning and `.../model/node-types.ts` for the per-type table the
+renderer reads.
 
 ### Metadata
 

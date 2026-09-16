@@ -16,7 +16,7 @@ graph**:
   `AUTHENTICATED_BY`, `VALIDATES`, `DEPENDS_ON`, `DEPENDS_ON_SERVICE`
 
 It is stored in PostgreSQL and served through a traversal-first HTTP API that a
-React UI renders with Cytoscape.
+React UI renders in WebGL with Sigma.js and Graphology.
 
 Every edge records **what observed it and how much that observer trusts it**. An
 analyzer that cannot resolve a reference emits nothing rather than a guess: a
@@ -104,8 +104,8 @@ projects are created and analyses started.
    refreshes when it lands.
 2. **Explore graph** opens the project workspace (`#/projects/<id>`), which is a
    real URL — reload it, bookmark it, send it to a colleague.
-3. The canvas opens on the **Architecture** projection. For the Express sample
-   that is exactly its shape:
+3. The canvas opens on the **Architecture** mode. For the Express sample that is
+   exactly its shape:
 
    ```
    POST /users ──ROUTES_TO──▶ UserController ──CALLS──▶ UserService ──CALLS──▶ UserRepository ──WRITES_TO──▶ users
@@ -114,15 +114,29 @@ projects are created and analyses started.
                                                     PUBLISHES│──▶ welcome-emails · user.created
    ```
 
-   The other projections — Everything, Call graph, Files, Dependencies, Data
-   flow — are the same graph under different filters, defined once and shared by
-   the API and the UI. The Filters panel exposes every node type and
-   relationship, grouped, with the project's own counts beside them.
-4. **Click a node** for its type, role, file, line range, callers, callees,
-   references, APIs, data stores and dependencies — with the evidence for each.
-   **Double-click** (or **Expand**) pulls that node's neighbours onto the canvas
-   without disturbing what is already there; **Focus** starts a fresh traversal
-   from it; **Open source** opens the exact line in your editor.
+   The other modes — Universe, Call graph, Files, Dependencies, Data flow — are
+   the same graph under different filters, defined once as *projections* and
+   shared by the API and the UI. Each mode also sets how the view is drawn: how
+   firmly modules are separated, how many labels the view can afford, and which
+   node types stay in scope when you zoom out.
+
+   Nodes are laid out as a galaxy: clustered by source directory, placed by a
+   force simulation, and sized and lit by importance — degree, centrality, node
+   type, entry-point and exported status. Zoom is *semantic*: far out you see
+   architecture, close in you see symbols. The Filters panel exposes every node
+   type and relationship, grouped with the project's own counts, plus the
+   module, external-dependency and entry-point filters that apply to the view
+   you are looking at.
+4. **Hover a node** for a tooltip — what it is, where it lives, how connected it
+   is — while the rest of the graph dims. **Click** it for the full inspector:
+   type, role, file, line range, members, callers, callees, references, APIs,
+   data stores and dependencies, with the evidence for each. **Double-click**
+   (or **Expand**) pulls that node's neighbours onto the canvas without
+   disturbing what is already there; **Focus** isolates it and its
+   neighbourhood at depth 1, 2 or 3; **Re-root here** starts a fresh server-side
+   traversal from it; **Open source** opens the exact line in your editor.
+5. **Find path** answers "how does a request get from here to there" by walking
+   the graph on screen and lighting the route, with everything else dimmed.
 
 To check the analysis half of the system without the browser:
 
@@ -227,7 +241,8 @@ apps/
   api/        Fastify + Zod + OpenAPI. Routes validate and delegate; no business
               logic, no SQL, no SCIP.
   worker/     The analysis pipeline. Claims jobs, runs SCIP, persists graphs.
-  web/        React + Vite + Cytoscape. Loads everything from the API.
+  web/        React + Vite + Sigma.js/Graphology (WebGL). Loads everything
+              from the API and owns none of the graph.
 
 packages/
   scip/                SCIP indexer adapters, protobuf parser, internal types.

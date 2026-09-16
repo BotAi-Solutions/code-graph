@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { Panel, Spinner, StatusBadge } from '../components/index.js';
-import { CodeGraphPage } from '../features/code-graph/index.js';
+import { GraphWorkspace } from '../features/code-graph/index.js';
 import { fetchGraphSummary } from '../api/graph.api.js';
 import { getProject, getRepository } from '../api/projects.api.js';
 import { useAnalysis, useAsync, navigate } from '../hooks/index.js';
@@ -110,11 +110,12 @@ export function ProjectGraphPage({ projectId }: { projectId: string }): React.JS
           </p>
         </Panel>
       ) : (
-        <CodeGraphPage
+        <GraphWorkspace
           projectId={projectId}
           refreshToken={refreshToken}
           summary={summaryState.data}
           repositoryPath={repositoryState.data?.sourcePath ?? null}
+          commitHash={repositoryState.data?.commitHash ?? null}
         />
       )}
     </div>

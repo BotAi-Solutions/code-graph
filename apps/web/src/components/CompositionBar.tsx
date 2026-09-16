@@ -6,7 +6,7 @@ import {
   type NodeFamily,
   type NodeTypeCounts,
 } from '../types/index.js';
-import { familyColor } from '../features/code-graph/graph-style.js';
+import { familyColor } from '../features/code-graph/index.js';
 import { formatCount } from '../utils/format.js';
 
 export interface CompositionBarProps {

@@ -15,15 +15,23 @@ export interface GraphResponse {
   meta: GraphMeta;
 }
 
-/** The base view: a traversal from a root, or the project overview. */
+/**
+ * The base view: a traversal from a root, or the project overview.
+ *
+ * `limit` is how many nodes the view is willing to draw. The server caps it at
+ * `GRAPH_MAX_NODE_LIMIT` whatever is asked for; leaving it off takes the
+ * server's default.
+ */
 export async function fetchGraph(
   projectId: string,
   view: GraphViewState,
   signal?: AbortSignal,
+  limit?: number,
 ): Promise<GraphResponse> {
   const query = queryString({
     ...(view.rootNodeId ? { rootNodeId: view.rootNodeId } : {}),
     ...(view.projection ? { projection: view.projection } : {}),
+    ...(limit ? { limit } : {}),
     depth: view.depth,
     direction: view.direction,
     nodeTypes: view.nodeTypes,

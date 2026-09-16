@@ -1,28 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import { CODE_NODE_TYPES, CODE_RELATIONSHIPS } from '@ckg/shared';
 import type { CodeEdge, CodeGraph, CodeNode } from '../src/types/index.js';
-import { mergeGraphs, newNodeCount } from '../src/features/code-graph/merge-graph.js';
+import { mergeGraphs, newNodeCount } from '../src/features/code-graph/model/merge-graph.js';
 import {
-  DEFAULT_PRESET_ID,
-  VIEW_PRESETS,
-  matchPreset,
-  presetById,
-} from '../src/features/code-graph/view-presets.js';
+  DEFAULT_MODE_ID,
+  GRAPH_MODES,
+  graphMode,
+  matchMode,
+} from '../src/features/code-graph/model/graph-modes.js';
 import {
-  LABELLED_RELATIONSHIPS,
   NODE_SHAPES,
-  NODE_SIZES,
+  NODE_STYLES,
   TYPES_BY_FAMILY,
-  nodeColor,
   nodeFullName,
   nodeLabel,
+  nodeStyle,
+} from '../src/features/code-graph/model/node-types.js';
+import {
+  EDGE_STYLES,
+  FLOW_RELATIONSHIPS,
+  LABELLED_RELATIONSHIPS,
+  edgeStyle,
   relationshipColor,
-} from '../src/features/code-graph/graph-style.js';
+} from '../src/features/code-graph/model/edge-types.js';
+import { dim, mix, nodeColor, parseHex } from '../src/features/code-graph/utils/graph-colors.js';
 
 /**
- * The view logic that has no DOM in it: what the canvas is handed, and what it
- * is drawn with. Both are pure, both are where a mistake would be silent, and
- * neither needs a browser to check.
+ * The view logic that has no DOM in it: what the renderer is handed, and what
+ * it is drawn with. Both are pure, both are where a mistake would be silent,
+ * and neither needs a browser — or a GPU — to check.
  */
 
 const node = (id: string, type: CodeNode['type'], name = id): CodeNode => ({
@@ -76,7 +82,7 @@ describe('mergeGraphs', () => {
 
   it('drops an edge whose endpoints are not both present', () => {
     // A capped neighbourhood can return an edge to a node that was cut, and
-    // Cytoscape throws on one of those rather than skipping it.
+    // Graphology rejects an edge to a node it does not have.
     const partial: CodeGraph = { nodes: [], edges: [edge('a-z', 'a', 'z')] };
 
     expect(mergeGraphs(base, partial).edges.map((item) => item.id)).toEqual(['a-b']);
@@ -96,17 +102,17 @@ describe('mergeGraphs', () => {
   });
 });
 
-describe('view presets', () => {
+describe('graph modes', () => {
   it('are the server’s projections, not a second definition of them', () => {
-    const preset = presetById('architecture');
+    const mode = graphMode('architecture');
 
-    expect(preset.nodeTypes).toContain('api');
-    expect(preset.relationships).toContain('ROUTES_TO');
+    expect(mode.projection.nodeTypes).toContain('api');
+    expect(mode.projection.relationships).toContain('ROUTES_TO');
   });
 
-  it('keeps the four views the toolbar has always had, and adds two', () => {
-    expect(VIEW_PRESETS.map((preset) => preset.label)).toEqual([
-      'Everything',
+  it('keeps every view the toolbar had, and names the unfiltered one Universe', () => {
+    expect(GRAPH_MODES.map((mode) => mode.label)).toEqual([
+      'Universe',
       'Architecture',
       'Call graph',
       'Files',
@@ -116,30 +122,56 @@ describe('view presets', () => {
   });
 
   it('opens on architecture', () => {
-    expect(DEFAULT_PRESET_ID).toBe('architecture');
+    expect(DEFAULT_MODE_ID).toBe('architecture');
   });
 
-  it('recognises filters that match a projection, and those that do not', () => {
-    const architecture = presetById('architecture');
+  it('recognises filters that match a mode, and those that do not', () => {
+    const architecture = graphMode('architecture').projection;
 
-    expect(matchPreset(architecture.nodeTypes, architecture.relationships)).toBe('architecture');
-    expect(matchPreset([], [])).toBe('everything');
-    expect(matchPreset(['class'], ['CALLS'])).toBeNull();
+    expect(matchMode(architecture.nodeTypes, architecture.relationships)).toBe('architecture');
+    expect(matchMode([], [])).toBe('everything');
+    expect(matchMode(['class'], ['CALLS'])).toBeNull();
+  });
+
+  it('asks for no more nodes than the server will return', () => {
+    for (const mode of GRAPH_MODES) {
+      expect(mode.limit).toBeGreaterThan(0);
+      expect(mode.limit).toBeLessThanOrEqual(2000);
+    }
   });
 });
 
 describe('the visual language', () => {
-  it('gives every node type a colour, a shape and a size', () => {
+  it('gives every node type a complete style', () => {
     for (const type of CODE_NODE_TYPES) {
-      expect(nodeColor(type)).toMatch(/^#[0-9a-f]{6}$/i);
-      expect(NODE_SHAPES[type]).toBeTruthy();
-      expect(NODE_SIZES[type]).toBeGreaterThan(0);
+      const style = nodeStyle(type);
+
+      expect(style.color).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(NODE_SHAPES[style.shape]).toBeTypeOf('number');
+      expect(style.size).toBeGreaterThan(0);
+      expect(style.glow).toBeGreaterThanOrEqual(0);
+      expect(style.glow).toBeLessThanOrEqual(1);
+      expect(style.labelPriority).toBeGreaterThanOrEqual(0);
+      expect(style.labelPriority).toBeLessThanOrEqual(1);
+      expect([0, 1, 2]).toContain(style.detailTier);
     }
   });
 
-  it('gives every relationship a colour', () => {
+  it('gives every shape id a distinct number, because the shader branches on it', () => {
+    const ids = Object.values(NODE_SHAPES);
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(Math.max(...ids)).toBe(ids.length - 1);
+  });
+
+  it('gives every relationship a complete style', () => {
     for (const relationship of CODE_RELATIONSHIPS) {
+      const style = edgeStyle(relationship);
+
       expect(relationshipColor(relationship)).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(style.color).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(style.width).toBeGreaterThan(0);
+      expect(['line', 'arrow']).toContain(style.program);
     }
   });
 
@@ -149,24 +181,49 @@ describe('the visual language', () => {
     expect([...listed].sort()).toEqual([...CODE_NODE_TYPES].sort());
   });
 
-  it('gives the architectural types shapes no code type uses', () => {
+  it('gives the architectural types silhouettes no code type uses', () => {
     const codeShapes = new Set(
-      [...TYPES_BY_FAMILY.types, ...TYPES_BY_FAMILY.callables, ...TYPES_BY_FAMILY.data, ...TYPES_BY_FAMILY.structure].map(
-        (type) => NODE_SHAPES[type],
-      ),
+      [
+        ...TYPES_BY_FAMILY.types,
+        ...TYPES_BY_FAMILY.callables,
+        ...TYPES_BY_FAMILY.data,
+        ...TYPES_BY_FAMILY.structure,
+      ].map((type) => nodeStyle(type).shape),
     );
 
     for (const type of [...TYPES_BY_FAMILY.services, ...TYPES_BY_FAMILY.resources]) {
-      expect(codeShapes.has(NODE_SHAPES[type])).toBe(false);
+      expect(codeShapes.has(nodeStyle(type).shape)).toBe(false);
     }
   });
 
-  it('labels the architectural relationships on the canvas and not the common ones', () => {
+  it('draws structural relationships more quietly than behavioural ones', () => {
+    expect(edgeStyle('CONTAINS').emphasis).toBe('weak');
+    expect(edgeStyle('CALLS').emphasis).toBe('strong');
+    expect(edgeStyle('CONTAINS').width).toBeLessThan(edgeStyle('CALLS').width);
+    // Only the relationships whose direction is the point get an arrowhead.
+    expect(edgeStyle('CONTAINS').program).toBe('line');
+    expect(edgeStyle('ROUTES_TO').program).toBe('arrow');
+  });
+
+  it('labels the architectural relationships and not the common ones', () => {
     expect(LABELLED_RELATIONSHIPS.has('ROUTES_TO')).toBe(true);
     expect(LABELLED_RELATIONSHIPS.has('WRITES_TO')).toBe(true);
     // CALLS and CONTAINS are neither few nor surprising; labelling them is noise.
     expect(LABELLED_RELATIONSHIPS.has('CALLS')).toBe(false);
     expect(LABELLED_RELATIONSHIPS.has('CONTAINS')).toBe(false);
+  });
+
+  it('animates flow only where direction is worth following', () => {
+    expect(FLOW_RELATIONSHIPS.has('CALLS')).toBe(true);
+    expect(FLOW_RELATIONSHIPS.has('WRITES_TO')).toBe(true);
+    expect(FLOW_RELATIONSHIPS.has('CONTAINS')).toBe(false);
+    expect(FLOW_RELATIONSHIPS.has('EXPORTS')).toBe(false);
+
+    for (const relationship of CODE_RELATIONSHIPS) {
+      if (FLOW_RELATIONSHIPS.has(relationship)) {
+        expect(EDGE_STYLES[relationship].flow).toBe(true);
+      }
+    }
   });
 
   it('marks callables as callable in their label', () => {
@@ -179,5 +236,33 @@ describe('the visual language', () => {
       nodeFullName({ name: 'create', qualifiedName: 'UserService.create', type: 'method' }),
     ).toBe('UserService.create()');
     expect(nodeFullName({ name: 'users', qualifiedName: 'users', type: 'table' })).toBe('users');
+  });
+
+  it('ranks architecture above the inside of a function, for both size and zoom', () => {
+    expect(NODE_STYLES.service.size).toBeGreaterThan(NODE_STYLES.parameter.size);
+    expect(NODE_STYLES.service.labelPriority).toBeGreaterThan(NODE_STYLES.parameter.labelPriority);
+    expect(NODE_STYLES.service.detailTier).toBeLessThan(NODE_STYLES.parameter.detailTier);
+  });
+});
+
+describe('colour maths', () => {
+  it('parses both forms of hex', () => {
+    expect(parseHex('#ff8800')).toEqual({ r: 255, g: 136, b: 0 });
+    expect(parseHex('#f80')).toEqual({ r: 255, g: 136, b: 0 });
+  });
+
+  it('returns the endpoints exactly', () => {
+    expect(mix('#102030', '#405060', 0)).toBe('#102030');
+    expect(mix('#102030', '#405060', 1)).toBe('#405060');
+  });
+
+  it('fades towards the void rather than towards transparency', () => {
+    // Dimming has to be opaque: Sigma blends premultiplied, and a dimmed node
+    // that let the background through would brighten over a nebula.
+    const faded = dim(nodeColor('service'), 0.9);
+
+    expect(faded).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(faded).not.toBe(nodeColor('service'));
+    expect(dim(nodeColor('service'), 0)).toBe(nodeColor('service'));
   });
 });

@@ -1,4 +1,4 @@
-import type { CodeEdge, CodeGraph, CodeNode } from '../../types/index.js';
+import type { CodeEdge, CodeGraph, CodeNode } from '../../../types/index.js';
 
 /**
  * Progressive exploration.
@@ -23,9 +23,9 @@ export function mergeGraphs(...graphs: ReadonlyArray<CodeGraph | null | undefine
     for (const edge of graph.edges) if (!edges.has(edge.id)) edges.set(edge.id, edge);
   }
 
-  // An edge whose endpoints are not both present would make Cytoscape throw.
-  // It can happen legitimately: a neighbourhood fetch is capped, so its edges
-  // may reach a node that was cut.
+  // An edge whose endpoints are not both present cannot be drawn: Graphology
+  // rejects an edge to a node it does not have. It happens legitimately — a
+  // neighbourhood fetch is capped, so its edges may reach a node that was cut.
   const present = new Set(nodes.keys());
 
   return {

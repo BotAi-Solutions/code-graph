@@ -80,7 +80,10 @@ PostgreSQL
         │
         │  GraphService              apps/api/src/modules/graph
         ▼
-HTTP  ───────────────────────────────▶  React + Cytoscape
+HTTP  ───────────────────────────────▶  normalizeGraph     apps/web
+                                             │
+                                             ▼
+                                        Graphology → Sigma.js (WebGL)
 ```
 
 Each arrow is an interface, not a call into a concrete class. The worker knows
@@ -221,11 +224,32 @@ with a fake command runner and in-memory stores.
 
 ### `apps/web`
 
-React, Vite, Cytoscape. The UI holds no graph of its own and derives no facts
-from the canvas: view state (root, depth, filters) is pushed to the API on every
-change, and the inspector shows what the API returns. Filters are applied server
-side during traversal — the point is to fetch less, not to hide what was already
-fetched.
+React, Vite, Graphology and Sigma.js. The UI holds no graph of its own and
+derives no facts it could have asked for: view state (mode, root, depth,
+filters) is pushed to the API on every change, and the inspector shows what the
+API returns.
+
+Inside the feature there are two more seams:
+
+**`normalizeGraph`** turns the API's `CodeGraph` into the renderer's own model —
+modules, degree, centrality, importance, entry-point status — so the
+visualisation can be rebuilt or replaced without touching anything that knows
+what SCIP is. It is a pure function and it is where every derived quantity is
+defined exactly once.
+
+**`GraphEngine`** owns Graphology, Sigma, the layout and the render state, and
+owns them *outside* React. Hovering a node in a graph of ten thousand mutates a
+field on that object and asks for one more frame; it does not re-render a
+component tree. React keeps the toolbar, filters, search and inspector — the
+things it is good at — and never learns where a node is. Nodes and edges are
+drawn by a custom WebGL program: one draw call for every silhouette, one for
+every halo, no DOM and no SVG.
+
+Filters come in two kinds, deliberately. Node types and relationships are
+applied *server side* during traversal — the point of those is to fetch less,
+not to hide what was already fetched. Modules, external dependencies, exported
+symbols and entry points are properties of the slice that came back, so they are
+applied in the browser.
 
 The UI depends only on the HTTP contract. It has no idea PostgreSQL exists.
 
