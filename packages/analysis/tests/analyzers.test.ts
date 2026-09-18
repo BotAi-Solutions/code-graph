@@ -117,8 +117,20 @@ describe('source analyzers over the sample service', () => {
           'framework-analyzer',
         ]),
       );
-      // Classification runs last, over the finished graph.
-      expect(graph.analyzersRun.at(-1)).toBe('framework-analyzer');
+
+      // Classification runs after every source analyzer, over the finished
+      // graph. Asserted as a boundary rather than as one name, so adding a
+      // classifier is not a test change.
+      const lastSource = Math.max(
+        ...['file-analyzer', 'api-analyzer', 'database-analyzer', 'messaging-analyzer'].map(
+          (name) => graph.analyzersRun.indexOf(name),
+        ),
+      );
+      for (const classifier of ['framework-analyzer', 'openapi-analyzer', 'document-analyzer']) {
+        const index = graph.analyzersRun.indexOf(classifier);
+        if (index === -1) continue;
+        expect(index).toBeGreaterThan(lastSource);
+      }
     });
   });
 

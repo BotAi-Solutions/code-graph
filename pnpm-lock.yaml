@@ -11,6 +11,9 @@ importers:
       '@ckg/analysis':
         specifier: workspace:*
         version: link:packages/analysis
+      '@ckg/benchmark':
+        specifier: workspace:*
+        version: link:packages/benchmark
       '@ckg/database':
         specifier: workspace:*
         version: link:packages/database
@@ -176,6 +179,28 @@ importers:
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
+
+  packages/benchmark:
+    dependencies:
+      '@ckg/analysis':
+        specifier: workspace:*
+        version: link:../analysis
+      '@ckg/graph':
+        specifier: workspace:*
+        version: link:../graph
+      '@ckg/scip':
+        specifier: workspace:*
+        version: link:../scip
+      '@ckg/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      tsx:
+        specifier: ^4.23.13
+        version: 4.23.13
 
   packages/database:
     dependencies:

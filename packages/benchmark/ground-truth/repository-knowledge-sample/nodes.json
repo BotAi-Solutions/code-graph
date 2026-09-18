@@ -1,0 +1,149 @@
+{
+  "fixture": "repository-knowledge-sample",
+
+  "_comment": [
+    "Every entry below was read out of the fixture's source by hand, not copied",
+    "from a pipeline run. A node is addressed by its type and its qualified name",
+    "(or plain name where it has none), never by id — ids are content hashes of",
+    "a project scope and would make this file unreviewable.",
+    "",
+    "`closedTypes` lists the node types this file enumerates COMPLETELY. For",
+    "those, anything the pipeline produces and this file does not list counts as",
+    "a false positive and precision is a real measurement. For every other type",
+    "only recall is scored: nobody is going to enumerate every `parameter` in a",
+    "repository, and a ground truth that pretended to would be wrong by Friday."
+  ],
+
+  "closedTypes": [
+    "class",
+    "interface",
+    "function",
+    "method",
+    "service",
+    "api",
+    "api_spec",
+    "api_endpoint",
+    "database",
+    "table",
+    "column",
+    "container",
+    "document",
+    "document_section",
+    "config",
+    "config_property"
+  ],
+
+  "nodes": [
+    { "type": "class", "name": "UserRepository", "file": "src/repositories/user.repository.ts" },
+    { "type": "class", "name": "SessionRepository", "file": "src/repositories/session.repository.ts" },
+    { "type": "class", "name": "UserService", "file": "src/services/user.service.ts" },
+    { "type": "class", "name": "AuthService", "file": "src/services/auth.service.ts", "note": "Named in the README; the fixture's test of a prose mention." },
+    { "type": "class", "name": "UserController", "file": "src/controllers/user.controller.ts" },
+
+    { "type": "interface", "name": "User", "file": "src/models/user.ts" },
+    { "type": "interface", "name": "CreateUserInput", "file": "src/models/user.ts" },
+    { "type": "interface", "name": "UserRow", "file": "src/models/user.ts" },
+
+    { "type": "function", "name": "toUser", "file": "src/models/user.ts" },
+    { "type": "function", "name": "createUserRouter", "file": "src/routes/user.routes.ts" },
+
+    { "type": "method", "name": "UserRepository.<constructor>", "file": "src/repositories/user.repository.ts" },
+    { "type": "method", "name": "UserRepository.create", "file": "src/repositories/user.repository.ts" },
+    { "type": "method", "name": "UserRepository.findById", "file": "src/repositories/user.repository.ts" },
+    { "type": "method", "name": "SessionRepository.<constructor>", "file": "src/repositories/session.repository.ts" },
+    { "type": "method", "name": "SessionRepository.create", "file": "src/repositories/session.repository.ts" },
+    { "type": "method", "name": "SessionRepository.findByToken", "file": "src/repositories/session.repository.ts" },
+    { "type": "method", "name": "UserService.<constructor>", "file": "src/services/user.service.ts" },
+    { "type": "method", "name": "UserService.create", "file": "src/services/user.service.ts" },
+    { "type": "method", "name": "UserService.get", "file": "src/services/user.service.ts" },
+    { "type": "method", "name": "AuthService.<constructor>", "file": "src/services/auth.service.ts" },
+    { "type": "method", "name": "AuthService.issue", "file": "src/services/auth.service.ts" },
+    { "type": "method", "name": "AuthService.verify", "file": "src/services/auth.service.ts" },
+    { "type": "method", "name": "AuthService.hash", "file": "src/services/auth.service.ts" },
+    { "type": "method", "name": "UserController.<constructor>", "file": "src/controllers/user.controller.ts" },
+    { "type": "method", "name": "UserController.create", "file": "src/controllers/user.controller.ts" },
+    { "type": "method", "name": "UserController.get", "file": "src/controllers/user.controller.ts" },
+
+    { "type": "service", "name": "knowledge-sample", "file": "package.json", "note": "The package manifest names the service." },
+
+    { "type": "api", "name": "POST /users", "file": "src/routes/user.routes.ts", "note": "router.post('/users', ...)" },
+    { "type": "api", "name": "GET /users/:id", "file": "src/routes/user.routes.ts" },
+
+    { "type": "api_spec", "name": "openapi.yaml", "file": "openapi.yaml" },
+    { "type": "api_endpoint", "name": "POST /users", "file": "openapi.yaml" },
+    { "type": "api_endpoint", "name": "GET /users/{id}", "file": "openapi.yaml" },
+    { "type": "api_endpoint", "name": "POST /sessions", "file": "openapi.yaml", "note": "Declared and deliberately not implemented, so the graph must be able to say so." },
+
+    { "type": "database", "name": "postgresql", "note": "From the pg dependency and the DATABASE_URL scheme in .env.example." },
+    { "type": "table", "name": "postgresql.users" },
+    { "type": "table", "name": "postgresql.sessions" },
+
+    { "type": "column", "name": "postgresql.users.id" },
+    { "type": "column", "name": "postgresql.users.email" },
+    { "type": "column", "name": "postgresql.users.display_name" },
+    { "type": "column", "name": "postgresql.users.role" },
+    { "type": "column", "name": "postgresql.users.verified_at" },
+    { "type": "column", "name": "postgresql.users.created_at" },
+    { "type": "column", "name": "postgresql.users.last_seen_at", "note": "Added by the second migration." },
+    { "type": "column", "name": "postgresql.sessions.id" },
+    { "type": "column", "name": "postgresql.sessions.user_id" },
+    { "type": "column", "name": "postgresql.sessions.token_hash" },
+    { "type": "column", "name": "postgresql.sessions.expires_at" },
+
+    { "type": "container", "name": "api" },
+    { "type": "container", "name": "postgres" },
+
+    { "type": "document", "name": "README.md", "file": "README.md" },
+    { "type": "document", "name": "docs/architecture.md", "file": "docs/architecture.md" },
+
+    { "type": "document_section", "name": "README.md#knowledge-sample", "file": "README.md" },
+    { "type": "document_section", "name": "README.md#authentication", "file": "README.md" },
+    { "type": "document_section", "name": "README.md#users", "file": "README.md" },
+    { "type": "document_section", "name": "README.md#running-it", "file": "README.md" },
+    { "type": "document_section", "name": "docs/architecture.md#architecture", "file": "docs/architecture.md" },
+    { "type": "document_section", "name": "docs/architecture.md#transport", "file": "docs/architecture.md" },
+    { "type": "document_section", "name": "docs/architecture.md#application", "file": "docs/architecture.md" },
+    { "type": "document_section", "name": "docs/architecture.md#persistence", "file": "docs/architecture.md" },
+    { "type": "document_section", "name": "docs/architecture.md#storage", "file": "docs/architecture.md" },
+
+    { "type": "config", "name": "package.json", "file": "package.json" },
+    { "type": "config", "name": "tsconfig.json", "file": "tsconfig.json" },
+    { "type": "config", "name": "docker-compose.yml", "file": "docker-compose.yml" },
+    { "type": "config", "name": "Dockerfile", "file": "Dockerfile" },
+    { "type": "config", "name": ".env.example", "file": ".env.example" },
+    { "type": "config", "name": "config/app.config.json", "file": "config/app.config.json" },
+
+    { "type": "config_property", "name": ".env.example#DATABASE_URL", "file": ".env.example" },
+    { "type": "config_property", "name": ".env.example#PORT", "file": ".env.example" },
+    { "type": "config_property", "name": ".env.example#SESSION_SECRET", "file": ".env.example", "note": "The name is indexed; the value must never be." },
+    { "type": "config_property", "name": "config/app.config.json#serviceName", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "config/app.config.json#port", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "config/app.config.json#database.host", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "config/app.config.json#database.port", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "config/app.config.json#database.poolSize", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "config/app.config.json#session.ttlSeconds", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "config/app.config.json#session.secret", "file": "config/app.config.json" },
+    { "type": "config_property", "name": "package.json#scripts.build", "file": "package.json" },
+    { "type": "config_property", "name": "package.json#scripts.start", "file": "package.json" },
+    { "type": "config_property", "name": "package.json#scripts.migrate", "file": "package.json" },
+    { "type": "config_property", "name": "package.json#engines.node", "file": "package.json" },
+    { "type": "config_property", "name": "tsconfig.json#compilerOptions.target", "file": "tsconfig.json" },
+    { "type": "config_property", "name": "tsconfig.json#compilerOptions.module", "file": "tsconfig.json" },
+    { "type": "config_property", "name": "tsconfig.json#compilerOptions.moduleResolution", "file": "tsconfig.json" },
+    { "type": "config_property", "name": "tsconfig.json#compilerOptions.strict", "file": "tsconfig.json" },
+    { "type": "config_property", "name": "tsconfig.json#compilerOptions.outDir", "file": "tsconfig.json" },
+
+    { "type": "file", "name": "database/migrations/0001_create_users.sql", "file": "database/migrations/0001_create_users.sql" },
+    { "type": "file", "name": "database/migrations/0002_add_last_seen.sql", "file": "database/migrations/0002_add_last_seen.sql" },
+    { "type": "file", "name": "src/controllers/user.controller.ts", "file": "src/controllers/user.controller.ts" },
+    { "type": "file", "name": "src/repositories/user.repository.ts", "file": "src/repositories/user.repository.ts" },
+
+    { "type": "directory", "name": "database/migrations", "file": "database/migrations" },
+    { "type": "directory", "name": "docs", "file": "docs" },
+
+    { "type": "module", "name": "express" },
+    { "type": "module", "name": "pg" },
+
+    { "type": "repository", "name": "repository-knowledge-sample" }
+  ]
+}

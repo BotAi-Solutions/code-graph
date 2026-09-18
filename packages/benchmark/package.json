@@ -1,0 +1,23 @@
+{
+  "name": "@ckg/benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "ground-truth"],
+  "scripts": {
+    "build": "tsc -b",
+    "benchmark": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@ckg/analysis": "workspace:*",
+    "@ckg/graph": "workspace:*",
+    "@ckg/scip": "workspace:*",
+    "@ckg/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.13"
+  }
+}

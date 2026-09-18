@@ -1,4 +1,4 @@
-import type { SupportedLanguage } from '@ckg/shared';
+import type { FileCategory, SupportedLanguage } from '@ckg/shared';
 
 /**
  * `SupportedLanguage` is declared in `@ckg/shared` because the graph, database
@@ -22,6 +22,14 @@ export interface RepositoryScan {
   rootFiles: Set<string>;
   /** Count of files per lower-cased extension, e.g. `.ts` -> 42. */
   extensionCounts: Map<string, number>;
+  /**
+   * Count of files per category, e.g. `document` -> 12.
+   *
+   * Computed during the walk from the path alone, so it costs nothing beyond
+   * the walk itself and is available to the language detectors, the statistics
+   * panel and the source loader without any of them re-deriving it.
+   */
+  categoryCounts: Map<FileCategory, number>;
   /** Directories walked, ignored ones excluded. The root itself is not counted. */
   directoryCount: number;
   /** True when the scan stopped early because the repository is very large. */

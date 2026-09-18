@@ -1,0 +1,20 @@
+{
+  "name": "knowledge-sample",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A repository that is deliberately more than its code: prose, configuration, a contract and a schema, each with relationships the graph is expected to find.",
+  "main": "src/index.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js",
+    "migrate": "psql -f database/migrations/0001_create_users.sql"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.5"
+  }
+}

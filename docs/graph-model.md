@@ -1,9 +1,14 @@
 # Graph model
 
-The code knowledge graph is a directed, typed multigraph. Its vocabulary is
-defined in `packages/shared/src/types/graph.ts`, its behaviour — identity,
+The repository knowledge graph is a directed, typed multigraph. Its vocabulary
+is defined in `packages/shared/src/types/graph.ts`, its behaviour — identity,
 construction, merging, traversal — in `packages/graph`, and the analyzers that
-populate its architectural half in `packages/analysis`.
+populate its architectural and repository halves in `packages/analysis`.
+
+There is **one graph**. A document, a container and a table are rows in the same
+two tables as a class and a method, addressed the same way and traversed by the
+same search. That is what makes a trace from an OpenAPI operation to a database
+column a single query rather than a join across three stores.
 
 ## Nodes
 
@@ -63,15 +68,70 @@ A configuration file the compiler *does* index — `vite.config.ts` — stays a
 `file` node and is annotated with `metadata.configKind` instead, because one
 file should not be two nodes.
 
+### Repository nodes
+
+What the repository says about itself in prose, configuration and contracts. No
+compiler reads these files; they come from the document, configuration, OpenAPI
+and SQL analyzers.
+
+| `type` | Represents | Typical evidence |
+| --- | --- | --- |
+| `document` | A Markdown file. `metadata`: `title`, `category`, `role`, `headingCount`. | A `.md` or `.mdx` file |
+| `document_section` | A heading and the lines it owns, keyed `path#slug`. Ranged, so it opens in the viewer. | An ATX heading |
+| `config` | A configuration file the compiler does not index. Moved here from the architectural group when the graph learned to read inside one. | `package.json`, `tsconfig.json`, a compose file, `.env*`, a root `*.config.*`, a CI workflow |
+| `config_property` | A promoted key, keyed `path#dotted.key`. `metadata`: `key`, and `value` unless the key names a credential. | A profile-selected key: a script, a compiler option, an environment variable name, a top-level setting |
+| `api_spec` | An API specification document. `metadata`: `flavour`, `specVersion`, `title`. | An OpenAPI 3 or Swagger 2 document, detected by content |
+| `api_endpoint` | An operation a specification *promises*. Distinct from `api`, which is a route the repository *serves*. | A method under a path in `paths` |
+| `column` | A column of a table, keyed by the table's qualified name. | A `CREATE TABLE` body or an `ALTER TABLE … ADD COLUMN` |
+| `container` | A deployment unit, keyed by its service name. | A service in a compose file |
+
+#### Why `api_endpoint` is not `api`
+
+A specification is the only artefact that states the contract the outside world
+is entitled to, and it is also the only one that can be wrong about it. Folding
+the two into one node would answer "what routes exist" and lose both of the
+questions worth asking: *which documented operations has nobody implemented*,
+and *which routes has nobody documented*. Where the two agree there is an
+`IMPLEMENTED_BY` edge; where they do not, the graph says which side is missing.
+
+### File categories
+
+Orthogonal to the node type, and recorded by the scanner before anything is
+read. `packages/shared/src/constants/file-categories.ts` owns the union;
+`packages/language-detection/src/classify.ts` decides, from the path alone:
+
+`code` · `document` · `configuration` · `schema` · `database` · `generated` ·
+`vendor` · `binary` · `unknown`
+
+Path-only is deliberate. The scan is one walk with no file reads, which is what
+lets a 25,000-file repository be sized up in a second. A `.yaml` file is
+`configuration` until something reads it and finds an `openapi:` key, at which
+point the OpenAPI analyzer refines it to `schema` — and records that it did. The
+scanner never guesses at contents.
+
+Category and language are both recorded and neither replaces the other:
+`vite.config.ts` is category `code`, language `typescript`, role
+`tooling-config`.
+
 ### Node families
 
-Twenty-one types cannot have twenty-one distinguishable colours, so they are
-grouped into six families in two categories, and the UI encodes
+Twenty-eight types cannot have twenty-eight distinguishable colours, so they are
+grouped into eight families in three categories, and the UI encodes
 **hue = family, silhouette = member, size and glow = importance, label =
-identity**. See `packages/shared/src/constants/node-families.ts` for the
-grouping, `apps/web/src/features/code-graph/utils/graph-colors.ts` for the
-colour reasoning and `.../model/node-types.ts` for the per-type table the
-renderer reads.
+identity**. Every non-code type has a silhouette no code type uses, which is the
+invariant that keeps a `document` from reading as a class to someone who cannot
+tell gold from blue.
+
+The third category, `knowledge`, holds the documentation and configuration
+families. Note that the *provenance* groups above (core / architectural /
+repository) and the *display* families are deliberately different axes: an
+`api_endpoint` is known from a specification but belongs beside the routes, and
+a `column` is read from a migration but belongs beside its table.
+
+See `packages/shared/src/constants/node-families.ts` for the grouping,
+`apps/web/src/features/code-graph/utils/graph-colors.ts` for the colour
+reasoning and `.../model/node-types.ts` for the per-type table the renderer
+reads.
 
 ### Metadata
 
@@ -145,33 +205,98 @@ interface CodeEdge {
 | `VALIDATES` | Validates its input | A decorated DTO reached through `@Body()`, or a schema whose `parse` the handler calls |
 | `DEPENDS_ON_SERVICE` | Needs a third party | Any external service the service's code reaches |
 
+### Repository relationships
+
+Four, and no more, because the existing vocabulary already covered most of what
+the repository layer needs and a synonym is worse than nothing.
+
+| `relationship` | Meaning | How it is derived |
+| --- | --- | --- |
+| `DEFINES` | A declarative file brings a resource into existence | A service in a compose file, a `CREATE TABLE`, an operation under `paths` |
+| `DOCUMENTS` | Prose describes an entity | A distinctive name in a document resolved to the one node that carries it |
+| `LINKS_TO` | A document links to another file in the repository | A Markdown link whose target resolves to a file the walk found |
+| `IMPLEMENTED_BY` | A declared contract is fulfilled by code | A specification operation matching a served route on method and path shape |
+
+Deliberately **not** added, because they already exist under another name:
+`CONFIGURES` (it is `CONFIGURED_BY` reversed, and that is already emitted),
+`READS`/`WRITES` (they are `READS_FROM`/`WRITES_TO`), `EXPOSES` (it is
+`DEFINES`), and `MENTIONS` (it is `DOCUMENTS` at a lower confidence, and
+confidence is already recorded on every edge).
+
+`IMPLEMENTED_BY` is deliberately not the inverse of the existing `IMPLEMENTS`: a
+trace runs from the contract inwards, and a path search that has to walk one
+edge backwards is a path search that will not find it.
+
 Relationships are grouped for display — structure, dependency, behaviour, type,
-data — in `packages/shared/src/constants/relationships.ts`, for the same reason
-node types are: five edge colours can be told apart, twenty-one cannot.
+data, knowledge — in `packages/shared/src/constants/relationships.ts`, for the
+same reason node types are: six edge colours can be told apart, twenty-five
+cannot.
 
 ### Evidence
 
-**Every edge records what observed it.** This is the property that makes a
-multi-source graph trustworthy, and it is enforced by the accumulator: there is
-no way to add an edge without evidence.
+**Every edge records why the graph believes it.** This is the property that
+makes a multi-source graph trustworthy, and it is enforced by the accumulator:
+there is no way to add an edge without evidence.
 
 ```json
-{ "source": "database-analyzer", "confidence": "high", "statement": "INSERT", "occurrences": 1 }
+{
+  "source": "document-analyzer",
+  "confidence": "medium",
+  "method": "markdown",
+  "file": "README.md",
+  "line": 14,
+  "matched": "AuthService",
+  "occurrences": 1
+}
 ```
 
-| `confidence` | Meaning |
+| Field | Meaning |
 | --- | --- |
-| `high` | A compiler fact, or an unambiguous syntactic one: a decorator argument, an import specifier, a resolved call target, a literal SQL statement |
-| `medium` | A real observation that needed a resolution step which could in principle be wrong: an aggregate lifted to a container, a statement assembled from a template literal, a package imported but not declared |
-| `low` | Reserved. Nothing emits it: a relationship that would only be `low` is not emitted at all |
+| `source` | *Who* observed it: `scip`, `graph-builder`, or the analyzer that found it |
+| `confidence` | How much the producer trusts it — see the policy below |
+| `method` | *What kind of artefact* it was read out of: `scip`, `ast`, `markdown`, `json`, `yaml`, `sql`, `openapi`, `configuration`, `graph` |
+| `file`, `line`, `column` | Where to go and check. Absent where there is nothing to point at |
+| `matched` | The entity the producer matched: a table, a route, a name in prose |
 
-`source` is one of `scip`, `graph-builder` or the analyzer that found it. Every
-edge also carries `metadata.occurrences`: how many source-level occurrences
-collapsed into it. Two calls from the same method to the same callee are one
-edge with `occurrences: 2`.
+`source` and `method` are different questions on purpose. The analyzer that
+found something is an implementation detail that will keep changing; the kind of
+artefact it was read out of is what a reader actually wants to know.
+
+A compiler fact carries no `file` or `line`: a SCIP `CALLS` edge is located by
+the two symbols it joins, both of which carry their own range, and recording a
+line on the edge as well would be inventing a position the index never gave.
+Everything read out of a file does carry one — the benchmark measures it.
+
+Every edge also carries `metadata.occurrences`: how many source-level
+occurrences collapsed into it. Two calls from the same method to the same callee
+are one edge with `occurrences: 2`.
 
 When two sources observe the same relationship the stronger evidence wins, so a
-SCIP-derived `CALLS` is never downgraded because an analyzer saw it too.
+SCIP-derived `CALLS` is never downgraded because an analyzer saw it too. The
+evidence fields are written *last* onto an edge's metadata, so an analyzer whose
+own annotation happens to be called `line` or `method` annotates the edge rather
+than rewriting the reason for it.
+
+### Confidence
+
+Defined once, in `packages/shared/src/constants/confidence.ts`, because before
+it existed every analyzer picked a level per call site and `medium` could mean
+three different things depending on which file you read. It now means exactly
+one thing: *a resolution step stood between the observation and the claim, and
+that step could in principle be wrong.*
+
+A producer names the **kind of observation** it made and gets the level back. It
+never writes a level, and it never writes a number.
+
+| `confidence` | Score | Bases |
+| --- | --- | --- |
+| `high` | 0.95 | `scipSymbol`, `astDirect`, `declaredInSpec`, `sqlLiteral`, `parsedStructure`, `exactRouteMatch`, `resolvedLink` |
+| `medium` | 0.80 | `derivedFromContainer`, `interpolatedStatement`, `undeclaredDependency`, `uniqueNameMatch` |
+| `low` | 0.50 | `ambiguousNameMatch` — named so the policy can *refuse* it. Nothing in the pipeline emits an edge at this level |
+
+Three values rather than a continuum, because the pipeline can genuinely
+distinguish three cases and no more. A producer emitting 0.83 would be asserting
+a precision it does not have.
 
 ### Call attribution
 
@@ -248,7 +373,7 @@ repositories cannot collide.
 ## Analyzers
 
 ```
-SCIP ──▶ code knowledge graph ──▶ source analyzers ──▶ same graph, richer
+SCIP ──▶ code graph ──▶ source analyzers ──▶ classifiers ──▶ one repository graph
 ```
 
 `CodeAnalyzer` is the seam between "something that knows about this repository"
@@ -256,17 +381,31 @@ and the graph. SCIP enters through it like everything else, as the
 code-intelligence stage; the source analyzers resolve their findings against
 what it found; the classification stage reasons about the finished graph.
 
-| Stage | Analyzer | Finds |
-| --- | --- | --- |
-| code-intelligence | `ScipAnalyzer` | Symbols, definitions, references, calls, implementations, containment |
-| source | `FileAnalyzer` | The service, and what configures it |
-| source | `ImportAnalyzer` | Imports, exports, package dependencies |
-| source | `StructureAnalyzer` | Construction, parameter and return types |
-| source | `ApiAnalyzer` | HTTP routes, their handlers, guards and validators |
-| source | `DatabaseAnalyzer` | Databases, tables, reads and writes |
-| source | `ExternalServiceAnalyzer` | Third-party services, by SDK or URL |
-| source | `MessagingAnalyzer` | Queues and events, with publishers and subscribers |
-| classification | `FrameworkAnalyzer` | Frameworks in use, and each class's role |
+| Stage | Analyzer | Reads | Finds |
+| --- | --- | --- | --- |
+| code-intelligence | `ScipAnalyzer` | the index | Symbols, definitions, references, calls, implementations, containment |
+| source | `FileAnalyzer` | paths, the manifest | The service, and what configures it |
+| source | `ImportAnalyzer` | AST | Imports, exports, package dependencies |
+| source | `StructureAnalyzer` | AST | Construction, parameter and return types |
+| source | `ApiAnalyzer` | AST | HTTP routes, their handlers, guards and validators |
+| source | `SqlAnalyzer` | `.sql` | Tables, columns, indexes, foreign keys, and DML in schema files |
+| source | `DatabaseAnalyzer` | AST | Databases, and the tables code reads and writes |
+| source | `ConfigurationAnalyzer` | JSON, YAML, Dockerfile, `.env.example` | Configuration files, promoted properties, containers |
+| source | `ExternalServiceAnalyzer` | AST | Third-party services, by SDK or URL |
+| source | `MessagingAnalyzer` | AST | Queues and events, with publishers and subscribers |
+| classification | `FrameworkAnalyzer` | the graph | Frameworks in use, and each class's role |
+| classification | `OpenApiAnalyzer` | JSON, YAML + the graph | Specifications, endpoints, and the routes that implement them |
+| classification | `DocumentAnalyzer` | Markdown + the graph | Documents, sections, links, and the entities prose names |
+
+The two cross-source analyzers are in the classification stage for a structural
+reason, not a stylistic one: an operation can only be matched to its handler
+once both the specification and the route are in the graph, and the source stage
+cannot see its own siblings' output.
+
+`SqlAnalyzer` runs *before* `DatabaseAnalyzer` because both describe the same
+`table` nodes and the first writer's metadata wins. A migration declares what a
+table is; a SQL statement in a string literal only shows that something touched
+it. The declaration goes first.
 
 `CodeGraphAssembler` owns the merge, and its rules are the graph's guarantees:
 identity decides everything, the first writer wins for nodes, an analyzer
@@ -284,6 +423,42 @@ There is deliberately no fallback that searches the repository for something
 plausibly called `UserController`. That fallback is how a graph fills up with
 relationships nobody can trust, and a missing edge is recoverable in a way a
 wrong one is not.
+
+### The one exception, and its guard rails
+
+`SymbolIndex.uniqueDeclaration` is the single lookup that is *not* scoped by
+file, and it exists for one caller: a document naming a symbol in prose, where
+there is no import statement to say which file is meant.
+
+It is not the name matching above. Three conditions hold together:
+
+1. **Uniqueness.** Exactly one node in the whole repository answers to the name.
+   Two classes called `Client` make every mention of `Client` a piece of
+   document text and nothing more — not "the first one", not "the most likely".
+2. **Distinctiveness.** A name written as prose must be two or more capitalised
+   words run together. `AuthService` qualifies; `User`, `Config` and `Server` do
+   not, however well they match a class, because those are English.
+3. **Confidence.** Every edge it produces is `medium`, never `high`, and the
+   evidence records the file, the line and the name that was matched.
+
+A name written in a code span — `` `Server` `` — skips the second condition,
+because the author has already marked it as an identifier.
+
+### Cross-source relationships
+
+Four joins between two different kinds of evidence, each resting on a
+deterministic match and nothing else:
+
+| Join | Match | Confidence |
+| --- | --- | --- |
+| `api_endpoint` → `api`, and → its handler | HTTP method plus the path with parameter *names* erased, so `/users/{id}` and `/users/:id` agree | `high`, or `medium` where the handler was reached by lifting to its class |
+| `document_section` → a code entity | The uniqueness rule above | `medium` |
+| `container` → `database` | The container's image name declares a provider | `high` |
+| a `.sql` file → `table` → `column` | A `CREATE TABLE` statement | `high` |
+
+No LLM, no embedding, no similarity score. A match that is not exact produces
+nothing, and the endpoint, section or container keeps its own node so the
+missing link is visible rather than invented.
 
 ### Roles
 
@@ -334,9 +509,23 @@ UI — so the "Architecture" button and `?projection=architecture` cannot drift.
 | `files` | The source tree and its file-level dependencies |
 | `dependencies` | Libraries and services this one depends on |
 | `dataflow` | Request to store: API → service → database, queue, event |
+| `documentation` | What the repository writes about itself, and what it writes about |
+| `apis` | Declared operations, the routes that serve them and the code behind |
+| `configuration` | Configuration files, promoted settings and containers |
+| `data` | Schemas, tables and columns, and the code that reads and writes them |
+| `cross-source` | Only the relationships that join two kinds of evidence |
 
 There is one graph and one set of tables. A projection changes which rows are
 selected and how they are ranked; it never changes where they come from.
+
+The six original projections are unchanged in what they answer. `architecture`
+and `dataflow` gained `api_endpoint`, `container` and the two contract
+relationships, because a declared endpoint and a deployed container are
+architecture; nothing was removed from either.
+
+The interiors — `document_section`, `config_property`, `column` — are tier-2
+detail in the renderer and are absent from the default overview ranking. They
+exist, they are reachable, and they do not bury their parents.
 
 ## Traversal semantics
 

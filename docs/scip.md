@@ -163,21 +163,49 @@ behind an interface. Languages with no refiner get a no-op.
 Nothing in `packages/graph`, `packages/database`, `apps/api` or `apps/web`
 changes. That is the point of the boundary.
 
+## What SCIP is, and is not, responsible for
+
+Worth stating plainly now that the graph reads Markdown, YAML and SQL as well:
+
+**SCIP is the deterministic source of truth for code-level relationships.** A
+definition, a reference, a call, an implementation, an import, a containment
+chain — if the compiler knows it, SCIP is where the graph gets it, and nothing
+else in the pipeline overrides it. `ScipAnalyzer` runs in its own stage, first,
+and every later analyzer resolves its findings *against* what SCIP found.
+
+Everything else is repository knowledge: facts a compiler never had an opinion
+about, read from declarations by the analyzers in `packages/analysis`. They may
+add nodes the compiler did not produce and edges it could not see, and they may
+annotate a SCIP node with what they learned — but they never replace one. The
+accumulator's first-writer-wins rule is what enforces that, and the stage order
+is what makes SCIP the first writer.
+
+See [repository-knowledge.md](repository-knowledge.md).
+
 ## Fixtures
 
-`packages/scip/tests/fixtures/typescript-sample.scip` is real output from
-scip-typescript 0.4 over `test-repositories/typescript-sample`. The parser, the
-builder and the worker pipeline are all tested against it, so the suite verifies
-agreement with a real indexer rather than with our own encoder.
+`packages/scip/tests/fixtures/*.scip` is real output from scip-typescript 0.4
+over the sample repositories in `test-repositories/`. The parser, the builder,
+the analyzers, the worker pipeline and the benchmark are all tested against
+them, so the suite verifies agreement with a real indexer rather than with our
+own encoder.
 
-Regenerate it after changing the sample repository:
+| Fixture | Sample | Exercises |
+| --- | --- | --- |
+| `typescript-sample.scip` | a small layered service | the parser and the builder |
+| `express-postgres-sample.scip` | Express, SQL, a queue, an event bus, two integrations | the source analyzers |
+| `repository-knowledge-sample.scip` | the above plus Markdown, JSON, YAML, OpenAPI and migrations | the repository analyzers and the benchmark |
+
+Regenerate all of them after changing a sample repository:
 
 ```bash
-./node_modules/.bin/scip-typescript index \
-  --cwd test-repositories/typescript-sample \
-  --output "$(pwd)/packages/scip/tests/fixtures/typescript-sample.scip" \
-  --no-progress-bar
+pnpm fixtures:build
 ```
+
+scip-typescript is deterministic over unchanged sources, so a regenerated
+fixture is byte-identical unless a sample actually changed — a dirty
+`git status` afterwards is the signal to re-check the expectations, including
+the benchmark's ground truth.
 
 Hand-built payloads in `packages/scip/tests/helpers/protobuf-writer.ts` cover
 what a real indexer will not produce on request: unknown fields, unpacked

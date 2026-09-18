@@ -14,7 +14,14 @@ import { InMemorySourceFileSet } from './source-file-set.js';
  * whole-repository read.
  */
 
-/** Extensions that carry code or architecture. */
+/**
+ * Extensions that carry code, architecture or repository knowledge.
+ *
+ * Grown, not replaced: everything the code graph read is still read, and the
+ * document formats were added when the graph stopped being only about code. A
+ * category the pipeline has no analyzer for is still not read — adding an
+ * extension here is what makes a format cost a file open.
+ */
 const SOURCE_SUFFIXES = [
   '.ts',
   '.tsx',
@@ -25,10 +32,15 @@ const SOURCE_SUFFIXES = [
   '.mjs',
   '.cjs',
   '.json',
+  '.jsonc',
   '.prisma',
   '.sql',
+  '.ddl',
+  '.psql',
   '.yml',
   '.yaml',
+  '.md',
+  '.mdx',
 ] as const;
 
 /** Files worth reading whose name, not extension, identifies them. */

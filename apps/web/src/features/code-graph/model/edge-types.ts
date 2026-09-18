@@ -11,7 +11,7 @@ import { dim } from '../utils/graph-colors.js';
 /**
  * Everything the renderer needs to know about a relationship, in one table.
  *
- * Edges are the reason the graph exists, and drawing all twenty-one of them
+ * Edges are the reason the graph exists, and drawing all twenty-five of them
  * with the same weight is what turns a dependency graph into a hairball. The
  * table below says, for each relationship: what it means (colour, by group),
  * how much it matters (emphasis), whether direction is worth an arrowhead, and
@@ -19,8 +19,8 @@ import { dim } from '../utils/graph-colors.js';
  *
  * ## Why colour is per group and not per relationship
  *
- * Twenty-one relationships cannot each own a distinguishable line colour — the
- * same limit that applies to node hues, and worse for a one-pixel stroke. Five
+ * Twenty-five relationships cannot each own a distinguishable line colour — the
+ * same limit that applies to node hues, and worse for a one-pixel stroke. Six
  * groups can, the group hues line up with the node families they connect, and
  * the relationship's own name is drawn on the edge wherever it carries
  * information and on any edge you select.
@@ -59,6 +59,10 @@ export const RELATIONSHIP_GROUP_COLORS: Record<RelationshipGroup, string> = {
   behaviour: '#e0682f',
   type: '#4a92ea',
   data: '#cc5f9a',
+  // Gold, matching the documentation family it mostly joins: a knowledge edge
+  // says "this prose is about that code", and the eye should follow it back to
+  // the document it came from.
+  knowledge: '#c99a45',
 };
 
 const EMPHASIS: Record<CodeRelationship, EdgeEmphasis> = {
@@ -66,6 +70,7 @@ const EMPHASIS: Record<CodeRelationship, EdgeEmphasis> = {
   EXPORTS: 'weak',
   ACCEPTS: 'weak',
   RETURNS: 'weak',
+  LINKS_TO: 'weak',
 
   IMPORTS: 'medium',
   DEPENDS_ON: 'medium',
@@ -74,6 +79,7 @@ const EMPHASIS: Record<CodeRelationship, EdgeEmphasis> = {
   REFERENCES: 'medium',
   AUTHENTICATED_BY: 'medium',
   VALIDATES: 'medium',
+  DOCUMENTS: 'medium',
 
   CALLS: 'strong',
   INSTANTIATES: 'strong',
@@ -85,6 +91,10 @@ const EMPHASIS: Record<CodeRelationship, EdgeEmphasis> = {
   PUBLISHES: 'strong',
   SUBSCRIBES: 'strong',
   DEPENDS_ON_SERVICE: 'strong',
+  // A declaration and its fulfilment are the two edges a cross-source trace is
+  // made of, so both are drawn as loudly as a call.
+  DEFINES: 'strong',
+  IMPLEMENTED_BY: 'strong',
 };
 
 /**
@@ -107,6 +117,9 @@ export const LABELLED_RELATIONSHIPS: ReadonlySet<CodeRelationship> = new Set([
   'VALIDATES',
   'DEPENDS_ON_SERVICE',
   'USES',
+  'DEFINES',
+  'IMPLEMENTED_BY',
+  'DOCUMENTS',
 ]);
 
 /** Drawn faint because they describe structure rather than behaviour. */
@@ -126,6 +139,7 @@ export const FLOW_RELATIONSHIPS: ReadonlySet<CodeRelationship> = new Set([
   'SUBSCRIBES',
   'DEPENDS_ON_SERVICE',
   'INSTANTIATES',
+  'IMPLEMENTED_BY',
 ]);
 
 const WIDTH: Record<EdgeEmphasis, number> = {

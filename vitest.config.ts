@@ -17,6 +17,7 @@ const alias = {
   '@ckg/scip': new URL('./packages/scip/src/index.ts', import.meta.url).pathname,
   '@ckg/graph': new URL('./packages/graph/src/index.ts', import.meta.url).pathname,
   '@ckg/analysis': new URL('./packages/analysis/src/index.ts', import.meta.url).pathname,
+  '@ckg/benchmark': new URL('./packages/benchmark/src/index.ts', import.meta.url).pathname,
   '@ckg/database': new URL('./packages/database/src/index.ts', import.meta.url).pathname,
 };
 
@@ -66,6 +67,15 @@ export default defineConfig({
         test: {
           name: 'analysis',
           root: './packages/analysis',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
+        resolve: { alias },
+        test: {
+          name: 'benchmark',
+          root: './packages/benchmark',
           environment: 'node',
           include: ['tests/**/*.test.ts'],
         },

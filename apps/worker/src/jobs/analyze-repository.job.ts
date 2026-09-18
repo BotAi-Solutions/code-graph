@@ -29,14 +29,22 @@ import { RepositoryLoader } from '../services/repository-loader.js';
 /**
  * The analysis pipeline.
  *
- *   load repository -> scan project -> detect language -> select indexer ->
- *   run SCIP -> parse index.scip -> read source -> build graph -> run source
- *   analyzers -> merge -> persist nodes and edges -> complete
+ *   load repository -> scan and classify -> detect language -> select indexer ->
+ *   run SCIP -> parse index.scip -> read source -> build graph -> run the
+ *   source analyzers -> run the classifiers -> merge -> persist -> complete
  *
- * SCIP remains the code-intelligence stage and the authority on symbols; the
- * analyzers add the architectural layer — routes, data stores, integrations,
- * queues — that no compiler can report. Both enter the graph through the same
- * `CodeAnalyzer` seam, and `CodeGraphAssembler` owns the merge.
+ * SCIP remains the code-intelligence stage and the authority on symbols. The
+ * source analyzers add the architectural layer — routes, data stores,
+ * integrations, queues — and the repository layer: documents, configuration,
+ * API specifications and the database schema. The classification stage then
+ * reasons about the whole graph, which is where a cross-source relationship can
+ * be made at all: an operation can only be linked to its handler once both the
+ * specification and the route are in the graph.
+ *
+ * Every one of them enters through the same `CodeAnalyzer` seam, so the phases
+ * below did not change when the repository layer was added — the *source* phase
+ * simply has more analyzers in it, and `resolving` reports the real count.
+ * `CodeGraphAssembler` owns the merge.
  *
  * The scan at the front does two jobs. It establishes what is in the project —
  * how many files, in which languages — which is what the statistics panel is
@@ -140,6 +148,7 @@ export class AnalyzeRepositoryJob {
         sourceFiles: metadata.sourceFiles,
         directories: metadata.directories,
         languages: metadata.languages,
+        fileCategories: metadata.fileCategories,
       },
       'project scanned',
     );
@@ -375,6 +384,10 @@ export class AnalyzeRepositoryJob {
       sourceFileCount: metadata.sourceFiles,
       directoryCount: metadata.directories,
       languages: metadata.languages,
+      // What the walk found that is not a language: documents, configuration,
+      // schemas, migrations. Without this, "340 files, 120 of them source"
+      // reads as a failure rather than as a description.
+      fileCategories: metadata.fileCategories,
       parseErrorCount: graph.errors.length,
       ...counts,
     };

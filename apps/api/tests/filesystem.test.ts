@@ -352,6 +352,11 @@ describe('GET /api/filesystem/project', () => {
       totalFiles: 5,
       sourceFiles: 4,
       languages: { typescript: 2, javascript: 1, python: 1 },
+      // The same walk also says what the files it could not index actually
+      // are, which is what turns "4 of 5" from alarming into informative.
+      // `pnpm-lock.yaml` and `node_modules/` never reach the count at all:
+      // the ignore policy drops them before classification.
+      fileCategories: { code: 4, document: 1 },
       directories: 3,
       truncated: false,
     });

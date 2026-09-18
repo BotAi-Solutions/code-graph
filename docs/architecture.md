@@ -1,6 +1,6 @@
 # Architecture
 
-## The five things, and why they are different things
+## The six things, and why they are different things
 
 The words below get used interchangeably in conversation. They are not the same
 and the codebase keeps them apart deliberately.
@@ -8,11 +8,12 @@ and the codebase keeps them apart deliberately.
 | Term | What it is | Where it lives |
 | --- | --- | --- |
 | **SCIP** | An open interchange format for code-intelligence data, and the indexers that emit it. An input we consume. | `packages/scip` |
-| **Code knowledge graph** | *Our* normalised model of a codebase: typed nodes and typed relationships. The product. | `packages/graph` |
-| **Source analysis** | The second source of facts: AST and framework analysis, for what a compiler has no opinion about. | `packages/analysis` |
+| **Repository knowledge graph** | *Our* normalised model of a repository: typed nodes and typed relationships, covering its code and everything around it. The product. | `packages/graph` |
+| **Source analysis** | The other sources of facts: AST, document, configuration, schema and SQL analysis, for what a compiler has no opinion about. | `packages/analysis` |
 | **Graph database** | Where the graph is persisted. Today PostgreSQL. An implementation detail. | `packages/database` |
 | **Graph API** | The traversal-first HTTP contract over the graph. | `apps/api` |
 | **Graph UI** | The visual explorer. | `apps/web` |
+| **Benchmark** | Measured reliability: precision, recall, evidence and path correctness against a hand-written ground truth. | `packages/benchmark` |
 
 The internal graph is **not** a "Sourcegraph graph". SCIP is a format we read,
 the way a compiler reads source. The vocabulary in `packages/graph` is ours: we
@@ -23,10 +24,16 @@ will make a third (a runtime tracer, an embedding index) the same kind of
 addition.
 
 A compiler can tell you that `UserRepository.create` calls `Pool.query`. It has
-no opinion about the fact that `POST /users` reaches that method, or that the
-statement it runs writes to a table called `users`. Those are the facts that
-turn a symbol graph into a knowledge graph, and they are read from the syntax by
-analyzers — never guessed from a file name.
+no opinion about the fact that `POST /users` reaches that method, that the
+statement it runs writes to a table called `users`, that the table has nine
+columns because a migration says so, that `openapi.yaml` promised the operation
+in the first place, or that the README explains why. Those are the facts that
+turn a symbol graph into a repository knowledge graph, and every one of them is
+read from a declaration — never guessed from a file name.
+
+See [repository-knowledge.md](repository-knowledge.md) for the layer that reads
+the non-code half, and [benchmark.md](benchmark.md) for how its reliability is
+measured.
 
 ---
 
@@ -45,9 +52,12 @@ Local folder
 Working tree on disk
         │
         │  scanProject               packages/language-detection
+        │    └─ classifyFile            code · document · configuration ·
+        │                               schema · database · generated ·
+        │                               vendor · binary · unknown
         ▼
-RepositoryScan + ProjectMetadata    ── counts, languages, and the
-        │                              denominator every later phase
+RepositoryScan + ProjectMetadata    ── counts, languages, categories, and
+        │                              the denominator every later phase
         │                              reports progress against
         │  LanguageDetectionService  packages/language-detection
         ▼
@@ -71,14 +81,18 @@ ScipIndex with language-specific kinds recovered
 CodeGraph  { nodes, edges }          — the code-intelligence stage
         │
         │  source analyzers          packages/analysis
-        │    file · import · structure · api · database ·
-        │    external-service · messaging
+        │    file · import · structure · api · sql · database ·
+        │    configuration · external-service · messaging
         ▼
-CodeGraph  + APIs, tables, queues, events, integrations, dependencies
+CodeGraph  + APIs, tables, columns, containers, config properties,
+        │    queues, events, integrations, dependencies
         │
-        │  FrameworkAnalyzer         packages/analysis  (classification stage)
-        ▼
-CodeGraph  + frameworks and class roles
+        │  classification analyzers  packages/analysis
+        │    framework · openapi · document
+        ▼                            — the only stage that can see both
+CodeGraph  + class roles, API specifications and their endpoints,
+        │    documents and their sections, and the cross-source edges
+        │    that join a contract to its handler and prose to its subject
         │
         │  CodeGraphAssembler        packages/graph/src/analysis
         ▼                            — owns identity and the merge rules
@@ -98,7 +112,10 @@ HTTP  ────────────────────────�
 
 Each arrow is an interface, not a call into a concrete class. The worker knows
 `ScipIndexer`, not `scip-typescript`. The builder knows `ScipSymbolKind`, not
-TypeScript. The API knows `GraphStore`, not SQL.
+TypeScript. The API knows `GraphStore`, not SQL. And every analyzer, from SCIP
+to the Markdown reader, enters through the same `CodeAnalyzer` seam — which is
+why adding the repository layer changed no phase, no schema column and no
+existing analyzer's behaviour.
 
 ---
 
@@ -140,6 +157,15 @@ is what keeps "this language's build output" from being a change to the walk.
 `detectLanguage(filePath)` is the per-file question, answered today from the
 extension. That it is a function rather than a map at the call sites is what
 lets a content sniffer replace it later without touching one of them.
+
+`classifyFile(path)` answers the other per-file question — *what kind of thing
+is this* — and is what turned the scan from "code and everything else" into the
+nine categories the repository graph is built on. It is deliberately path-only:
+the walk opens no files, which is what lets a 25,000-file repository be sized up
+in a second, and a category that genuinely needs the contents (a specification
+under an unexpected name) is refined later by the analyzer that reads it. The
+two questions are orthogonal and both are recorded: `vite.config.ts` is category
+`code`, language `typescript`, role `tooling-config`.
 
 ### `packages/scip`
 
@@ -191,7 +217,8 @@ See [graph-model.md](graph-model.md).
 
 ### `packages/analysis`
 
-The second analysis layer: what the compiler has no opinion about.
+Every analysis layer that is not the compiler: what a compiler has no opinion
+about, and what it never reads at all.
 
 - **`source/`** — one pass over the repository, shared by every analyzer: files
   read once, parsed once with the TypeScript compiler's own parser (syntax only,
@@ -199,16 +226,42 @@ The second analysis layer: what the compiler has no opinion about.
   analyses), and one binding table per module recording what every name refers
   to. A live `.env` is listed but never read: its path is a fact about the
   service, its contents are credentials.
+- **`parsers/`** — one per non-code format, each producing positions as well as
+  content, because an edge whose evidence cannot name a line is an edge nobody
+  can check. `structured.ts` is one model for JSON and YAML, so the OpenAPI
+  extractor handles both without knowing which it got; `markdown.ts` is a
+  focused CommonMark subset; `sql-schema.ts` reads the DDL that names things
+  unambiguously and nothing else. No parser's own representation leaves this
+  directory.
 - **`detectors/`** — the pattern knowledge, in tables: HTTP methods, SQL
-  statement forms, Prisma schema syntax, vendor packages and API hosts,
-  frameworks. Data rather than code, so adding a vendor is a line.
+  statement forms, Prisma schema syntax, database drivers, vendor packages and
+  API hosts, frameworks. Data rather than code, so adding a vendor is a line.
 - **`analyzers/`** — one analyzer per kind of fact, each returning a description
   of what it observed with the evidence for it, and nothing when the evidence is
   weak.
 
 Parsing rather than pattern-matching text is the basis for the evidence quality
 the graph promises: `@Controller('/users')` inside a comment is not a
-controller, and a regex cannot tell the difference.
+controller, a `# heading` inside a fenced code block is not a section, a table
+name inside a SQL comment is not a table, and a regex cannot tell any of those
+differences.
+
+Three files are shared factories rather than lookups — `service-node.ts`,
+`table-node.ts`, `config-node.ts` — because several analyzers describe the same
+service, the same table and the same configuration file. Identity is a content
+hash, so building the same draft is how they agree; an edge that relied on
+another analyzer having run first is an edge that disappears when the analyzer
+set changes.
+
+### `packages/benchmark`
+
+Measured reliability, not asserted reliability. It assembles the fixture graph
+from the checked-in SCIP index and the real analyzers, scores it against a
+hand-written ground truth, and prints precision, recall, F1, evidence coverage
+and path correctness — declining to print precision for any category the dataset
+does not enumerate completely.
+
+No database, no subprocess, no network. See [benchmark.md](benchmark.md).
 
 ### `packages/database`
 

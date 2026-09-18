@@ -138,7 +138,29 @@ const CLIP_PATHS: Record<NodeShape, string | null> = {
   rhomboid: null,
   star: 'polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)',
   cross: 'polygon(38% 0%, 62% 0%, 62% 38%, 100% 38%, 100% 62%, 62% 62%, 62% 100%, 38% 100%, 38% 62%, 0% 62%, 0% 38%, 38% 38%)',
+  // A page with its top-right corner folded away.
+  page: 'polygon(12% 0%, 70% 0%, 88% 20%, 88% 100%, 12% 100%)',
+  bar: null,
+  hollowTriangle: 'polygon(50% 2%, 100% 92%, 0% 92%)',
+  hollowPentagon: 'polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%)',
+  hollowHexagon: 'polygon(25% 3%, 75% 3%, 100% 50%, 75% 97%, 25% 97%, 0% 50%)',
+  lines: 'polygon(4% 18%, 96% 18%, 96% 42%, 4% 42%, 4% 58%, 72% 58%, 72% 82%, 4% 82%)',
+  pillar: null,
 };
+
+/**
+ * Shapes the shader draws as an outline.
+ *
+ * Rendered here by inset-clipping a border-coloured square rather than by a
+ * second clip path, because a CSS `clip-path` has no notion of a stroke and a
+ * hollow polygon needs one. The result is a filled silhouette at 55% opacity
+ * with a solid rim, which reads as "outline" at glyph size.
+ */
+const HOLLOW_SHAPES: ReadonlySet<NodeShape> = new Set([
+  'hollowTriangle',
+  'hollowPentagon',
+  'hollowHexagon',
+]);
 
 export function NodeGlyph({ type }: { type: CodeNodeType }): React.JSX.Element {
   const shape = nodeStyle(type).shape;
@@ -172,9 +194,21 @@ export function NodeGlyph({ type }: { type: CodeNodeType }): React.JSX.Element {
       style.transform = 'skewX(-18deg) scale(0.92)';
       style.borderRadius = '1px';
       break;
+    case 'bar':
+      style.borderRadius = '2px';
+      style.transform = 'scaleY(0.42)';
+      break;
+    case 'pillar':
+      style.borderRadius = '2px';
+      style.transform = 'scaleX(0.34)';
+      break;
     default:
       break;
   }
+
+  // The hollow silhouettes: same outline as their filled counterpart, drawn
+  // faint, so an endpoint reads as the promise of the route beside it.
+  if (HOLLOW_SHAPES.has(shape)) style.opacity = 0.55;
 
   return <span className="glyph" style={style} aria-hidden="true" />;
 }

@@ -94,17 +94,19 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'Find nodes by symbol name, qualified name, file path, API path or node type',
           description:
-            'Matches `name`, `qualifiedName` and `filePath`, which between them cover a symbol (`UserService`), a member (`UserService.getUser`), a file (`user.service.ts`), a directory (`src/services`) and a route (`POST /users`). A term naming a node type also returns nodes of that type. Results are paged; `meta.total` is the full count.',
+            'Matches `name`, `qualifiedName` and `filePath`, which between them cover a symbol (`UserService`), a member (`UserService.getUser`), a file (`user.service.ts`), a directory (`src/services`), a route (`POST /users`), a document section (`README.md#login-flow`), a configuration property (`package.json#scripts.build`) and a table column (`postgresql.users.email`). A term naming a node type also returns nodes of that type. Narrow with `nodeTypes` for exact types, `categories` for code / architecture / knowledge, and `file` for a path prefix; given several, a node must satisfy all of them. Results are paged; `meta.total` is the full count.',
           params: projectIdParamSchema,
           querystring: graphSearchQuerySchema,
           response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const { q, nodeTypes, limit, offset } = request.query;
+        const { q, nodeTypes, categories, file, limit, offset } = request.query;
 
         const result = await service.search(request.params.projectId, q, {
           nodeTypes,
+          categories,
+          file,
           limit,
           offset,
         });
@@ -115,7 +117,12 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
             limit: result.limit,
             offset: result.offset,
             query: q,
-            ...(nodeTypes ? { nodeTypes } : {}),
+            // What was actually searched, after the category narrowing was
+            // resolved: a caller that asked for "knowledge" can see which
+            // types that meant rather than having to know the vocabulary.
+            ...(result.nodeTypes ? { nodeTypes: result.nodeTypes } : {}),
+            ...(categories ? { categories } : {}),
+            ...(file ? { file } : {}),
           }),
         );
       },

@@ -118,6 +118,11 @@ describe('graph modes', () => {
       'Files',
       'Dependencies',
       'Data flow',
+      'Documentation',
+      'APIs',
+      'Configuration',
+      'Data model',
+      'Cross-source',
     ]);
   });
 
@@ -181,7 +186,7 @@ describe('the visual language', () => {
     expect([...listed].sort()).toEqual([...CODE_NODE_TYPES].sort());
   });
 
-  it('gives the architectural types silhouettes no code type uses', () => {
+  it('gives every non-code type a silhouette no code type uses', () => {
     const codeShapes = new Set(
       [
         ...TYPES_BY_FAMILY.types,
@@ -191,7 +196,15 @@ describe('the visual language', () => {
       ].map((type) => nodeStyle(type).shape),
     );
 
-    for (const type of [...TYPES_BY_FAMILY.services, ...TYPES_BY_FAMILY.resources]) {
+    // Hue cannot separate eight families, so shape carries the architectural
+    // and repository types on its own. A `document` drawn as a circle would be
+    // a class to anyone who cannot tell gold from blue.
+    for (const type of [
+      ...TYPES_BY_FAMILY.services,
+      ...TYPES_BY_FAMILY.resources,
+      ...TYPES_BY_FAMILY.documentation,
+      ...TYPES_BY_FAMILY.configuration,
+    ]) {
       expect(codeShapes.has(nodeStyle(type).shape)).toBe(false);
     }
   });

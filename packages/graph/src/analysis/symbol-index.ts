@@ -26,9 +26,33 @@ const TYPE_PRIORITY: readonly CodeNodeType[] = [
   'property',
 ];
 
+/**
+ * Node types a prose mention may resolve to.
+ *
+ * Deliberately the things a sentence in a README plausibly names: a class, an
+ * interface, a service, a route. Not a parameter, not a property — a document
+ * saying "id" is not documenting every `id` in the repository.
+ */
+const MENTIONABLE_TYPES: readonly CodeNodeType[] = [
+  'class',
+  'interface',
+  'type',
+  'enum',
+  'function',
+  'method',
+  'service',
+  'api',
+  'api_endpoint',
+  'table',
+  'external_service',
+  'queue',
+  'event',
+];
+
 export class SymbolIndex {
   private readonly byId = new Map<string, CodeNode>();
   private readonly byFile = new Map<string, CodeNode[]>();
+  private readonly mentionableByName = new Map<string, CodeNode[]>();
   private readonly byFileAndQualifiedName = new Map<string, CodeNode[]>();
   private readonly byFileAndName = new Map<string, CodeNode[]>();
   private readonly ownerByNodeId = new Map<string, string>();
@@ -44,6 +68,14 @@ export class SymbolIndex {
         push(this.byFile, node.filePath, node);
         push(this.byFileAndName, key(node.filePath, node.name), node);
         push(this.byFileAndQualifiedName, key(node.filePath, node.qualifiedName ?? node.name), node);
+      }
+
+      if (MENTIONABLE_TYPES.includes(node.type)) {
+        push(this.mentionableByName, node.name, node);
+        const qualified = node.qualifiedName;
+        if (qualified !== undefined && qualified !== node.name) {
+          push(this.mentionableByName, qualified, node);
+        }
       }
     }
 
@@ -182,6 +214,44 @@ export class SymbolIndex {
       guard += 1;
     }
     return undefined;
+  }
+
+  /**
+   * The one node in the whole repository that carries this name — or nothing.
+   *
+   * This is the single lookup in the index that is *not* scoped by file, and it
+   * exists for exactly one caller: a document naming a symbol in prose, where
+   * there is no import statement to say which file is meant.
+   *
+   * It is not the name-similarity matching the rest of this class refuses.
+   * The contract is uniqueness: if two nodes answer to the name, the answer is
+   * `undefined`, not "the first one" and not "the most likely one". A caller
+   * gets an unambiguous node or nothing, and an ambiguous mention stays a piece
+   * of document information rather than becoming a graph edge.
+   *
+   * Case-sensitive, because `AuthService` and `authService` are different names
+   * and a document that writes one did not mean the other.
+   */
+  uniqueDeclaration(name: string, types?: readonly CodeNodeType[]): CodeNode | undefined {
+    const candidates = this.mentionableByName.get(name);
+    if (!candidates || candidates.length === 0) return undefined;
+
+    const allowed = types ? candidates.filter((node) => types.includes(node.type)) : candidates;
+    if (allowed.length === 0) return undefined;
+
+    // Several nodes may be the *same* declaration reached through both its name
+    // and its qualified name; distinct ids are what makes a mention ambiguous.
+    const distinct = new Set(allowed.map((node) => node.id));
+    if (distinct.size !== 1) return undefined;
+
+    return allowed[0];
+  }
+
+  /** How many nodes answer to a name. Lets a caller report why it refused. */
+  countNamed(name: string, types?: readonly CodeNodeType[]): number {
+    const candidates = this.mentionableByName.get(name) ?? [];
+    const allowed = types ? candidates.filter((node) => types.includes(node.type)) : candidates;
+    return new Set(allowed.map((node) => node.id)).size;
   }
 
   /** Every node of a type, in id order. Used for whole-graph classification. */

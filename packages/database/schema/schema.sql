@@ -171,3 +171,45 @@ CREATE INDEX IF NOT EXISTS idx_code_edges_target_rel_source
 
 ALTER TABLE analysis_jobs ADD COLUMN IF NOT EXISTS progress JSONB;
 ALTER TABLE analysis_jobs ADD COLUMN IF NOT EXISTS errors   JSONB;
+-- ---------------------------------------------------------------------------
+-- 0004 repository knowledge graph
+--
+-- The graph stopped being only about code. It now also holds documents and
+-- their sections, configuration files and the properties promoted out of them,
+-- API specifications and the operations they declare, database columns, and
+-- container services — together with four new relationships (DEFINES,
+-- DOCUMENTS, LINKS_TO, IMPLEMENTED_BY) and a richer evidence record on every
+-- edge.
+--
+-- **None of that needed a column.** `code_nodes.node_type` and
+-- `code_edges.relationship` are TEXT, the vocabulary they hold is owned and
+-- validated by @ckg/shared, and both tables already carry a JSONB metadata bag.
+-- A `document` row is a `code_nodes` row; an `IMPLEMENTED_BY` edge is a
+-- `code_edges` row. Adding parallel tables for them would have split one graph
+-- into several and made every traversal a union.
+--
+-- What did change is *which columns the new queries filter on together*, and
+-- that is what this migration is: one index, no data rewritten, no constraint
+-- tightened, nothing dropped. Every existing row stays valid, and a database
+-- that has not been re-analysed simply has fewer node types in it.
+-- ---------------------------------------------------------------------------
+
+-- Two queries now ask for "the node standing for this path, of any of these
+-- types", where the types are the four that represent a whole file — `file`,
+-- `document`, `config`, `api_spec`:
+--
+--   findFileNode  (project_id, node_type IN (...), file_path = ...)
+--   treeLevel     (project_id, node_type IN (...), file_path LIKE 'dir/%')
+--
+-- Before the graph held documents and configuration both could assume
+-- `node_type = 'file'`, and `idx_code_nodes_file_path` was the right index. Now
+-- the type is a set and the path is a prefix, and leading with the type is what
+-- keeps the source explorer a bounded lookup rather than a scan of every symbol
+-- in the project.
+--
+-- Partial, because a node with no path can never satisfy either query and there
+-- are far more of those — every method, parameter and table — than there are
+-- files.
+CREATE INDEX IF NOT EXISTS idx_code_nodes_type_path
+  ON code_nodes (project_id, node_type, file_path)
+  WHERE file_path IS NOT NULL;

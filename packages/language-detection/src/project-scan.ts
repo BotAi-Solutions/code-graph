@@ -1,7 +1,8 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { ProjectMetadata, SupportedLanguage } from '@ckg/shared';
+import type { FileCategory, ProjectMetadata, SupportedLanguage } from '@ckg/shared';
+import { classifyFile } from './classify.js';
 import { detectLanguage } from './extensions.js';
 import { scanRepository, type ScanOptions } from './scan.js';
 import type { RepositoryScan } from './types/index.js';
@@ -78,8 +79,11 @@ export function summarizeScan(scan: RepositoryScan): ProjectMetadata {
 
   for (const file of scan.files) {
     const language = detectLanguage(file);
-    // An unsupported file type is skipped, not an error: a repository is
-    // allowed to contain images, CSVs and Fortran. It is simply not indexed.
+    // An unsupported file type is skipped by the *indexer*, not by the scan: a
+    // repository is allowed to contain images, CSVs and Fortran, and since the
+    // graph became a repository graph most of what is not a language is still
+    // worth counting. `sourceFiles` keeps its original meaning — files an
+    // indexer could compile — and the category counts say what the rest are.
     if (!language) continue;
     sourceFiles += 1;
     languages[language] = (languages[language] ?? 0) + 1;
@@ -91,9 +95,33 @@ export function summarizeScan(scan: RepositoryScan): ProjectMetadata {
     totalFiles: scan.files.length,
     sourceFiles,
     languages,
+    fileCategories: categoriesOf(scan),
     directories: scan.directoryCount,
     truncated: scan.truncated,
   };
+}
+
+/**
+ * Category counts, in the fixed order `FILE_CATEGORIES` declares, so two runs
+ * over the same repository serialise identically.
+ */
+function categoriesOf(scan: RepositoryScan): Partial<Record<FileCategory, number>> {
+  const counts: Partial<Record<FileCategory, number>> = {};
+
+  // Present when the walk produced them; recomputed from the paths otherwise,
+  // so a scan built by hand in a test is still summarised correctly.
+  const source =
+    scan.categoryCounts !== undefined && scan.categoryCounts.size > 0
+      ? scan.categoryCounts
+      : scan.files.reduce((map, file) => {
+          const category = classifyFile(file).category;
+          return map.set(category, (map.get(category) ?? 0) + 1);
+        }, new Map<FileCategory, number>());
+
+  for (const [category, count] of [...source.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (count > 0) counts[category] = count;
+  }
+  return counts;
 }
 
 export interface ScanProjectResult {

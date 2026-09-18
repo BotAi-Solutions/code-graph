@@ -19,7 +19,7 @@ import { floatColor } from 'sigma/utils';
  *
  * ## Why a custom program at all
  *
- * Sigma ships circles. Twenty-one node types need more channels than a circle
+ * Sigma ships circles. Twenty-eight node types need more channels than a circle
  * has: a silhouette so an API is not separated from a class by colour alone,
  * and a halo proportional to importance so the eye lands on the service before
  * it lands on its parameters. Doing either in a canvas overlay would mean
@@ -106,7 +106,33 @@ float shapeDistance(vec2 p, float r, float shape) {
     float a = atan(p.y, p.x);
     return length(p) - r * (0.55 + 0.45 * cos(5.0 * a + PI * 0.5));
   }
-  return min(sdBox(p, vec2(r * 0.92, r * 0.26)), sdBox(p, vec2(r * 0.26, r * 0.92))); // cross
+  if (shape < 11.5) {                                                     // cross
+    return min(sdBox(p, vec2(r * 0.92, r * 0.26)), sdBox(p, vec2(r * 0.26, r * 0.92)));
+  }
+  // A page: portrait, with the top-right corner cut off. The notch is what
+  // makes it read as a document rather than as a tall box.
+  if (shape < 12.5) {
+    float page = sdRoundBox(p, vec2(r * 0.55, r * 0.80), r * 0.10);
+    float fold = dot(p - vec2(r * 0.55, r * 0.80), normalize(vec2(-1.0, -1.0))) + r * 0.30;
+    return max(page, -fold);
+  }
+  // A bar: one line of a settings file.
+  if (shape < 13.5) return sdRoundBox(p, vec2(r * 0.92, r * 0.34), r * 0.14);
+  // Hollow triangle: an endpoint a specification promises, drawn as the outline
+  // of the filled triangle a served route gets. Unimplemented reads as empty.
+  if (shape < 14.5) return abs(sdPolygon(p, r * 1.00, 3.0, PI * 0.5)) - r * 0.16;
+  // Hollow pentagon, to the filled pentagon a service gets.
+  if (shape < 15.5) return abs(sdPolygon(p, r * 0.92, 5.0, PI * 0.5)) - r * 0.16;
+  // Hollow hexagon: a container, which is a box with something inside it.
+  if (shape < 16.5) return abs(sdPolygon(p, r * 0.92, 6.0, 0.0)) - r * 0.16;
+  // Two stacked bars: a paragraph, for a section of a document.
+  if (shape < 17.5) {
+    float top = sdRoundBox(p - vec2(0.0, r * 0.34), vec2(r * 0.86, r * 0.20), r * 0.09);
+    float bottom = sdRoundBox(p + vec2(0.0, r * 0.34), vec2(r * 0.62, r * 0.20), r * 0.09);
+    return min(top, bottom);
+  }
+  // A pillar: tall and narrow, which is what a column of a table looks like.
+  return sdRoundBox(p, vec2(r * 0.28, r * 0.88), r * 0.11);
 }
 `;
 

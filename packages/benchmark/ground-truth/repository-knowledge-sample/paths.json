@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "Traces a reader should be able to follow. Each is a *directed* search: the",
+    "point of a trace is that a request, or an explanation, flows one way, and a",
+    "route that only exists backwards is not the answer to the question.",
+    "",
+    "`viaRelationships` constrains what the route may be made of but not its",
+    "length, because more than one correct route often exists at different",
+    "altitudes — method-to-method and class-to-class — and pinning one of them",
+    "would be pinning an implementation detail of the search rather than a fact",
+    "about the repository."
+  ],
+
+  "paths": [
+    {
+      "name": "Contract to storage: a documented operation reaches the table it writes",
+      "from": { "type": "api_endpoint", "name": "POST /users" },
+      "to": { "type": "table", "name": "postgresql.users" },
+      "maxDepth": 6,
+      "viaRelationships": ["IMPLEMENTED_BY", "CALLS", "WRITES_TO"],
+      "note": "openapi.yaml -> UserController -> UserService -> UserRepository -> users"
+    },
+    {
+      "name": "Route to storage: the served route reaches the same table",
+      "from": { "type": "api", "name": "POST /users" },
+      "to": { "type": "table", "name": "postgresql.users" },
+      "maxDepth": 6,
+      "viaRelationships": ["ROUTES_TO", "CALLS", "WRITES_TO"]
+    },
+    {
+      "name": "Specification to schema: a promised operation reaches a column",
+      "from": { "type": "api_spec", "name": "openapi.yaml" },
+      "to": { "type": "column", "name": "postgresql.users.email" },
+      "maxDepth": 8,
+      "viaRelationships": ["DEFINES", "IMPLEMENTED_BY", "CALLS", "WRITES_TO", "CONTAINS"]
+    },
+    {
+      "name": "Prose to data: the README reaches the table its subject writes",
+      "from": { "type": "document", "name": "README.md" },
+      "to": { "type": "table", "name": "postgresql.users" },
+      "maxDepth": 6,
+      "viaRelationships": ["CONTAINS", "DOCUMENTS", "WRITES_TO"]
+    },
+    {
+      "name": "Deployment to database: compose reaches the provider it runs",
+      "from": { "type": "config", "name": "docker-compose.yml" },
+      "to": { "type": "database", "name": "postgresql" },
+      "maxDepth": 3,
+      "viaRelationships": ["DEFINES", "USES"]
+    },
+    {
+      "name": "Migration to column: the schema file reaches what it declared",
+      "from": { "type": "file", "name": "database/migrations/0001_create_users.sql" },
+      "to": { "type": "column", "name": "postgresql.users.email" },
+      "maxDepth": 3,
+      "viaRelationships": ["DEFINES", "CONTAINS"]
+    },
+    {
+      "name": "Prose to handler: the README reaches the method that serves users",
+      "from": { "type": "document", "name": "README.md" },
+      "to": { "type": "method", "name": "UserController.create" },
+      "maxDepth": 6,
+      "viaRelationships": ["CONTAINS", "DOCUMENTS"],
+      "note": "README -> #users -> UserController -> create. Deliberately not the other direction: ROUTES_TO runs from the route into the code, so no route reaches an api node from a document, and asserting one would be asserting an edge that should not exist."
+    }
+  ]
+}

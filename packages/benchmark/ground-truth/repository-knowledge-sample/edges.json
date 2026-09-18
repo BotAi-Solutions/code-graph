@@ -1,0 +1,422 @@
+{
+  "_comment": [
+    "Relationships read out of the fixture by hand. `closedRelationships` lists",
+    "the ones enumerated COMPLETELY — precision is measured for those and for no",
+    "others. CONTAINS, REFERENCES, IMPORTS and friends are deliberately open:",
+    "they are dense, compiler-derived, and listing every one would be a",
+    "transcription of the indexer rather than an expectation of it.",
+    "",
+    "`confidence` and `evidence` are asserted wherever the confidence policy has",
+    "something to say. That is what turns this from a shape check into a check",
+    "that the graph can explain itself."
+  ],
+
+  "closedRelationships": [
+    "DEFINES",
+    "DOCUMENTS",
+    "LINKS_TO",
+    "IMPLEMENTED_BY",
+    "ROUTES_TO",
+    "READS_FROM",
+    "WRITES_TO",
+    "CALLS",
+    "USES"
+  ],
+
+  "edges": [
+    {
+      "note": "openapi.yaml declares three operations.",
+      "from": { "type": "api_spec", "name": "openapi.yaml" },
+      "relationship": "DEFINES",
+      "to": { "type": "api_endpoint", "name": "POST /users" },
+      "confidence": "high",
+      "evidence": { "source": "openapi-analyzer", "method": "openapi", "file": "openapi.yaml", "located": true }
+    },
+    {
+      "from": { "type": "api_spec", "name": "openapi.yaml" },
+      "relationship": "DEFINES",
+      "to": { "type": "api_endpoint", "name": "GET /users/{id}" },
+      "confidence": "high",
+      "evidence": { "source": "openapi-analyzer", "method": "openapi", "located": true }
+    },
+    {
+      "from": { "type": "api_spec", "name": "openapi.yaml" },
+      "relationship": "DEFINES",
+      "to": { "type": "api_endpoint", "name": "POST /sessions" },
+      "confidence": "high",
+      "evidence": { "source": "openapi-analyzer", "method": "openapi", "located": true }
+    },
+    {
+      "note": "The compose file declares both containers.",
+      "from": { "type": "config", "name": "docker-compose.yml" },
+      "relationship": "DEFINES",
+      "to": { "type": "container", "name": "api" },
+      "confidence": "high",
+      "evidence": { "source": "configuration-analyzer", "method": "yaml", "file": "docker-compose.yml", "located": true }
+    },
+    {
+      "from": { "type": "config", "name": "docker-compose.yml" },
+      "relationship": "DEFINES",
+      "to": { "type": "container", "name": "postgres" },
+      "confidence": "high",
+      "evidence": { "source": "configuration-analyzer", "method": "yaml", "located": true }
+    },
+    {
+      "note": "The first migration declares both tables; the second touches users again.",
+      "from": { "type": "file", "name": "database/migrations/0001_create_users.sql" },
+      "relationship": "DEFINES",
+      "to": { "type": "table", "name": "postgresql.users" },
+      "confidence": "high",
+      "evidence": { "source": "sql-analyzer", "method": "sql", "file": "database/migrations/0001_create_users.sql", "located": true }
+    },
+    {
+      "from": { "type": "file", "name": "database/migrations/0001_create_users.sql" },
+      "relationship": "DEFINES",
+      "to": { "type": "table", "name": "postgresql.sessions" },
+      "confidence": "high",
+      "evidence": { "source": "sql-analyzer", "method": "sql", "located": true }
+    },
+    {
+      "from": { "type": "file", "name": "database/migrations/0002_add_last_seen.sql" },
+      "relationship": "DEFINES",
+      "to": { "type": "table", "name": "postgresql.users" },
+      "confidence": "high",
+      "evidence": { "source": "sql-analyzer", "method": "sql", "located": true }
+    },
+
+    {
+      "note": "The README's Authentication section names AuthService in prose.",
+      "from": { "type": "document_section", "name": "README.md#authentication" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "AuthService" },
+      "confidence": "medium",
+      "evidence": { "source": "document-analyzer", "method": "markdown", "file": "README.md", "located": true }
+    },
+    {
+      "from": { "type": "document_section", "name": "README.md#users" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "UserService" },
+      "confidence": "medium",
+      "evidence": { "source": "document-analyzer", "method": "markdown", "located": true }
+    },
+    {
+      "from": { "type": "document_section", "name": "README.md#users" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "UserRepository" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "document_section", "name": "README.md#users" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "UserController" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "document_section", "name": "docs/architecture.md#transport" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "UserController" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "document_section", "name": "docs/architecture.md#application" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "UserService" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "document_section", "name": "docs/architecture.md#persistence" },
+      "relationship": "DOCUMENTS",
+      "to": { "type": "class", "name": "UserRepository" },
+      "confidence": "medium"
+    },
+
+    {
+      "from": { "type": "document", "name": "README.md" },
+      "relationship": "LINKS_TO",
+      "to": { "type": "document", "name": "docs/architecture.md" },
+      "confidence": "high",
+      "evidence": { "source": "document-analyzer", "method": "markdown", "file": "README.md", "located": true }
+    },
+    {
+      "from": { "type": "document", "name": "README.md" },
+      "relationship": "LINKS_TO",
+      "to": { "type": "config", "name": "docker-compose.yml" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "document", "name": "docs/architecture.md" },
+      "relationship": "LINKS_TO",
+      "to": { "type": "document", "name": "README.md" },
+      "confidence": "high"
+    },
+
+    {
+      "note": "POST /users is declared and served; the endpoint reaches the route, the handler and the class that owns it.",
+      "from": { "type": "api_endpoint", "name": "POST /users" },
+      "relationship": "IMPLEMENTED_BY",
+      "to": { "type": "api", "name": "POST /users" },
+      "confidence": "high",
+      "evidence": { "source": "openapi-analyzer", "method": "openapi", "located": true }
+    },
+    {
+      "from": { "type": "api_endpoint", "name": "POST /users" },
+      "relationship": "IMPLEMENTED_BY",
+      "to": { "type": "method", "name": "UserController.create" },
+      "confidence": "high"
+    },
+    {
+      "note": "Reached by lifting to the enclosing class, so it inherits that step's confidence.",
+      "from": { "type": "api_endpoint", "name": "POST /users" },
+      "relationship": "IMPLEMENTED_BY",
+      "to": { "type": "class", "name": "UserController" },
+      "confidence": "medium"
+    },
+    {
+      "note": "The spec writes {id} and the router writes :id; the match erases parameter names.",
+      "from": { "type": "api_endpoint", "name": "GET /users/{id}" },
+      "relationship": "IMPLEMENTED_BY",
+      "to": { "type": "api", "name": "GET /users/:id" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "api_endpoint", "name": "GET /users/{id}" },
+      "relationship": "IMPLEMENTED_BY",
+      "to": { "type": "method", "name": "UserController.get" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "api_endpoint", "name": "GET /users/{id}" },
+      "relationship": "IMPLEMENTED_BY",
+      "to": { "type": "class", "name": "UserController" },
+      "confidence": "medium"
+    },
+
+    {
+      "from": { "type": "api", "name": "POST /users" },
+      "relationship": "ROUTES_TO",
+      "to": { "type": "method", "name": "UserController.create" },
+      "confidence": "high",
+      "evidence": { "source": "api-analyzer" }
+    },
+    {
+      "from": { "type": "api", "name": "POST /users" },
+      "relationship": "ROUTES_TO",
+      "to": { "type": "class", "name": "UserController" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "api", "name": "GET /users/:id" },
+      "relationship": "ROUTES_TO",
+      "to": { "type": "method", "name": "UserController.get" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "api", "name": "GET /users/:id" },
+      "relationship": "ROUTES_TO",
+      "to": { "type": "class", "name": "UserController" },
+      "confidence": "medium"
+    },
+
+    {
+      "note": "INSERT INTO users, in UserRepository.create.",
+      "from": { "type": "method", "name": "UserRepository.create" },
+      "relationship": "WRITES_TO",
+      "to": { "type": "table", "name": "postgresql.users" },
+      "confidence": "high",
+      "evidence": { "source": "database-analyzer", "method": "ast", "file": "src/repositories/user.repository.ts", "located": true }
+    },
+    {
+      "from": { "type": "class", "name": "UserRepository" },
+      "relationship": "WRITES_TO",
+      "to": { "type": "table", "name": "postgresql.users" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "method", "name": "SessionRepository.create" },
+      "relationship": "WRITES_TO",
+      "to": { "type": "table", "name": "postgresql.sessions" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "class", "name": "SessionRepository" },
+      "relationship": "WRITES_TO",
+      "to": { "type": "table", "name": "postgresql.sessions" },
+      "confidence": "medium"
+    },
+
+    {
+      "note": "SELECT * FROM users, in UserRepository.findById.",
+      "from": { "type": "method", "name": "UserRepository.findById" },
+      "relationship": "READS_FROM",
+      "to": { "type": "table", "name": "postgresql.users" },
+      "confidence": "high",
+      "evidence": { "source": "database-analyzer", "method": "ast", "located": true }
+    },
+    {
+      "from": { "type": "class", "name": "UserRepository" },
+      "relationship": "READS_FROM",
+      "to": { "type": "table", "name": "postgresql.users" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "method", "name": "SessionRepository.findByToken" },
+      "relationship": "READS_FROM",
+      "to": { "type": "table", "name": "postgresql.sessions" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "class", "name": "SessionRepository" },
+      "relationship": "READS_FROM",
+      "to": { "type": "table", "name": "postgresql.sessions" },
+      "confidence": "medium"
+    },
+
+    {
+      "note": "The postgres container's image names the provider.",
+      "from": { "type": "container", "name": "postgres" },
+      "relationship": "USES",
+      "to": { "type": "database", "name": "postgresql" },
+      "confidence": "high",
+      "evidence": { "source": "configuration-analyzer", "method": "yaml", "file": "docker-compose.yml", "located": true }
+    },
+
+    {
+      "note": "The four-layer call chain the architecture notes describe.",
+      "from": { "type": "method", "name": "UserController.create" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserService.create" },
+      "confidence": "high",
+      "evidence": { "source": "scip", "method": "scip" }
+    },
+    {
+      "from": { "type": "method", "name": "UserController.get" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserService.get" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "UserService.create" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserRepository.create" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "UserService.get" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserRepository.findById" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "AuthService.issue" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "SessionRepository.create" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "AuthService.issue" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "AuthService.hash" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "AuthService.verify" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "SessionRepository.findByToken" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "AuthService.verify" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "AuthService.hash" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "UserRepository.create" },
+      "relationship": "CALLS",
+      "to": { "type": "function", "name": "toUser" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "method", "name": "UserRepository.findById" },
+      "relationship": "CALLS",
+      "to": { "type": "function", "name": "toUser" },
+      "confidence": "high"
+    },
+    {
+      "note": "The router's inline arrows dispatch to the controller.",
+      "from": { "type": "function", "name": "createUserRouter" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserController.create" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "function", "name": "createUserRouter" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserController.get" },
+      "confidence": "high"
+    },
+    {
+      "note": "Class-level summaries of the member calls above.",
+      "from": { "type": "class", "name": "UserController" },
+      "relationship": "CALLS",
+      "to": { "type": "class", "name": "UserService" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "class", "name": "UserService" },
+      "relationship": "CALLS",
+      "to": { "type": "class", "name": "UserRepository" },
+      "confidence": "medium"
+    },
+    {
+      "from": { "type": "class", "name": "AuthService" },
+      "relationship": "CALLS",
+      "to": { "type": "class", "name": "SessionRepository" },
+      "confidence": "medium"
+    },
+    {
+      "note": "Module-level wiring in src/index.ts: five constructors and the router factory.",
+      "from": { "type": "file", "name": "src/index.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserRepository.<constructor>" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "file", "name": "src/index.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "SessionRepository.<constructor>" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "file", "name": "src/index.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserService.<constructor>" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "file", "name": "src/index.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "AuthService.<constructor>" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "file", "name": "src/index.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "method", "name": "UserController.<constructor>" },
+      "confidence": "high"
+    },
+    {
+      "from": { "type": "file", "name": "src/index.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "function", "name": "createUserRouter" },
+      "confidence": "high"
+    },
+    {
+      "note": "File-level summary of the two method calls to toUser.",
+      "from": { "type": "file", "name": "src/repositories/user.repository.ts" },
+      "relationship": "CALLS",
+      "to": { "type": "function", "name": "toUser" },
+      "confidence": "high"
+    }
+  ]
+}

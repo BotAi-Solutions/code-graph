@@ -21,10 +21,12 @@
     "db:status": "pnpm --filter @ckg/database migrate:status",
     "setup:scip": "tsx scripts/setup-scip.ts",
     "fixtures:build": "pnpm build:packages && tsx scripts/build-fixtures.ts",
-    "analyze:sample": "pnpm build:packages && tsx scripts/dev-analysis.ts"
+    "analyze:sample": "pnpm build:packages && tsx scripts/dev-analysis.ts",
+    "benchmark": "pnpm build:packages && pnpm --filter @ckg/benchmark benchmark"
   },
   "devDependencies": {
     "@ckg/analysis": "workspace:*",
+    "@ckg/benchmark": "workspace:*",
     "@ckg/database": "workspace:*",
     "@ckg/graph": "workspace:*",
     "@ckg/language-detection": "workspace:*",

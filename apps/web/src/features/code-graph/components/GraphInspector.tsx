@@ -137,6 +137,8 @@ function NodeBody({
     detail.dependencies.length === 0 &&
     detail.dependents.length === 0 &&
     detail.implementations.length === 0 &&
+    detail.documentation.length === 0 &&
+    detail.contracts.length === 0 &&
     detail.children.length === 0 &&
     members.length === 0;
 
@@ -376,6 +378,22 @@ function NodeBody({
       <RelatedList
         title="Architecture"
         nodes={architecture}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      {/* The two repository sections. Placed after the code ones because a
+          reader arriving at a class wants its callers first — but before
+          "Members", because what a specification promises about a controller
+          outranks the list of its own methods. */}
+      <RelatedList
+        title="Declared by"
+        nodes={detail.contracts}
+        onSelectNode={onSelectNode}
+        onOpenSource={onOpenSource}
+      />
+      <RelatedList
+        title="Documentation"
+        nodes={detail.documentation}
         onSelectNode={onSelectNode}
         onOpenSource={onOpenSource}
       />
@@ -667,9 +685,7 @@ function RelatedList({
             <button
               type="button"
               className="inspector__link"
-              title={`${node.relationship} — ${nodeFullName(node)}${
-                node.evidenceSource ? ` (${node.evidenceSource})` : ''
-              }`}
+              title={relatedTitle(node)}
               onClick={() => {
                 onSelectNode(node.id);
               }}
@@ -692,6 +708,33 @@ function RelatedList({
       </ul>
     </Section>
   );
+}
+
+/**
+ * The tooltip for a related row: the relationship, and why it is believed.
+ *
+ * Spelled out rather than abbreviated because this is the answer to the only
+ * question that matters about an inferred edge — a `DOCUMENTS` edge that says
+ * "markdown, README.md:14, matched AuthService" can be checked in five seconds,
+ * and one that says "document-analyzer" cannot be checked at all.
+ */
+function relatedTitle(node: RelatedNode): string {
+  const evidence = node.evidence ?? null;
+  if (!evidence) return `${node.relationship} — ${nodeFullName(node)}`;
+
+  const where =
+    evidence.file === undefined
+      ? null
+      : `${evidence.file}${evidence.line === undefined ? '' : `:${String(evidence.line)}`}`;
+
+  const parts = [
+    evidence.method ?? evidence.source,
+    where,
+    evidence.matched === undefined ? null : `matched ${evidence.matched}`,
+    `${evidence.confidence} confidence`,
+  ].filter((part): part is string => part !== null);
+
+  return `${node.relationship} — ${nodeFullName(node)}\n${parts.join(' · ')}`;
 }
 
 /** The "where is it" half of a row, for a node the indexer gave a file. */

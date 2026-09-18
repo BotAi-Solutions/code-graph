@@ -1,3 +1,4 @@
+export * from './classify.js';
 export * from './detect.js';
 export * from './extensions.js';
 export * from './detectors/index.js';

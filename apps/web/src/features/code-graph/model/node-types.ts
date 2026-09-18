@@ -29,6 +29,13 @@ export const NODE_SHAPES = {
   rhomboid: 9,
   star: 10,
   cross: 11,
+  page: 12,
+  bar: 13,
+  hollowTriangle: 14,
+  hollowPentagon: 15,
+  hollowHexagon: 16,
+  lines: 17,
+  pillar: 18,
 } as const;
 
 export type NodeShape = keyof typeof NODE_SHAPES;
@@ -54,7 +61,7 @@ export interface NodeStyle {
 
 /**
  * Shape is the *primary* channel for the architectural types and a secondary
- * one for code, because hue cannot separate twenty-one things (see
+ * one for code, because hue cannot separate twenty-eight things (see
  * `utils/graph-colors.ts`). Every architectural silhouette below is one no code
  * type uses, so an API is never separated from a class by colour alone.
  */
@@ -84,6 +91,21 @@ const SHAPES: Record<CodeNodeType, NodeShape> = {
   queue: 'rhomboid',
   event: 'star',
   config: 'cross',
+
+  // The repository types pair with the architectural silhouette they relate
+  // to, hollowed out: a declared endpoint is the outline of a served route, a
+  // specification the outline of a service. A hollow shape reads as "promised,
+  // not necessarily delivered", which is exactly what a contract is.
+  api_endpoint: 'hollowTriangle',
+  api_spec: 'hollowPentagon',
+  container: 'hollowHexagon',
+  // A pillar for a column, two stacked lines for a section of prose, one line
+  // for one setting. Every silhouette here is unused by any code type, so no
+  // repository node is told apart from a class by colour alone.
+  column: 'pillar',
+  document: 'page',
+  document_section: 'lines',
+  config_property: 'bar',
 };
 
 /**
@@ -123,6 +145,16 @@ const SIZES: Record<CodeNodeType, number> = {
   queue: 6,
   event: 5.5,
   config: 4.5,
+
+  api_spec: 8,
+  api_endpoint: 6.5,
+  container: 7,
+  // The interiors of the three types above them, and sized to say so: a column
+  // must not out-draw its table, nor a section its document.
+  column: 2.8,
+  document: 6.5,
+  document_section: 3.4,
+  config_property: 2.6,
 };
 
 const GLOW: Record<CodeNodeType, number> = {
@@ -151,6 +183,14 @@ const GLOW: Record<CodeNodeType, number> = {
   queue: 0.75,
   event: 0.75,
   config: 0.4,
+
+  api_spec: 0.8,
+  api_endpoint: 0.7,
+  container: 0.8,
+  column: 0.12,
+  document: 0.6,
+  document_section: 0.2,
+  config_property: 0.1,
 };
 
 const LABEL_PRIORITY: Record<CodeNodeType, number> = {
@@ -179,6 +219,14 @@ const LABEL_PRIORITY: Record<CodeNodeType, number> = {
   queue: 0.8,
   event: 0.75,
   config: 0.55,
+
+  api_spec: 0.85,
+  api_endpoint: 0.8,
+  container: 0.85,
+  column: 0.2,
+  document: 0.7,
+  document_section: 0.4,
+  config_property: 0.15,
 };
 
 /**
@@ -214,6 +262,16 @@ const DETAIL_TIER: Record<CodeNodeType, 0 | 1 | 2> = {
   queue: 0,
   event: 0,
   config: 0,
+
+  api_spec: 0,
+  api_endpoint: 0,
+  container: 0,
+  document: 0,
+  // Tier 2: the interior of a document, a config file or a table. True, dense,
+  // and noise until someone has already chosen where to look.
+  document_section: 2,
+  config_property: 2,
+  column: 2,
 };
 
 /** How much being *this kind of thing* counts towards importance. */
@@ -243,6 +301,14 @@ const WEIGHT: Record<CodeNodeType, number> = {
   queue: 0.6,
   event: 0.55,
   config: 0.3,
+
+  api_spec: 0.75,
+  api_endpoint: 0.6,
+  container: 0.7,
+  document: 0.45,
+  document_section: 0.12,
+  config_property: 0.08,
+  column: 0.08,
 };
 
 export const NODE_STYLES: Record<CodeNodeType, NodeStyle> = Object.fromEntries(
@@ -270,8 +336,10 @@ export const TYPES_BY_FAMILY: Record<NodeFamily, CodeNodeType[]> = {
   callables: ['function', 'method'],
   data: ['variable', 'property', 'parameter'],
   structure: ['repository', 'directory', 'file', 'module'],
-  services: ['api', 'service', 'external_service'],
-  resources: ['database', 'table', 'queue', 'event', 'config'],
+  services: ['api', 'api_endpoint', 'api_spec', 'service', 'external_service'],
+  resources: ['database', 'table', 'column', 'queue', 'event', 'container'],
+  documentation: ['document', 'document_section'],
+  configuration: ['config', 'config_property'],
 };
 
 export function familyOf(type: CodeNodeType): NodeFamily {

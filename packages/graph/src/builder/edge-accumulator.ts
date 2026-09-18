@@ -51,8 +51,11 @@ export class EdgeAccumulator {
       relationship,
       metadata: {
         occurrences: 1,
-        ...evidenceFields(options.evidence),
         ...options.metadata,
+        // Last, so the evidence record is authoritative: an analyzer that
+        // happens to call one of its own metadata keys `line` or `method`
+        // annotates the edge, it does not rewrite the reason for it.
+        ...evidenceFields(options.evidence),
       },
     };
     this.edges.set(id, edge);
@@ -78,8 +81,29 @@ export class EdgeAccumulator {
   }
 }
 
+/**
+ * The evidence, flattened onto the edge's metadata.
+ *
+ * Flattened rather than nested under an `evidence` key because `source` and
+ * `confidence` have been top-level since the first migration — the database
+ * indexes them there and the API reads them there — and moving them would break
+ * every stored graph for no gain. The fields added since sit beside them, and
+ * `edgeEvidence()` in `@ckg/shared` is the one reader that knows the layout.
+ *
+ * Only fields the producer actually recorded are written: an absent line is
+ * absent, never zero.
+ */
 function evidenceFields(evidence: EdgeEvidence): Record<string, unknown> {
-  return { source: evidence.source, confidence: evidence.confidence };
+  const fields: Record<string, unknown> = {
+    source: evidence.source,
+    confidence: evidence.confidence,
+  };
+  if (evidence.method !== undefined) fields.method = evidence.method;
+  if (evidence.file !== undefined) fields.file = evidence.file;
+  if (evidence.line !== undefined) fields.line = evidence.line;
+  if (evidence.column !== undefined) fields.column = evidence.column;
+  if (evidence.matched !== undefined) fields.matched = evidence.matched;
+  return fields;
 }
 
 const CONFIDENCE_RANK: Record<EdgeEvidence['confidence'], number> = { low: 0, medium: 1, high: 2 };

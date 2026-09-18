@@ -1,0 +1,13 @@
+{
+  "serviceName": "knowledge-sample",
+  "port": 8080,
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "poolSize": 10
+  },
+  "session": {
+    "ttlSeconds": 3600,
+    "secret": "replace-me"
+  }
+}

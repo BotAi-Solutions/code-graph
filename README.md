@@ -1,6 +1,12 @@
-# Code Knowledge Graph
+# Repository Knowledge Graph
 
-Turns a source repository into a queryable graph of its own code.
+Turns a repository into a queryable graph of everything in it — its code, and
+the documentation, configuration, contracts and schema around the code.
+
+SCIP is the deterministic source of truth for code-level relationships. Markdown,
+JSON, YAML, OpenAPI and SQL analyzers add the rest, every relationship carries
+the evidence it was derived from, and a benchmark measures how much of it is
+right.
 
 ## Run it
 
@@ -82,7 +88,8 @@ Git / local repository
         │
         ▼
  Project scanner            packages/language-detection
- Language detection
+ Language detection         ──▶  code · document · configuration ·
+ File classification             schema · database · generated · …
         │
         ▼
  SCIP indexer               packages/scip  ──▶  index.scip
@@ -94,26 +101,35 @@ Git / local repository
  Graph builder              packages/graph      ──▶  symbols, calls, references
         │
         ▼
- Source analyzers           packages/analysis   ──▶  APIs, tables, queues,
+ Source analyzers           packages/analysis   ──▶  APIs, tables, columns,
+        │                                            containers, config, queues,
         │                                            events, integrations
+        ▼
+ Classification analyzers   packages/analysis   ──▶  API specifications,
+        │                                            documents, class roles,
+        │                                            cross-source relationships
         ▼
  Graph assembler            packages/graph      ──▶  one graph, merged by
         │                                            identity, every edge evidenced
         ▼
- Code knowledge graph
+ Repository knowledge graph
         │
-        ▼
- PostgreSQL                 packages/database
+        ├──▶ PostgreSQL             packages/database
+        │         │
+        │         ▼
+        │    Graph API              apps/api
+        │         │
+        │         ▼
+        │    React web UI           apps/web
         │
-        ▼
- Graph API                  apps/api
-        │
-        ▼
- React web UI               apps/web
+        └──▶ Benchmark              packages/benchmark  ──▶  precision, recall,
+                                                             evidence, paths
 ```
 
 Read [docs/architecture.md](docs/architecture.md) for what each stage owns and
-why the boundaries fall where they do.
+why the boundaries fall where they do, and
+[docs/repository-knowledge.md](docs/repository-knowledge.md) for the layer that
+reads the non-code half.
 
 ---
 
@@ -310,22 +326,31 @@ packages/
   graph/               Graph domain model, deterministic builder, the analyzer
                        seam and the merge, traversal, serialisation.
                        Language-agnostic by construction.
-  analysis/            Source analyzers: files, imports, structure, APIs,
-                       databases, external services, messaging, frameworks.
-                       The only place that reads syntax.
-  language-detection/  Project scanner (one walk, extensible ignore policy) and
-                       per-language detectors.
+  analysis/            Analyzers and parsers: files, imports, structure, APIs,
+                       SQL schemas, databases, configuration, external services,
+                       messaging, frameworks, OpenAPI, documents. The only place
+                       that reads syntax, and the only place a Markdown, JSON,
+                       YAML or SQL parser exists.
+  language-detection/  Project scanner (one walk, extensible ignore policy),
+                       per-language detectors and file classification.
   database/            Pool, migrations, repositories. The only place with SQL.
-  shared/              Types, Zod schemas and constants everything else speaks.
+  benchmark/           Precision, recall, evidence and path correctness against
+                       a hand-written ground truth. Runs the real pipeline.
+  shared/              Types, Zod schemas and constants everything else speaks,
+                       including the confidence policy.
 
 test-repositories/
   typescript-sample/           Layered fixture app: controller → service →
                                repository → model.
   express-postgres-sample/     Express + PostgreSQL service: routes, SQL, a
                                queue, an event bus, two integrations.
+  repository-knowledge-sample/ The above plus Markdown, JSON, YAML, an OpenAPI
+                               contract and two migrations — the benchmark's
+                               fixture, with known cross-source relationships.
 scripts/                       setup-scip.ts, dev-analysis.ts, build-fixtures.ts
 docker/postgres/                       Compose init scripts
-docs/                                  Architecture, SCIP, graph model, API
+docs/                                  Architecture, graph model, repository
+                                       knowledge, benchmark, SCIP, API
 ```
 
 ---
@@ -337,6 +362,7 @@ pnpm build          # type-check and emit every package, then build the web app
 pnpm typecheck      # type-check only
 pnpm test           # the whole suite (Vitest)
 pnpm test:watch
+pnpm benchmark      # score the pipeline against the golden fixture
 ```
 
 TypeScript is strict everywhere, ESM throughout, with project references so
@@ -344,13 +370,13 @@ TypeScript is strict everywhere, ESM throughout, with project references so
 
 ### Tests
 
-345 tests, no database or network required — plus 27 more that run when one is
-(see below). `packages/scip/tests/fixtures/`
-holds real `index.scip` files produced by scip-typescript from the sample
-repositories, so the parser, builder and analyzers are checked against genuine
-indexer output rather than a fixture that only agrees with itself. Regenerate
-them with `pnpm fixtures:build`; the indexer is deterministic, so a dirty
-`git status` afterwards means a sample actually changed.
+777 tests, no database or network required — plus 51 more that run when one is
+(see below). `packages/scip/tests/fixtures/` holds real `index.scip` files
+produced by scip-typescript from the sample repositories, so the parser,
+builder, analyzers and benchmark are checked against genuine indexer output
+rather than a fixture that only agrees with itself. Regenerate them with
+`pnpm fixtures:build`; the indexer is deterministic, so a dirty `git status`
+afterwards means a sample actually changed.
 
 | Suite | Covers |
 | --- | --- |
@@ -358,7 +384,8 @@ them with `pnpm fixtures:build`; the indexer is deterministic, so a dirty
 | `packages/language-detection` | TypeScript/JavaScript/mixed repositories; the project scanner against real directory trees — nesting, ignored directories, lock files, unsupported types, empty projects, determinism |
 | `packages/scip` | Protobuf wire format, symbol grammar, parsing, indexer adapter |
 | `packages/graph` | Builder (symbols→nodes, references→edges), the assembler's merge rules, symbol index, determinism, traversal |
-| `packages/analysis` | Module resolution, bindings, SQL/Prisma/vendor detection, every analyzer end to end against the Express sample, and what happens when one file cannot be read or parsed |
+| `packages/analysis` | Module resolution, bindings, SQL/Prisma/vendor detection, the Markdown/JSON/YAML/SQL/OpenAPI parsers, every analyzer end to end against the Express and mixed-format samples, and what happens when one file cannot be read or parsed |
+| `packages/benchmark` | The metric arithmetic, the evaluator against synthetic graphs where the answer is obvious, ground-truth validation, and the real pipeline against the golden fixture |
 | `packages/database` | Migration contract, row mapping, and the graph SQL against a real PostgreSQL |
 | `apps/api` | Envelope, every route, projections, direction, search paging, node detail, error codes, OpenAPI, and the local-folder intake boundary |
 | `apps/worker` | The pipeline end to end against both fixtures, including phase-by-phase progress, the statistics it records, and a run surviving a broken analyzer |
@@ -384,18 +411,33 @@ Implemented: the TypeScript/JavaScript pipeline, the graph model and builder,
 PostgreSQL persistence, the traversal API, and the React UI.
 
 Implemented since: the architectural layer — API, service, database, table,
-queue, event, external-service and config nodes, produced by source analyzers
-behind the `CodeAnalyzer` seam — graph projections, and evidence on every edge.
+queue, event and external-service nodes, produced by source analyzers behind the
+`CodeAnalyzer` seam — graph projections, and evidence on every edge.
+
+Implemented since that: the repository layer. File classification, Markdown,
+JSON, YAML, OpenAPI and SQL parsers, document / section / config / config
+property / API spec / endpoint / column / container nodes, four cross-source
+relationships joining a contract to its handler and prose to its subject, a
+central confidence policy, evidence carrying a file and a line, and a benchmark
+that scores all of it against a hand-written ground truth.
 
 Not implemented, and intentionally so: Qdrant, embeddings, LLM/Claude
 integration, MCP, OAuth, authentication, multi-tenancy, Neo4j, distributed
-workers, AI summaries, incremental indexing and production deployment. The architecture is arranged so each can be added
-without restructuring — see the last section of
-[docs/architecture.md](docs/architecture.md).
+workers, AI summaries, incremental indexing and production deployment. The
+architecture is arranged so each can be added without restructuring — see the
+last section of [docs/architecture.md](docs/architecture.md).
+
+The graph is shaped so that a future context engine can ask it: search entities,
+get source, find references, find callers and callees, find dependencies, find a
+path, trace an API to its storage, trace data flow, find documentation, find
+configuration, and retrieve the evidence behind any of those. All of those are
+queries against what is there today.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — layers, boundaries, rules
-- [docs/graph-model.md](docs/graph-model.md) — nodes, edges, identity
+- [docs/graph-model.md](docs/graph-model.md) — nodes, edges, evidence, confidence, identity
+- [docs/repository-knowledge.md](docs/repository-knowledge.md) — file categories, parsers, cross-source relationships, what the pipeline refuses to do
+- [docs/benchmark.md](docs/benchmark.md) — ground truth, metrics, CI
 - [docs/scip.md](docs/scip.md) — indexers, parsing, adding a language
 - [docs/api.md](docs/api.md) — endpoints, envelope, error codes

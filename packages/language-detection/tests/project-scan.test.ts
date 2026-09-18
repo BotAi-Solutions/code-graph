@@ -307,24 +307,58 @@ describe('detectLanguage', () => {
 });
 
 describe('summarizeScan', () => {
-  it('is pure: the same scan always summarises the same way', () => {
-    const scan = {
-      rootPath: '/projects/sample',
-      files: ['src/a.ts', 'src/b.py', 'README.md'],
-      rootFiles: new Set(['readme.md']),
-      extensionCounts: new Map([['.ts', 1], ['.py', 1], ['.md', 1]]),
-      directoryCount: 1,
-      truncated: false,
-    };
+  const scan = {
+    rootPath: '/projects/sample',
+    files: ['src/a.ts', 'src/b.py', 'README.md'],
+    rootFiles: new Set(['readme.md']),
+    extensionCounts: new Map([['.ts', 1], ['.py', 1], ['.md', 1]]),
+    categoryCounts: new Map([
+      ['code', 2],
+      ['document', 1],
+    ] as const),
+    directoryCount: 1,
+    truncated: false,
+  };
 
+  it('is pure: the same scan always summarises the same way', () => {
     expect(summarizeScan(scan)).toEqual({
       rootPath: '/projects/sample',
       name: 'sample',
       totalFiles: 3,
       sourceFiles: 2,
       languages: { typescript: 1, python: 1 },
+      fileCategories: { code: 2, document: 1 },
       directories: 1,
       truncated: false,
     });
+    expect(summarizeScan(scan)).toEqual(summarizeScan(scan));
+  });
+
+  it('recomputes categories from the paths when the walk did not count them', () => {
+    const { categoryCounts: _ignored, ...withoutCounts } = scan;
+
+    expect(summarizeScan(withoutCounts as typeof scan).fileCategories).toEqual({
+      code: 2,
+      document: 1,
+    });
+  });
+
+  it('keeps sourceFiles meaning "files an indexer could compile"', () => {
+    // A repository that is mostly documentation and configuration still reports
+    // only its compilable files as source, and says what the rest are.
+    const docs = {
+      ...scan,
+      files: ['README.md', 'docs/architecture.md', 'openapi.yaml', 'src/index.ts'],
+      categoryCounts: new Map([
+        ['document', 2],
+        ['schema', 1],
+        ['code', 1],
+      ] as const),
+    };
+
+    const summary = summarizeScan(docs);
+    expect(summary.sourceFiles).toBe(1);
+    expect(summary.totalFiles).toBe(4);
+    expect(summary.fileCategories).toEqual({ code: 1, document: 2, schema: 1 });
   });
 });

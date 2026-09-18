@@ -1,3 +1,4 @@
+import type { FileCategory } from '../constants/file-categories.js';
 import type { SupportedLanguage } from './language.js';
 
 /**
@@ -54,6 +55,15 @@ export interface ProjectMetadata {
   sourceFiles: number;
   /** Source-file counts per language, highest first when rendered. */
   languages: Partial<Record<SupportedLanguage, number>>;
+  /**
+   * Counts per file category — code, documentation, configuration, schema,
+   * database and the rest. Sparse: a category with no files has no key.
+   *
+   * This is what makes "we found 340 files and can index 120 of them" a useful
+   * sentence rather than an alarming one: the other 220 are a README, a compose
+   * file and a migration directory, and the card can say so.
+   */
+  fileCategories: Partial<Record<FileCategory, number>>;
   directories: number;
   /** True when the walk hit its file or depth cap; counts are a lower bound. */
   truncated: boolean;

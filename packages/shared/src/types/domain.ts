@@ -87,6 +87,8 @@ export interface AnalysisStats {
   interfaceCount?: number;
   /** Source-file counts per detected language. */
   languages?: Partial<Record<SupportedLanguage, number>>;
+  /** File counts per category, from the same walk. */
+  fileCategories?: Partial<Record<import('../constants/file-categories.js').FileCategory, number>>;
   /** Files recorded in `AnalysisJob.errors`. */
   parseErrorCount?: number;
 }

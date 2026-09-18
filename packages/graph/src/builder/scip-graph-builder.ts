@@ -1,3 +1,4 @@
+import { evidence as evidenceOf } from '@ckg/shared';
 import type { CodeNode, CodeNodeType, CodeRelationship, EdgeEvidence } from '@ckg/shared';
 import type { ScipIndex } from '@ckg/scip';
 import type { GraphIdentityContext } from '../model/identity.js';
@@ -34,11 +35,25 @@ import { NodeAccumulator } from './node-accumulator.js';
  * something the compiler said.
  */
 
-/** Relationships read straight out of the index. */
-const SCIP_EVIDENCE: EdgeEvidence = { source: 'scip', confidence: 'high' };
+/**
+ * Relationships read straight out of the index.
+ *
+ * No file or line: a compiler fact is located by the two symbols it joins, both
+ * of which carry their own range. Recording a line on the edge as well would be
+ * inventing a position the index never gave.
+ */
+const SCIP_EVIDENCE: EdgeEvidence = evidenceOf({
+  source: 'scip',
+  basis: 'scipSymbol',
+  method: 'scip',
+});
 
 /** Aggregates this builder derives from those relationships. */
-const DERIVED_EVIDENCE: EdgeEvidence = { source: 'graph-builder', confidence: 'medium' };
+const DERIVED_EVIDENCE: EdgeEvidence = evidenceOf({
+  source: 'graph-builder',
+  basis: 'derivedFromContainer',
+  method: 'graph',
+});
 
 export interface ScipGraphBuilderOptions {
   identity: GraphIdentityContext;

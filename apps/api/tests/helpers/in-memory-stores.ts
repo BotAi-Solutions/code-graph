@@ -15,7 +15,13 @@ import type {
   RelationshipCounts,
   Repository,
 } from '@ckg/shared';
-import { DEPENDENCY_RELATIONSHIPS, TERMINAL_ANALYSIS_STATUSES } from '@ckg/shared';
+import {
+  DEPENDENCY_RELATIONSHIPS,
+  FILE_LIKE_NODE_TYPES,
+  SOURCE_TREE_NODE_TYPES,
+  TERMINAL_ANALYSIS_STATUSES,
+  edgeEvidence,
+} from '@ckg/shared';
 
 /**
  * In-memory stands-in for the database repositories.
@@ -456,6 +462,8 @@ export class InMemoryGraphStore {
     dependents: RelatedNode[];
     apis: RelatedNode[];
     databases: RelatedNode[];
+    documentation: RelatedNode[];
+    contracts: RelatedNode[];
   }> {
     const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
 
@@ -467,6 +475,8 @@ export class InMemoryGraphStore {
       dependents: [] as RelatedNode[],
       apis: [] as RelatedNode[],
       databases: [] as RelatedNode[],
+      documentation: [] as RelatedNode[],
+      contracts: [] as RelatedNode[],
     };
 
     const dataRelationships = new Set<CodeRelationship>([
@@ -477,6 +487,8 @@ export class InMemoryGraphStore {
     ]);
     const dataTypes = new Set<CodeNodeType>(['database', 'table', 'queue', 'event']);
     const dependencyRelationships = new Set<CodeRelationship>(DEPENDENCY_RELATIONSHIPS);
+    const documentationRelationships = new Set<CodeRelationship>(['DOCUMENTS', 'LINKS_TO']);
+    const contractRelationships = new Set<CodeRelationship>(['DEFINES', 'IMPLEMENTED_BY']);
 
     const push = <T>(bucket: T[], value: T): void => {
       if (bucket.length < limitPerSection) bucket.push(value);
@@ -500,6 +512,7 @@ export class InMemoryGraphStore {
         ...(typeof edge.metadata?.source === 'string'
           ? { evidenceSource: edge.metadata.source }
           : {}),
+        evidence: edgeEvidence(edge),
       };
 
       if (edge.relationship === 'CALLS') {
@@ -516,6 +529,14 @@ export class InMemoryGraphStore {
       }
       if (dataRelationships.has(edge.relationship) && dataTypes.has(other.type)) {
         push(relations.databases, related);
+        continue;
+      }
+      if (documentationRelationships.has(edge.relationship)) {
+        push(relations.documentation, related);
+        continue;
+      }
+      if (contractRelationships.has(edge.relationship)) {
+        push(relations.contracts, related);
         continue;
       }
       if (dependencyRelationships.has(edge.relationship)) {
@@ -572,6 +593,7 @@ export class InMemoryGraphStore {
         ...(typeof edge.metadata?.source === 'string'
           ? { evidenceSource: edge.metadata.source }
           : {}),
+        evidence: edgeEvidence(edge),
       });
     }
 
@@ -626,10 +648,20 @@ export class InMemoryGraphStore {
       .slice(0, limit);
   }
 
+  /** Mirrors `GraphRepository.findFileNode`: any node standing for the path. */
   async findFileNode(projectId: string, filePath: string): Promise<CodeNode | null> {
     return (
       this.nodesOf(projectId)
-        .filter((node) => node.type === 'file' && node.filePath === filePath)
+        .filter(
+          (node) =>
+            (FILE_LIKE_NODE_TYPES as readonly string[]).includes(node.type) &&
+            node.filePath === filePath,
+        )
+        .sort(
+          (a, b) =>
+            FILE_LIKE_NODE_TYPES.indexOf(a.type as never) -
+            FILE_LIKE_NODE_TYPES.indexOf(b.type as never),
+        )
         .sort((a, b) => a.id.localeCompare(b.id))[0] ?? null
     );
   }
@@ -649,7 +681,7 @@ export class InMemoryGraphStore {
     const prefix = normalized === '' ? '' : `${normalized}/`;
 
     const matched = this.nodesOf(projectId)
-      .filter((node) => node.type === 'directory' || node.type === 'file')
+      .filter((node) => (SOURCE_TREE_NODE_TYPES as readonly string[]).includes(node.type))
       .filter((node) => node.filePath !== undefined)
       .filter((node) => (node.filePath as string).startsWith(prefix))
       .filter((node) => {

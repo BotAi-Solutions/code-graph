@@ -16,6 +16,8 @@ import {
   NODE_FAMILY_BY_TYPE,
   NODE_FAMILY_LABELS,
   NODE_TYPE_LABELS,
+  REPOSITORY_NODE_TYPES,
+  REPOSITORY_RELATIONSHIPS,
   RELATIONSHIPS_BY_GROUP,
   RELATIONSHIP_GROUPS,
   RELATIONSHIP_GROUP_BY_RELATIONSHIP,
@@ -23,6 +25,7 @@ import {
   edgeEvidence,
   graphProjection,
   isArchitecturalNodeType,
+  isRepositoryNodeType,
   isCodeNodeType,
   isCodeRelationship,
 } from '@ckg/shared';
@@ -33,8 +36,12 @@ import {
  * are asserted here rather than discovered as a missing legend entry later.
  */
 describe('node types', () => {
-  it('is the core types plus the architectural ones, with no duplicates', () => {
-    expect(CODE_NODE_TYPES).toEqual([...CORE_CODE_NODE_TYPES, ...ARCHITECTURAL_NODE_TYPES]);
+  it('is the core types plus the architectural and repository ones, with no duplicates', () => {
+    expect(CODE_NODE_TYPES).toEqual([
+      ...CORE_CODE_NODE_TYPES,
+      ...ARCHITECTURAL_NODE_TYPES,
+      ...REPOSITORY_NODE_TYPES,
+    ]);
     expect(new Set(CODE_NODE_TYPES).size).toBe(CODE_NODE_TYPES.length);
   });
 
@@ -63,7 +70,7 @@ describe('node types', () => {
     }
   });
 
-  it('separates code families from architectural ones', () => {
+  it('separates code, architectural and repository families', () => {
     for (const type of ARCHITECTURAL_NODE_TYPES) {
       expect(isArchitecturalNodeType(type)).toBe(true);
       expect(NODE_CATEGORY_BY_FAMILY[NODE_FAMILY_BY_TYPE[type]]).toBe('architecture');
@@ -71,21 +78,64 @@ describe('node types', () => {
     for (const type of CORE_CODE_NODE_TYPES) {
       expect(NODE_CATEGORY_BY_FAMILY[NODE_FAMILY_BY_TYPE[type]]).toBe('code');
     }
+    for (const type of REPOSITORY_NODE_TYPES) {
+      expect(isRepositoryNodeType(type)).toBe(true);
+    }
+  });
+
+  it('keeps provenance and display as separate axes, on purpose', () => {
+    // A repository-provenance type is not automatically a `knowledge` one to
+    // look at: `api_endpoint` is read from a specification and belongs beside
+    // the routes, `column` is read from a migration and belongs beside its
+    // table. Pinned here because the temptation to "fix" the mismatch is real
+    // and acting on it would make one of the two axes wrong.
+    expect(NODE_CATEGORY_BY_FAMILY[NODE_FAMILY_BY_TYPE.api_endpoint]).toBe('architecture');
+    expect(NODE_CATEGORY_BY_FAMILY[NODE_FAMILY_BY_TYPE.column]).toBe('architecture');
+    expect(NODE_CATEGORY_BY_FAMILY[NODE_FAMILY_BY_TYPE.document]).toBe('knowledge');
+    expect(NODE_CATEGORY_BY_FAMILY[NODE_FAMILY_BY_TYPE.config]).toBe('knowledge');
+
+    // Every family under `knowledge` holds only repository-provenance types,
+    // which is the direction of the implication that does hold.
+    for (const family of FAMILIES_BY_CATEGORY.knowledge) {
+      for (const type of CODE_NODE_TYPES) {
+        if (NODE_FAMILY_BY_TYPE[type] !== family) continue;
+        expect(isRepositoryNodeType(type)).toBe(true);
+      }
+    }
+  });
+
+  it('keeps the three groups disjoint', () => {
+    const groups = [CORE_CODE_NODE_TYPES, ARCHITECTURAL_NODE_TYPES, REPOSITORY_NODE_TYPES];
+
+    for (const [index, group] of groups.entries()) {
+      for (const type of group) {
+        const elsewhere = groups
+          .filter((_, other) => other !== index)
+          .some((other) => (other as readonly string[]).includes(type));
+        expect(elsewhere).toBe(false);
+      }
+    }
   });
 
   it('lists every family under exactly one category, and labels each', () => {
-    const listed = [...FAMILIES_BY_CATEGORY.code, ...FAMILIES_BY_CATEGORY.architecture];
+    const listed = [
+      ...FAMILIES_BY_CATEGORY.code,
+      ...FAMILIES_BY_CATEGORY.architecture,
+      ...FAMILIES_BY_CATEGORY.knowledge,
+    ];
 
     expect([...listed].sort()).toEqual([...NODE_FAMILIES].sort());
+    expect(new Set(listed).size).toBe(listed.length);
     for (const family of NODE_FAMILIES) expect(NODE_FAMILY_LABELS[family]).toBeTruthy();
   });
 });
 
 describe('relationships', () => {
-  it('is the core relationships plus the architectural ones', () => {
+  it('is the core relationships plus the architectural and repository ones', () => {
     expect(CODE_RELATIONSHIPS).toEqual([
       ...CORE_CODE_RELATIONSHIPS,
       ...ARCHITECTURAL_RELATIONSHIPS,
+      ...REPOSITORY_RELATIONSHIPS,
     ]);
     expect(new Set(CODE_RELATIONSHIPS).size).toBe(CODE_RELATIONSHIPS.length);
   });

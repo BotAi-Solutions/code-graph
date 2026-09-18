@@ -17,6 +17,9 @@
       "path": "./packages/analysis"
     },
     {
+      "path": "./packages/benchmark"
+    },
+    {
       "path": "./packages/database"
     },
     {

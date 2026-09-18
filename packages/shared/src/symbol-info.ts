@@ -1,3 +1,6 @@
+import { categoryOf, familyOf } from './constants/node-families.js';
+import { isFileCategory, type FileCategory } from './constants/file-categories.js';
+import { FILE_LIKE_NODE_TYPES } from './constants/graph.js';
 import type { SymbolInfo } from './schemas/api.schema.js';
 import type { CodeNode } from './types/graph.js';
 
@@ -73,5 +76,27 @@ export function symbolInfoOf(node: CodeNode, evidence: SymbolEvidence = {}): Sym
       : null,
     scipSymbol: text(metadata.scipSymbol),
     role: text(metadata.role),
+    // Derived from the type rather than read from metadata: a node's category
+    // is a fact about its type, and storing it per node would be a second copy
+    // that could disagree with the first.
+    category: categoryOf(node.type),
+    family: familyOf(node.type),
+    fileCategory: fileCategoryOf(node),
   };
+}
+
+/**
+ * The scanner's classification of a file, for a node that stands for one.
+ *
+ * Only for a file-like node, and only when the analyzer that created it
+ * recorded one — which is every analyzer except SCIP, whose files are code by
+ * definition and are reported as such.
+ */
+function fileCategoryOf(node: CodeNode): FileCategory | null {
+  if (!(FILE_LIKE_NODE_TYPES as readonly string[]).includes(node.type)) return null;
+
+  const recorded = node.metadata?.category;
+  if (typeof recorded === 'string' && isFileCategory(recorded)) return recorded;
+
+  return node.type === 'file' ? 'code' : null;
 }

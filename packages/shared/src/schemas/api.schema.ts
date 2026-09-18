@@ -1,7 +1,15 @@
 import { z } from 'zod';
-import { CODE_NODE_TYPES, CODE_RELATIONSHIPS, CONFIDENCE_LEVELS } from '../types/graph.js';
+import {
+  CODE_NODE_TYPES,
+  CODE_RELATIONSHIPS,
+  CONFIDENCE_LEVELS,
+  EVIDENCE_METHODS,
+  EVIDENCE_SOURCES,
+} from '../types/graph.js';
+import { NODE_CATEGORIES, NODE_FAMILIES } from '../constants/node-families.js';
 import { ANALYSIS_STATUSES, REPOSITORY_SOURCE_TYPES } from '../types/domain.js';
 import { SUPPORTED_LANGUAGES } from '../types/language.js';
+import { FILE_CATEGORIES } from '../constants/file-categories.js';
 import { ANALYSIS_PHASES } from '../constants/indexing.js';
 import {
   GRAPH_DEFAULT_DEPTH,
@@ -67,6 +75,12 @@ export const graphNodeParamsSchema = z.object({
 /** Source-file counts per language. Sparse: a language absent has no key. */
 export const languageCountsSchema = z.partialRecord(
   z.enum(SUPPORTED_LANGUAGES),
+  z.number().int(),
+);
+
+/** File counts per category. Sparse: a category with no files has no key. */
+export const fileCategoryCountsSchema = z.partialRecord(
+  z.enum(FILE_CATEGORIES),
   z.number().int(),
 );
 
@@ -182,6 +196,7 @@ export const analysisStatsSchema = z.object({
   functionCount: z.number().int().optional(),
   interfaceCount: z.number().int().optional(),
   languages: languageCountsSchema.optional(),
+  fileCategories: fileCategoryCountsSchema.optional(),
   parseErrorCount: z.number().int().optional(),
 });
 
@@ -253,6 +268,7 @@ export const projectMetadataSchema = z.object({
   totalFiles: z.number().int(),
   sourceFiles: z.number().int(),
   languages: languageCountsSchema,
+  fileCategories: fileCategoryCountsSchema,
   directories: z.number().int(),
   truncated: z.boolean(),
 });
@@ -280,10 +296,21 @@ export const graphQuerySchema = z.object({
     .default(GRAPH_DEFAULT_NODE_LIMIT),
 });
 
-/** Search accepts a term plus an optional node-type narrowing, and pages. */
+/**
+ * Search accepts a term plus optional narrowings, and pages.
+ *
+ * Two narrowings rather than one: `nodeTypes` is exact, and `categories` is the
+ * coarse question someone actually asks — "only documentation", "only code" —
+ * without having to know that documentation means `document` and
+ * `document_section`. Given both, a node has to satisfy both.
+ */
 export const graphSearchQuerySchema = z.object({
   q: z.string().trim().min(1).max(200),
   nodeTypes: csvEnum(CODE_NODE_TYPES),
+  /** Code, architecture, or repository knowledge. */
+  categories: csvEnum(NODE_CATEGORIES),
+  /** A repository-relative path prefix: `src/services`. */
+  file: z.string().trim().max(1024).optional(),
   limit: z.coerce
     .number()
     .int()
@@ -345,14 +372,38 @@ export const graphSummarySchema = z.object({
 });
 
 /**
+ * Why the graph believes a relationship exists, as it crosses the wire.
+ *
+ * Every field beyond `source` and `confidence` is optional because the producer
+ * records only what it actually knows: a compiler fact has no line of its own,
+ * and asking the wire format to carry one would mean inventing it.
+ */
+export const edgeEvidenceSchema = z.object({
+  source: z.enum(EVIDENCE_SOURCES),
+  confidence: z.enum(CONFIDENCE_LEVELS),
+  /** The kind of artefact the claim was read out of. */
+  method: z.enum(EVIDENCE_METHODS).optional(),
+  file: z.string().optional(),
+  line: z.number().int().optional(),
+  column: z.number().int().optional(),
+  /** The entity the producer matched: a table, a route, a name in prose. */
+  matched: z.string().optional(),
+});
+
+/**
  * A neighbour plus how it is related, so the inspector can show
  * "CreatorRepository.create() — CALLS, scip/high" without a second request.
+ *
+ * `confidence` and `evidenceSource` are the original two fields and keep their
+ * shape; `evidence` carries the whole record, including the file and line that
+ * let a reader go and check.
  */
 export const relatedNodeSchema = codeNodeSchema.extend({
   relationship: z.enum(CODE_RELATIONSHIPS),
   direction: z.enum(['incoming', 'outgoing']),
   confidence: z.enum(CONFIDENCE_LEVELS).optional(),
   evidenceSource: z.string().optional(),
+  evidence: edgeEvidenceSchema.nullish(),
 });
 
 /**
@@ -407,6 +458,17 @@ export const symbolInfoSchema = z.object({
   messagingResource: z.string().nullable(),
   scipSymbol: z.string().nullable(),
   role: z.string().nullable(),
+  /**
+   * What kind of thing this node is, at two altitudes. Both are derived from
+   * the node type, so they are always present and never disagree with it.
+   */
+  category: z.enum(NODE_CATEGORIES),
+  family: z.enum(NODE_FAMILIES),
+  /**
+   * For a node standing for a whole file: what kind of file it is, as the
+   * scanner classified it. Null for everything else.
+   */
+  fileCategory: z.enum(FILE_CATEGORIES).nullable(),
 });
 
 /**
@@ -427,6 +489,17 @@ export const nodeDetailSchema = z.object({
   dependents: z.array(relatedNodeSchema),
   apis: z.array(relatedNodeSchema),
   databases: z.array(relatedNodeSchema),
+  /**
+   * What the repository writes about this node: the sections that name it, and
+   * for a document, what it names and links to.
+   */
+  documentation: z.array(relatedNodeSchema),
+  /**
+   * What declares this node and what fulfils it: the specification that
+   * promises an endpoint, the migration that creates a table, the compose file
+   * that defines a container, and the handler that serves a promised operation.
+   */
+  contracts: z.array(relatedNodeSchema),
   /** Both directions: what implements or extends this, and what it implements. */
   implementations: z.array(relatedNodeSchema),
   /** The node that CONTAINS this one — its class, its file, its directory. */
@@ -468,6 +541,8 @@ export const graphPathStepSchema = z.object({
   reversed: z.boolean(),
   confidence: z.enum(CONFIDENCE_LEVELS).nullable(),
   evidenceSource: z.string().nullable(),
+  /** The whole evidence record for this hop, when the edge carries one. */
+  evidence: edgeEvidenceSchema.nullish(),
 });
 
 export const graphPathSchema = z.object({
@@ -592,6 +667,7 @@ export type BrowseDirectoryQuery = z.infer<typeof browseDirectoryQuerySchema>;
 export type InspectProjectQuery = z.infer<typeof inspectProjectQuerySchema>;
 export type GraphQuery = z.infer<typeof graphQuerySchema>;
 export type GraphSearchQuery = z.infer<typeof graphSearchQuerySchema>;
+export type WireEdgeEvidence = z.infer<typeof edgeEvidenceSchema>;
 export type NeighbourQuery = z.infer<typeof neighbourQuerySchema>;
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 export type RelatedNode = z.infer<typeof relatedNodeSchema>;

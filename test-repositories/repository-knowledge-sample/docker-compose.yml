@@ -1,0 +1,20 @@
+services:
+  api:
+    build: .
+    image: knowledge-sample-api
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgresql://knowledge:knowledge@postgres:5432/knowledge
+      PORT: 8080
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD: knowledge
+      POSTGRES_DB: knowledge

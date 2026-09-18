@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../shared" },
+    { "path": "../scip" },
+    { "path": "../graph" },
+    { "path": "../analysis" }
+  ]
+}

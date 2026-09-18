@@ -9,7 +9,7 @@ import type {
   NodeReference,
 } from '@ckg/graph';
 import { draftRef, nodeRef } from '@ckg/graph';
-import type { EdgeEvidence } from '@ckg/shared';
+import { evidence as edgeEvidence, type EdgeEvidence } from '@ckg/shared';
 import {
   decoratorsOf,
   lineOf,
@@ -21,15 +21,11 @@ import {
 } from '../source/ast.js';
 import { attribute, resolveValueType, type Resolution } from '../source/resolve.js';
 import { moduleSetFor } from '../source/shared.js';
-import { readManifest } from '../source/manifest.js';
+import { databaseDraft, tableDraft } from '../source/table-node.js';
 import type { ParsedModule } from '../source/module-set.js';
 import { findTableReferences, type SqlAccess } from '../detectors/sql.js';
-import {
-  clientPropertyFor,
-  parsePrismaSchema,
-  PRISMA_METHODS,
-  type PrismaSchema,
-} from '../detectors/prisma.js';
+import { detectDatabaseProvider, prismaSchemaOf } from '../detectors/provider.js';
+import { clientPropertyFor, PRISMA_METHODS, type PrismaSchema } from '../detectors/prisma.js';
 
 /**
  * The data layer: which tables exist, and who reads and writes them.
@@ -47,30 +43,6 @@ import {
  */
 
 const SQL_EVIDENCE: EdgeEvidence = { source: 'database-analyzer', confidence: 'high' };
-/**
- * An interpolated statement is still a real access, but the statement text was
- * assembled rather than written, so the finding is weaker.
- */
-const INTERPOLATED_EVIDENCE: EdgeEvidence = { source: 'database-analyzer', confidence: 'medium' };
-/** Lifting a member's access to the class that owns it is a summary. */
-const CONTAINER_EVIDENCE: EdgeEvidence = { source: 'database-analyzer', confidence: 'medium' };
-
-/** Database drivers and ORMs, and the provider they imply. */
-const DRIVER_PROVIDERS: ReadonlyMap<string, string> = new Map([
-  ['pg', 'postgresql'],
-  ['postgres', 'postgresql'],
-  ['pg-promise', 'postgresql'],
-  ['@vercel/postgres', 'postgresql'],
-  ['mysql', 'mysql'],
-  ['mysql2', 'mysql'],
-  ['sqlite3', 'sqlite'],
-  ['better-sqlite3', 'sqlite'],
-  ['@libsql/client', 'sqlite'],
-  ['mssql', 'sqlserver'],
-  ['oracledb', 'oracle'],
-  ['mongodb', 'mongodb'],
-  ['mongoose', 'mongodb'],
-]);
 
 /** ORM decorators that map a class to a table, and where the name lives. */
 const ENTITY_DECORATORS = new Set(['Entity', 'Table']);
@@ -98,8 +70,8 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
     const resolution: Resolution = { symbols: context.symbols, modules };
     const parsed = [...modules.modules()];
 
-    const schema = this.prismaSchema(context);
-    const provider = this.provider(context, schema);
+    const schema = prismaSchemaOf(context);
+    const provider = detectDatabaseProvider(context, schema);
 
     const nodes = new Map<string, AnalyzerNodeDraft>();
     const edges: AnalyzerEdgeDraft[] = [];
@@ -163,11 +135,17 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
       const target = tableRef(access.table);
       const { definition, container } = attribute(resolution, access.relativePath, access.line);
 
-      const evidence = access.interpolated ? INTERPOLATED_EVIDENCE : SQL_EVIDENCE;
+      const observed = edgeEvidence({
+        source: 'database-analyzer',
+        basis: access.interpolated ? 'interpolatedStatement' : 'sqlLiteral',
+        method: 'ast',
+        file: access.relativePath,
+        line: access.line,
+        matched: access.table,
+      });
       const metadata = {
         statement: access.statement,
         detector: access.detector,
-        line: access.line,
         ...(access.interpolated ? { interpolated: true } : {}),
       };
 
@@ -176,7 +154,7 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
           from: nodeRef(definition.id),
           to: target,
           relationship,
-          evidence,
+          evidence: observed,
           metadata,
         });
       }
@@ -188,7 +166,14 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
           from: nodeRef(container.id),
           to: target,
           relationship,
-          evidence: CONTAINER_EVIDENCE,
+          evidence: edgeEvidence({
+            source: 'database-analyzer',
+            basis: 'derivedFromContainer',
+            method: 'ast',
+            file: access.relativePath,
+            line: access.line,
+            matched: access.table,
+          }),
           metadata: { ...metadata, derived: true },
         });
       }
@@ -203,52 +188,6 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
         writeCount,
       },
     };
-  }
-
-  /** The provider, and what said so. */
-  private provider(
-    context: AnalysisContext,
-    schema: PrismaSchema | null,
-  ): { name: string; evidence: string } | null {
-    if (schema?.provider) {
-      return { name: normalizeProvider(schema.provider), evidence: schema.relativePath };
-    }
-
-    const manifest = readManifest(context.sources);
-    const declared = Object.keys(manifest?.dependencies ?? {});
-
-    for (const [packageName, provider] of DRIVER_PROVIDERS) {
-      if (declared.includes(packageName)) {
-        return { name: provider, evidence: `package.json:${packageName}` };
-      }
-    }
-
-    // Not declared but imported: an undeclared driver is still a driver.
-    const modules = moduleSetFor(context.sources);
-    for (const module of modules.modules()) {
-      for (const packageName of module.bindings.packages()) {
-        const provider = DRIVER_PROVIDERS.get(packageName);
-        if (provider) return { name: provider, evidence: `${module.relativePath}:${packageName}` };
-      }
-    }
-
-    // A connection string in an example environment file names the provider —
-    // the scheme only; nothing else from these files is read.
-    for (const file of context.sources.matching('.env.example', '.env.sample', '.env.template')) {
-      const match = /\b([a-z][a-z0-9+.-]*):\/\//i.exec(file.text);
-      const scheme = match?.[1]?.toLowerCase();
-      if (scheme && KNOWN_SCHEMES.has(scheme)) {
-        return { name: normalizeProvider(scheme), evidence: file.relativePath };
-      }
-    }
-
-    return null;
-  }
-
-  private prismaSchema(context: AnalysisContext): PrismaSchema | null {
-    const file = context.sources.matching('.prisma')[0];
-    if (!file) return null;
-    return parsePrismaSchema(file.relativePath, file.text);
   }
 
   /** Every SQL statement written as a literal in this module. */
@@ -365,56 +304,6 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
 
     return edges;
   }
-}
-
-const KNOWN_SCHEMES = new Set([
-  'postgres',
-  'postgresql',
-  'mysql',
-  'mariadb',
-  'sqlite',
-  'sqlserver',
-  'mongodb',
-]);
-
-function normalizeProvider(provider: string): string {
-  const lower = provider.toLowerCase();
-  if (lower === 'postgres') return 'postgresql';
-  if (lower === 'mariadb') return 'mysql';
-  return lower;
-}
-
-function databaseDraft(provider: string, evidence: string): AnalyzerNodeDraft {
-  return {
-    type: 'database',
-    name: provider,
-    symbolKey: `database:${provider}`,
-    qualifiedName: provider,
-    metadata: { provider, detectedFrom: evidence },
-  };
-}
-
-function tableDraft(
-  table: string,
-  provider: string | null,
-  extra: Record<string, unknown> = {},
-): AnalyzerNodeDraft {
-  const qualifiedName = provider ? `${provider}.${table}` : table;
-
-  const metadata: Record<string, unknown> = { table };
-  if (provider) metadata.provider = provider;
-  for (const [key, value] of Object.entries(extra)) {
-    if (value !== undefined) metadata[key] = value;
-  }
-
-  return {
-    type: 'table',
-    name: table,
-    // A table has no file: the same table touched from three files is one node.
-    symbolKey: `table:${qualifiedName}`,
-    qualifiedName,
-    metadata,
-  };
 }
 
 /** `@Entity('users')` or `@Table({ tableName: 'users' })`. */

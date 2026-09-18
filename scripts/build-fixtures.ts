@@ -18,7 +18,11 @@ import { NodeCommandRunner, resolveExecutable } from '@ckg/scip';
 import { parseEnv, scipEnvSchema } from '@ckg/shared';
 import { loadEnvFile } from '@ckg/shared/node';
 
-const SAMPLES = ['typescript-sample', 'express-postgres-sample'] as const;
+const SAMPLES = [
+  'typescript-sample',
+  'express-postgres-sample',
+  'repository-knowledge-sample',
+] as const;
 
 const FIXTURE_DIR = 'packages/scip/tests/fixtures';
 

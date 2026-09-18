@@ -9,6 +9,7 @@ import type {
   GraphPathDirection,
   GraphPathStep,
   GraphProjectionId,
+  NodeCategory,
   NodeDetail,
   RelatedNode,
   SourceTree,
@@ -19,7 +20,9 @@ import {
   GRAPH_DEFAULT_NODE_LIMIT,
   GRAPH_DEFAULT_PATH_DEPTH,
   GRAPH_DEFAULT_PATH_DIRECTION,
+  edgeEvidence,
   graphProjection,
+  nodeTypesForCategories,
   symbolInfoOf,
 } from '@ckg/shared';
 import type {
@@ -149,6 +152,18 @@ export interface GraphSearchResult {
   total: number;
   limit: number;
   offset: number;
+  /** The node types actually searched, after categories were resolved. */
+  nodeTypes: CodeNodeType[] | null;
+}
+
+export interface GraphSearchOptions {
+  nodeTypes?: CodeNodeType[] | undefined;
+  /** Coarse narrowing: code, architecture or repository knowledge. */
+  categories?: NodeCategory[] | undefined;
+  /** Repository-relative path prefix. */
+  file?: string | undefined;
+  limit: number;
+  offset: number;
 }
 
 export class GraphService {
@@ -250,6 +265,8 @@ export class GraphService {
       dependents: relations.dependents as RelatedNode[],
       apis: relations.apis as RelatedNode[],
       databases: relations.databases as RelatedNode[],
+      documentation: relations.documentation as RelatedNode[],
+      contracts: relations.contracts as RelatedNode[],
       implementations,
       parent,
       children,
@@ -432,6 +449,10 @@ export class GraphService {
             ? (metadata.confidence as GraphPathStep['confidence'])
             : null,
         evidenceSource: typeof metadata.source === 'string' ? metadata.source : null,
+        // A trace is only worth as much as its weakest hop, so every hop
+        // carries the whole reason it was crossed — including the file and
+        // line a reader can go and check.
+        evidence: edgeEvidence({ metadata }),
       };
     });
 
@@ -474,15 +495,39 @@ export class GraphService {
     return this.graph.references(projectId, nodeId, limit);
   }
 
+  /**
+   * Find nodes by name, qualified name or path.
+   *
+   * Two narrowings, resolved to one. `categories` is the question a person
+   * asks — "only documentation" — and `nodeTypes` is the one the store
+   * answers; when both are given the result is their intersection, and an
+   * empty intersection returns nothing rather than quietly widening to
+   * everything, which would be the opposite of what was asked.
+   */
   async search(
     projectId: string,
     term: string,
-    options: { nodeTypes?: CodeNodeType[] | undefined; limit: number; offset: number },
+    options: GraphSearchOptions,
   ): Promise<GraphSearchResult> {
     await this.projects.getById(projectId);
 
-    const result = await this.graph.searchNodes(projectId, term, options);
-    return { ...result, limit: options.limit, offset: options.offset };
+    const nodeTypes = resolveSearchTypes(options);
+    if (nodeTypes !== null && nodeTypes.length === 0) {
+      return { nodes: [], total: 0, limit: options.limit, offset: options.offset, nodeTypes };
+    }
+
+    const result = await this.graph.searchNodes(projectId, term, {
+      ...(nodeTypes ? { nodeTypes } : {}),
+      limit: options.limit,
+      offset: options.offset,
+    });
+
+    const filtered =
+      options.file === undefined || options.file === ''
+        ? result
+        : narrowToFile(result, options.file);
+
+    return { ...filtered, limit: options.limit, offset: options.offset, nodeTypes };
   }
 
   async summary(projectId: string): Promise<GraphComposition & { rootNodeId: string | null }> {
@@ -498,4 +543,36 @@ export class GraphService {
 /** Treats a projection's empty filter list as "no filter". */
 function nonEmpty<T>(values: readonly T[] | undefined): T[] | undefined {
   return values && values.length > 0 ? [...values] : undefined;
+}
+
+/** The node types a search should look at, or null for "every type". */
+function resolveSearchTypes(options: GraphSearchOptions): CodeNodeType[] | null {
+  const fromCategories = options.categories ? nodeTypesForCategories(options.categories) : null;
+  const explicit = nonEmpty(options.nodeTypes) ?? null;
+
+  if (fromCategories === null) return explicit;
+  if (explicit === null) return fromCategories;
+
+  const allowed = new Set(fromCategories);
+  return explicit.filter((type) => allowed.has(type));
+}
+
+/**
+ * Keeps results under a path prefix.
+ *
+ * Applied after the store rather than inside it because the prefix narrows a
+ * page, not the query: the store already ranks and pages, and pushing a second
+ * predicate into that SQL would mean a second ranking to keep in step with the
+ * first. `total` is corrected to the filtered count so a caller is not told
+ * there are more pages than there are.
+ */
+function narrowToFile(
+  result: { nodes: CodeNode[]; total: number },
+  prefix: string,
+): { nodes: CodeNode[]; total: number } {
+  const normalized = prefix.replace(/^\/+|\/+$/g, '').toLowerCase();
+  const nodes = result.nodes.filter((node) =>
+    (node.filePath ?? '').toLowerCase().startsWith(normalized),
+  );
+  return { nodes, total: nodes.length };
 }

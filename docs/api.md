@@ -154,10 +154,16 @@ committing to indexing it.
   "totalFiles": 110,
   "sourceFiles": 104,
   "languages": { "typescript": 82, "javascript": 14, "python": 8 },
+  "fileCategories": { "code": 104, "document": 3, "configuration": 2, "database": 1 },
   "directories": 24,
   "truncated": false
 }
 ```
+
+`sourceFiles` keeps its original meaning — files an indexer could compile — and
+`fileCategories` says what the rest are, which is what turns "110 files, 104 of
+them source" from an alarming sentence into a descriptive one. Both come from
+the same walk and neither costs a file read.
 
 `truncated` means the walk hit its file cap; the counts are a lower bound.
 `422 NO_SOURCE_FILES` when nothing in the folder is in a language we detect.
@@ -406,11 +412,13 @@ for rather than offering a chip that can only return nothing.
 
 ### `GET /api/projects/:projectId/graph/search` → `200`
 
-Query: `q` (required), `nodeTypes` (CSV or repeated), `limit` (1–100, default
-20), `offset` (default 0).
+Query: `q` (required), `nodeTypes` (CSV or repeated), `categories` (CSV or
+repeated: `code`, `architecture`, `knowledge`), `file` (a repository-relative
+path prefix), `limit` (1–100, default 20), `offset` (default 0).
 
 Case-insensitive substring match on **name**, **qualified name** and **file
-path**, which between them cover every way a person refers to a piece of code:
+path**, which between them cover every way a person refers to anything in the
+repository:
 
 | Term | Finds |
 | --- | --- |
@@ -418,8 +426,23 @@ path**, which between them cover every way a person refers to a piece of code:
 | `UserService.getUser` | the method |
 | `user.service.ts` | the file |
 | `src/services` | everything under the directory |
-| `POST /users` | the API route |
+| `POST /users` | the API route, and the endpoint a specification declares |
+| `README.md#login-flow` | the document section |
+| `package.json#scripts.build` | the configuration property |
+| `postgresql.users.email` | the table column |
 | `table` | every node of that type |
+
+The three narrowings compose, and a node has to satisfy all of them:
+
+- `nodeTypes` is exact.
+- `categories` is the question a person actually asks — "only documentation" —
+  without having to know that documentation means `document` and
+  `document_section`. `meta.nodeTypes` reports which types it resolved to.
+- `file` keeps results under a path prefix.
+
+Given `nodeTypes=class&categories=knowledge` the intersection is empty and the
+response is empty, rather than quietly widening to everything — which would be
+the opposite of what was asked.
 
 Ranking is a fixed ladder, so the same term always produces the same page:
 
@@ -436,8 +459,9 @@ Ranking is a fixed ladder, so the same term always produces the same page:
 
 Ties break on name length, then name, then id — so nothing a caller can see is
 decided by the query planner's row order. `meta` carries
-`{ total, limit, offset }`; `total` is the full match count, not the page, so a
-client can say "showing 15 of 42" rather than silently truncating.
+`{ total, limit, offset, query }` plus whichever narrowings were applied;
+`total` is the full match count, not the page, so a client can say "showing 15
+of 42" rather than silently truncating.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId` → `200`
 
@@ -459,7 +483,8 @@ query, not one per section:
                     "exported": null, "visibility": null, "module": "src/repositories",
                     "framework": null, "apiRoute": null, "databaseResource": null,
                     "externalService": null, "messagingResource": null,
-                    "scipSymbol": "…", "role": "repository" },
+                    "scipSymbol": "…", "role": "repository",
+                    "category": "code", "family": "types", "fileCategory": null },
   "definition":   { "nodeId": "…", "name": "UserRepository",
                     "qualifiedName": "UserRepository", "type": "class",
                     "language": "typescript",
@@ -474,7 +499,18 @@ query, not one per section:
   "apis":         [ ],
   "databases":    [ { "type": "table", "name": "users", "relationship": "WRITES_TO",
                       "direction": "outgoing", "confidence": "high",
-                      "evidenceSource": "database-analyzer" } ],
+                      "evidenceSource": "database-analyzer",
+                      "evidence": { "source": "database-analyzer", "confidence": "high",
+                                    "method": "ast", "file": "src/repositories/user.repository.ts",
+                                    "line": 13, "matched": "users" } } ],
+  "documentation":[ { "type": "document_section", "name": "Persistence",
+                      "qualifiedName": "docs/architecture.md#persistence",
+                      "relationship": "DOCUMENTS", "direction": "incoming",
+                      "confidence": "medium",
+                      "evidence": { "source": "document-analyzer", "confidence": "medium",
+                                    "method": "markdown", "file": "docs/architecture.md",
+                                    "line": 17, "matched": "UserRepository" } } ],
+  "contracts":    [ ],
   "implementations": [ { "type": "interface", "name": "UserStore",
                          "relationship": "IMPLEMENTS", "direction": "outgoing" } ],
   "parent":       { "type": "file", "name": "user.repository.ts" },
@@ -488,6 +524,12 @@ query, not one per section:
   the file sits in. `exported` is `true` when an `EXPORTS` edge points at the
   node and `null` otherwise — never `false` from absence, which would claim
   every symbol in an un-analysed project is private.
+
+  Three fields are *derived from the node type* and therefore always present:
+  `category` (`code`, `architecture` or `knowledge`) and `family`, which are how
+  the UI groups and colours, and `fileCategory` — what kind of file this is, for
+  a node standing for a whole one, and `null` for everything else. They are
+  derived rather than stored so they cannot disagree with the type.
 - **definition** — where the symbol is written, plus the id of the `file` node
   that contains it. `null` for a node with no file (a table, an external
   package); null coordinates for one the indexer gave no range.
@@ -500,6 +542,12 @@ query, not one per section:
 - **apis** — `api` nodes that `ROUTES_TO` this node
 - **databases** — `database`, `table`, `queue` and `event` nodes this node
   `READS_FROM`, `WRITES_TO`, `PUBLISHES` or `SUBSCRIBES`
+- **documentation** — both directions of `DOCUMENTS` and `LINKS_TO`: the
+  sections that describe this node, and for a document, what it describes and
+  links to
+- **contracts** — both directions of `DEFINES` and `IMPLEMENTED_BY`: the
+  specification that promises an endpoint, the migration that creates a table,
+  the compose file that defines a container, and the code that keeps a promise
 - **implementations** — both directions of `IMPLEMENTS` and `EXTENDS`.
   `direction: incoming` is something that implements or extends this node;
   `outgoing` is what this node implements or extends.
@@ -507,10 +555,21 @@ query, not one per section:
   belongs to, the members of a class, the symbols of a file.
 
 `callers`, `callees` and `references` keep the plain node shape they have always
-had. The sections carrying a relationship add `relationship`, `direction` and
-the edge's evidence to each entry, because "depends on" covers four different
-relationships and a client should be able to say which. A section with nothing
-in it is `[]`, never absent.
+had. The sections carrying a relationship add `relationship`, `direction`,
+`confidence`, `evidenceSource` and the full `evidence` record to each entry,
+because "depends on" covers four different relationships and a client should be
+able to say which — and because an inferred edge is only useful if a reader can
+go and check it. A section with nothing in it is `[]`, never absent.
+
+`evidence` is `null` for an edge stored before evidence was recorded. Its shape:
+
+| Field | Meaning |
+| --- | --- |
+| `source` | which analyzer observed it |
+| `confidence` | `high`, `medium` or `low` |
+| `method` | the kind of artefact: `scip`, `ast`, `markdown`, `json`, `yaml`, `sql`, `openapi`, `configuration`, `graph` |
+| `file`, `line`, `column` | where to check. Absent for a compiler fact, which is located by its endpoints |
+| `matched` | the entity the producer matched |
 
 Query: `limit` (default 100) caps each list.
 
@@ -544,9 +603,15 @@ walked.
 
 ### `GET /api/projects/:projectId/graph/tree` → `200`
 
-One level of the repository tree, derived from the `directory` and `file` nodes
-the indexer already produced. Query: `path` (repository-relative; omit for the
-root), `limit` (1–2000, default 500).
+One level of the repository tree, derived from the path nodes the pipeline
+already produced. Query: `path` (repository-relative; omit for the root),
+`limit` (1–2000, default 500).
+
+The tree is built from `directory` plus every node type that stands for a whole
+file — `file`, `document`, `config` and `api_spec` — so a README, a compose file
+and an OpenAPI contract appear beside the source. `type` on the wire stays
+`directory` or `file`, because that is the distinction a tree row needs; a
+client wanting to know a file is a document reads the node.
 
 ```json
 {
@@ -605,7 +670,8 @@ given, and an explicit filter always wins.
   "steps": [
     { "edgeId": "…", "sourceNodeId": "…", "targetNodeId": "…",
       "relationship": "ROUTES_TO", "reversed": false,
-      "confidence": "high", "evidenceSource": "api-analyzer" }
+      "confidence": "high", "evidenceSource": "api-analyzer",
+      "evidence": { "source": "api-analyzer", "confidence": "high" } }
   ],
   "relationships": ["ROUTES_TO", "CALLS", "READS_FROM"]
 }
@@ -625,8 +691,11 @@ reporting that is more useful than reporting nothing.
 `found: false` with `truncated: true` means the search spent its node budget
 before it could conclude, **not** that no route exists.
 
-Nothing is inferred: every hop is an edge that is in the graph, with the
-evidence it was recorded with.
+Nothing is inferred: every hop is an edge that is in the graph, with the whole
+evidence record it was written with — so a trace from an OpenAPI operation to a
+database column can be checked hop by hop, each against the file and line that
+produced it. A trace is worth no more than its weakest hop, and `steps` is where
+that is visible.
 
 ---
 
@@ -636,6 +705,12 @@ evidence it was recorded with.
 
 A window onto one file in the project's repository. Read-only; there is no
 write counterpart and no other route in the API opens a file.
+
+Every textual resource the graph indexes is readable this way, not only code: a
+`nodeId` naming a `document_section` opens the README at the heading, one naming
+an `api_endpoint` opens `openapi.yaml` at the operation, and a `config_property`
+opens `package.json` at the key. The node supplies the range, so "show me this"
+is one request whatever kind of thing it is.
 
 Query — one of `file` or `nodeId` is required:
 

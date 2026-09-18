@@ -12,7 +12,9 @@ import type {
 import {
   BEHAVIOURAL_RELATIONSHIPS,
   DEPENDENCY_RELATIONSHIPS,
+  FILE_LIKE_NODE_TYPES,
   GRAPH_OVERVIEW_NODE_TYPES,
+  SOURCE_TREE_NODE_TYPES,
   GRAPH_PATH_NODE_BUDGET,
   isCodeNodeType,
   STRUCTURAL_RELATIONSHIPS,
@@ -47,6 +49,24 @@ const DATA_RELATIONSHIPS: readonly CodeRelationship[] = [
 const DATA_NODE_TYPES: readonly CodeNodeType[] = ['database', 'table', 'queue', 'event'];
 
 /**
+ * Relationships that answer "what does the repository say about this".
+ *
+ * Both directions: a class wants the sections that describe it, and a document
+ * wants what it describes and what it links to.
+ */
+const DOCUMENTATION_RELATIONSHIPS: readonly CodeRelationship[] = ['DOCUMENTS', 'LINKS_TO'];
+
+/**
+ * Relationships that answer "what declares this, and what fulfils it".
+ *
+ * `DEFINES` runs from a declarative file to the resource it brings into
+ * existence, `IMPLEMENTED_BY` from a promised operation to the code that keeps
+ * the promise. They share a section because they are the two halves of one
+ * question — where did this come from, and is it real.
+ */
+const CONTRACT_RELATIONSHIPS: readonly CodeRelationship[] = ['DEFINES', 'IMPLEMENTED_BY'];
+
+/**
  * Relationships that answer "what implements this, and what does it implement".
  *
  * Both directions are meaningful and the caller is told which it got, so an
@@ -56,7 +76,15 @@ const DATA_NODE_TYPES: readonly CodeNodeType[] = ['database', 'table', 'queue', 
 const IMPLEMENTATION_RELATIONSHIPS: readonly CodeRelationship[] = ['IMPLEMENTS', 'EXTENDS'];
 
 /** Node types that make up the repository tree. */
-const TREE_NODE_TYPES: readonly CodeNodeType[] = ['directory', 'file'];
+/**
+ * Node types the source tree is made of.
+ *
+ * Not just `file`: a repository graph represents a README as a `document`, a
+ * compose file as a `config` and a specification as an `api_spec`, and an
+ * explorer that only asked for `file` would show a project as a `src/`
+ * directory with nothing around it.
+ */
+const TREE_NODE_TYPES: readonly CodeNodeType[] = [...SOURCE_TREE_NODE_TYPES];
 
 export interface TraverseOptions {
   rootNodeId: string;
@@ -111,6 +139,10 @@ export interface NodeRelations {
   dependents: RelatedNode[];
   apis: RelatedNode[];
   databases: RelatedNode[];
+  /** Prose about this node, and the documents it links to. */
+  documentation: RelatedNode[];
+  /** What declares this node, and what fulfils what it declares. */
+  contracts: RelatedNode[];
 }
 
 export type NeighbourDirection = 'incoming' | 'outgoing';
@@ -619,6 +651,8 @@ export class GraphRepository {
       ...DEPENDENCY_RELATIONSHIPS,
       ...API_RELATIONSHIPS,
       ...DATA_RELATIONSHIPS,
+      ...DOCUMENTATION_RELATIONSHIPS,
+      ...CONTRACT_RELATIONSHIPS,
     ];
 
     // The per-section limit is applied after bucketing; the query itself is
@@ -651,6 +685,8 @@ export class GraphRepository {
       dependents: [],
       apis: [],
       databases: [],
+      documentation: [],
+      contracts: [],
     };
 
     for (const row of result.rows) {
@@ -676,6 +712,16 @@ export class GraphRepository {
 
       if (DATA_RELATIONSHIPS.includes(relationship) && DATA_NODE_TYPES.includes(related.type)) {
         pushLimited(relations.databases, related, limitPerSection);
+        continue;
+      }
+
+      if (DOCUMENTATION_RELATIONSHIPS.includes(relationship)) {
+        pushLimited(relations.documentation, related, limitPerSection);
+        continue;
+      }
+
+      if (CONTRACT_RELATIONSHIPS.includes(relationship)) {
+        pushLimited(relations.contracts, related, limitPerSection);
         continue;
       }
 
@@ -803,14 +849,20 @@ export class GraphRepository {
     return result.rows.map(toCodeNode);
   }
 
-  /** The `file` node for a repository-relative path, if the graph has one. */
+  /**
+   * The node standing for a repository-relative path, if the graph has one.
+   *
+   * Any of the file-like types, in their declared order of preference: a path
+   * indexed by the compiler *and* described by an analyzer keeps its `file`
+   * node, and a README that only an analyzer saw is found as a `document`.
+   */
   async findFileNode(projectId: string, filePath: string): Promise<CodeNode | null> {
     const result = await this.db.query<CodeNodeRow>(
       `SELECT ${CODE_NODE_COLUMNS} FROM code_nodes
-        WHERE project_id = $1 AND node_type = 'file' AND file_path = $2
-        ORDER BY id
+        WHERE project_id = $1 AND node_type = ANY($3::text[]) AND file_path = $2
+        ORDER BY array_position($3::text[], node_type), id
         LIMIT 1`,
-      [projectId, filePath],
+      [projectId, filePath, FILE_LIKE_NODE_TYPES],
     );
     const row = result.rows[0];
     return row ? toCodeNode(row) : null;
@@ -858,6 +910,8 @@ export class GraphRepository {
         path: row.file_path,
         name: row.name,
         // `node_type` is constrained to the two tree types by the query.
+        // The wire contract distinguishes a directory from everything else; a
+        // caller that wants to know a file is a document reads the node.
         type: row.node_type === 'directory' ? 'directory' : 'file',
         nodeId: row.id,
       })),

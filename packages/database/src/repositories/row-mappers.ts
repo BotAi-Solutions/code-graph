@@ -1,3 +1,4 @@
+import { edgeEvidence } from '@ckg/shared';
 import type {
   AnalysisJob,
   AnalysisProgress,
@@ -158,6 +159,11 @@ export function toRelatedNode(row: RelatedNodeRow): RelatedNode {
 
   const source = row.edge_metadata?.source;
   if (typeof source === 'string') node.evidenceSource = source;
+
+  // The whole record, parsed once here so no consumer reads the metadata bag.
+  // Null for an edge written before evidence was recorded, which is the honest
+  // answer rather than a fabricated source.
+  node.evidence = edgeEvidence({ metadata: row.edge_metadata ?? undefined });
 
   return node;
 }

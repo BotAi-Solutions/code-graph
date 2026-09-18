@@ -1,0 +1,85 @@
+openapi: 3.0.3
+
+info:
+  title: Knowledge Sample API
+  version: 2.1.0
+  description: >-
+    The contract this service promises. Every operation below is expected to be
+    matched to the route that serves it, by HTTP method and by path shape.
+
+servers:
+  - url: http://localhost:8080
+
+paths:
+  /users:
+    post:
+      operationId: createUser
+      summary: Register a user
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserInput'
+      responses:
+        '201':
+          description: The user that was created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          description: The request body was not valid
+
+  /users/{id}:
+    get:
+      operationId: getUser
+      summary: Read one user
+      tags: [users]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          description: No such user
+
+  /sessions:
+    post:
+      operationId: createSession
+      summary: Exchange credentials for a session
+      tags: [auth]
+      responses:
+        '201':
+          description: A new session
+
+components:
+  schemas:
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        displayName:
+          type: string
+
+    CreateUserInput:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+        displayName:
+          type: string

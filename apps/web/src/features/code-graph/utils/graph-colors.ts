@@ -11,15 +11,26 @@ import type { CodeNodeType, NodeFamily } from '../../../types/index.js';
  *
  * ## Why hue encodes the family, not the node type
  *
- * There are twenty-one node types. On a near-black surface no set of more than
+ * There are twenty-eight node types. On a near-black surface no set of more than
  * four categorical hues clears all-pairs colour-vision separation — enumerated,
  * not guessed: of the 70 four-hue subsets of a validated eight-hue palette only
  * two pass, and no five- or six-hue subset passes at all.
  *
  * So the encoding is composite: **hue = family, shape = member, size and glow =
  * importance, label = exact identity**. Four families carry the code hues that
- * were validated against the canvas surface; the two architectural families are
- * additions, and for them shape and badge — not hue — are the primary channel.
+ * were validated against the canvas surface; the architectural and knowledge
+ * families are additions, and for them shape and badge — not hue — are the
+ * primary channel.
+ *
+ * ## The two knowledge hues
+ *
+ * Documentation and configuration were added when the graph stopped being only
+ * about code, and they make eight families where the analysis above says four
+ * hues is the limit. That limit has not moved and is not being claimed away:
+ * gold and olive are placed as far from their nearest neighbours as the wheel
+ * allows, and for these two families — as for the architectural ones — the
+ * *primary* channel is silhouette, not hue. Every knowledge type has a shape no
+ * code type uses.
  *
  * ## Why role does not get its own hue
  *
@@ -44,6 +55,8 @@ export const FAMILY_COLORS: Record<NodeFamily, string> = {
   structure: '#7c8699', // neutral — context, not identity
   services: '#9085e9', // violet — the system's own surfaces
   resources: '#c2548f', // magenta — what it stores and talks to
+  documentation: '#c99a45', // gold — nothing else on the canvas is warm-yellow
+  configuration: '#7f9b52', // olive — a green far enough from the data aqua
 };
 
 /**

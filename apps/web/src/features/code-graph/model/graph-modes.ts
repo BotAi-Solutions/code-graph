@@ -7,7 +7,7 @@ import type {
 } from '../../../types/index.js';
 
 /**
- * The graph modes: five questions, one graph.
+ * The graph modes: one question each, one graph.
  *
  * A mode is the server's *projection* plus how the view should be drawn for it.
  * The projections are imported rather than restated, so "Architecture" in the
@@ -49,6 +49,16 @@ const PRESENTATION: Record<GraphModeId, Omit<GraphMode, 'id' | 'label' | 'title'
     files: { limit: 900, clusterSpread: 1.5, animateFlow: false, labelDensity: 1.05 },
     dependencies: { limit: 700, clusterSpread: 1.45, animateFlow: false, labelDensity: 1.35 },
     dataflow: { limit: 700, clusterSpread: 1.15, animateFlow: true, labelDensity: 1.35 },
+
+    // The repository views. All are sparse by construction — a projection that
+    // filters to documents or containers is showing tens of nodes, not
+    // thousands — so they can afford a generous label budget and a tight
+    // layout, and none of them is about flow except the contract trace.
+    documentation: { limit: 600, clusterSpread: 1.3, animateFlow: false, labelDensity: 1.4 },
+    apis: { limit: 600, clusterSpread: 1.05, animateFlow: true, labelDensity: 1.45 },
+    configuration: { limit: 600, clusterSpread: 1.35, animateFlow: false, labelDensity: 1.4 },
+    data: { limit: 700, clusterSpread: 1.2, animateFlow: true, labelDensity: 1.3 },
+    'cross-source': { limit: 600, clusterSpread: 1.5, animateFlow: true, labelDensity: 1.5 },
   };
 
 /** `everything` is the unfiltered overview, which is what "Universe" means. */

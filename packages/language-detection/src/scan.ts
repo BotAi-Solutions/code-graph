@@ -1,5 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import type { FileCategory } from '@ckg/shared';
+import { classifyFile } from './classify.js';
 import { IgnoreRules, type IgnoreOptions } from './ignore.js';
 import type { RepositoryScan } from './types/index.js';
 
@@ -44,6 +46,7 @@ export async function scanRepository(
   const files: string[] = [];
   const rootFiles = new Set<string>();
   const extensionCounts = new Map<string, number>();
+  const categoryCounts = new Map<FileCategory, number>();
   let directoryCount = 0;
   let truncated = false;
   let sinceProgress = 0;
@@ -107,6 +110,9 @@ export async function scanRepository(
         extensionCounts.set(extension, (extensionCounts.get(extension) ?? 0) + 1);
       }
 
+      const category = classifyFile(relative).category;
+      categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+
       sinceProgress += 1;
       if (options.onProgress && sinceProgress >= progressInterval) {
         sinceProgress = 0;
@@ -118,7 +124,15 @@ export async function scanRepository(
   options.onProgress?.(files.length);
 
   files.sort();
-  return { rootPath, files, rootFiles, extensionCounts, directoryCount, truncated };
+  return {
+    rootPath,
+    files,
+    rootFiles,
+    extensionCounts,
+    categoryCounts,
+    directoryCount,
+    truncated,
+  };
 }
 
 /** Returns the lower-cased extension, treating `.d.ts` as its own extension. */
