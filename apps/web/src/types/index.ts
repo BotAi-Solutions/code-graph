@@ -15,6 +15,7 @@ export type {
   CodeNode,
   CodeNodeType,
   CodeRelationship,
+  CodeSearchMatch,
   ConfidenceLevel,
   Definition,
   DirectoryEntry,

@@ -10,12 +10,13 @@ import {
 import { buildApp, type AppServices } from './app.js';
 import { loadApiConfig } from './config/index.js';
 import { AnalysisService } from './modules/analysis/index.js';
+import { CodeSearchService } from './modules/code-search/index.js';
 import { FilesystemService, NativeDirectoryPicker } from './modules/filesystem/index.js';
 import { GraphService } from './modules/graph/index.js';
 import { HealthService } from './modules/health/index.js';
 import { ProjectService } from './modules/projects/index.js';
 import { RepositoryService } from './modules/repositories/index.js';
-import { SourceService } from './modules/source/index.js';
+import { SourceRoots, SourceService } from './modules/source/index.js';
 
 /**
  * Composition root. This is the only file that knows both how to reach the
@@ -36,12 +37,21 @@ async function main(): Promise<void> {
 
   const database = createDatabaseFromEnv(config.database, 'ckg-api');
 
-  const projects = new ProjectService(new ProjectRepository(database));
-  const repositories = new RepositoryService(
-    new SourceRepositoryRepository(database),
-    projects,
-  );
+  const sourceRepositories = new SourceRepositoryRepository(database);
+  const projects = new ProjectService(new ProjectRepository(database), sourceRepositories, {
+    repositoryBaseDirectory: config.filesystem.repositoryBaseDirectory,
+    // Resolving symlinks only means something when the API shares a filesystem
+    // with whoever is asking; the same switch decides both.
+    canonicalizePaths: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
+  });
+  const repositories = new RepositoryService(sourceRepositories, projects);
   const graph = new GraphService(new GraphRepository(database), projects);
+
+  // One source-access policy, shared by the two things that read files.
+  const sourceRoots = new SourceRoots(repositories, {
+    enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
+    repositoryBaseDirectory: config.filesystem.repositoryBaseDirectory,
+  });
 
   const services: AppServices = {
     filesystem: new FilesystemService({
@@ -57,6 +67,7 @@ async function main(): Promise<void> {
       enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
       repositoryBaseDirectory: config.filesystem.repositoryBaseDirectory,
     }),
+    codeSearch: new CodeSearchService(sourceRoots, projects),
     health: new HealthService(database),
   };
 

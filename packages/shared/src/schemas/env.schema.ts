@@ -43,6 +43,31 @@ export const filesystemEnvSchema = z.object({
   DIRECTORY_PICKER_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
 });
 
+/**
+ * The MCP server, which is an adapter and nothing else.
+ *
+ * Notably absent: `DATABASE_URL`. The MCP process reaches the graph over the
+ * same HTTP API the web client uses and has no database credentials of its own,
+ * which is the property that keeps it a thin adapter rather than a second way
+ * into the data.
+ */
+export const mcpEnvSchema = z.object({
+  /**
+   * Where the API is. Left unset it follows the API's own `PORT` from the same
+   * `.env`, so moving the API off a busy port needs no second edit — the web
+   * dev server's proxy resolves its target the same way.
+   */
+  MCP_API_BASE_URL: z.string().min(1).optional(),
+  /**
+   * Ceiling on one call to the API.
+   *
+   * An MCP client is a conversation: a request that hangs stalls the person
+   * waiting on it, so an answer that says the API did not respond beats one
+   * that never arrives.
+   */
+  MCP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+});
+
 export const scipEnvSchema = z.object({
   SCIP_TYPESCRIPT_COMMAND: z.string().min(1).default('scip-typescript'),
   SCIP_INDEX_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
@@ -62,6 +87,7 @@ export type RuntimeEnv = z.infer<typeof runtimeEnvSchema>;
 export type DatabaseEnv = z.infer<typeof databaseEnvSchema>;
 export type ApiEnv = z.infer<typeof apiEnvSchema>;
 export type FilesystemEnv = z.infer<typeof filesystemEnvSchema>;
+export type McpEnv = z.infer<typeof mcpEnvSchema>;
 export type ScipEnv = z.infer<typeof scipEnvSchema>;
 export type AnalysisEnv = z.infer<typeof analysisEnvSchema>;
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;

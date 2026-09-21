@@ -4,8 +4,10 @@ import {
   createProjectBodySchema,
   listProjectsQuerySchema,
   projectIdParamSchema,
+  projectResolutionSchema,
   projectSchema,
   projectSummarySchema,
+  resolveProjectQuerySchema,
 } from '@ckg/shared';
 import { commonErrorResponses, envelopeSchema, success } from '../../common/utils/response.js';
 import type { ProjectService } from './projects.service.js';
@@ -52,6 +54,33 @@ export function projectRoutes(service: ProjectService): FastifyPluginAsyncZod {
         const { limit, offset } = request.query;
         const result = await service.list({ limit, offset });
         return reply.send(success(result.items, { total: result.total, limit, offset }));
+      },
+    );
+
+    // Registered before the `:projectId` route it shares a prefix with. Fastify
+    // prefers a static segment over a parametric one regardless of order, so
+    // this is for the reader rather than the router — `resolve` is not a
+    // project id and should not look like one in this file either.
+    app.get(
+      '/projects/resolve',
+      {
+        schema: {
+          tags: ['projects'],
+          summary: 'Find the indexed projects whose repository contains a path',
+          description:
+            'Turns a directory into the projects indexed from it — the way in for anything that holds a working directory rather than a project id. ' +
+            'Matches are ordered most specific first: in a monorepo both an inner package and the repository root may be indexed, and each match carries its graph size and last run so the caller can tell a usable project from an empty one. ' +
+            'An empty `matches` means nothing indexed covers that path, which is a successful answer and not a 404. ' +
+            'A relative path is resolved the same way a stored relative `sourcePath` is. The path is never read, and need not exist.',
+          querystring: resolveProjectQuerySchema,
+          response: { 200: envelopeSchema(projectResolutionSchema), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const resolution = await service.resolveByPath({ path: request.query.path });
+        return reply.send(
+          success(resolution, { total: resolution.matches.length, path: resolution.path }),
+        );
       },
     );
 

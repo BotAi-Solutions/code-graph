@@ -7,9 +7,12 @@
  * with the size of the graph.
  *
  * Kept in its own file because it is long enough that inlining it would bury
- * the repository's other methods.
+ * the repository's other methods, and because two statements now share it: the
+ * dashboard page and the by-id lookup path resolution needs. They differ only
+ * in how rows are narrowed, so they are composed from one `SELECT` rather than
+ * maintained as two copies that could drift.
  */
-export const PROJECT_SUMMARY_SQL = `
+const PROJECT_SUMMARY_SELECT = `
 SELECT
   p.id,
   p.name,
@@ -59,7 +62,25 @@ LEFT JOIN LATERAL (
        GROUP BY node_type
     ) per_type
 ) t ON true
+`;
 
+/** The dashboard page: every project, newest first. `$1` limit, `$2` offset. */
+export const PROJECT_SUMMARY_SQL = `
+${PROJECT_SUMMARY_SELECT}
 ORDER BY p.created_at DESC, p.id
 LIMIT $1 OFFSET $2
+`;
+
+/**
+ * The same rows for a known set of projects. `$1` is a uuid array.
+ *
+ * Path resolution needs summaries for the handful of projects whose repository
+ * encloses a path, which is not a page of the listing and would otherwise be
+ * one query per match. Ordered identically to the listing so that two callers
+ * looking at the same projects see them in the same order.
+ */
+export const PROJECT_SUMMARY_BY_IDS_SQL = `
+${PROJECT_SUMMARY_SELECT}
+WHERE p.id = ANY($1::uuid[])
+ORDER BY p.created_at DESC, p.id
 `;

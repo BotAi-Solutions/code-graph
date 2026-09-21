@@ -446,7 +446,7 @@ The phases that are explicitly out of scope each attach at an existing seam:
 | BullMQ / distributed workers | `AnalysisJobQueue` | One implementation; the job is untouched |
 | Qdrant + embeddings | Beside `GraphRepository` | Node text is already addressable by stable id |
 | CodeRAG | Above the graph API | Reads the same traversal contract the UI uses |
-| MCP server | Beside `apps/api` | Exposes the existing services; no new domain code |
+| MCP server | *Done* — `apps/mcp` | Beside `apps/api`, over stdio. Reads the same HTTP contract the UI does; no domain code, no database access. See [mcp.md](mcp.md) |
 | Incremental indexing | `ScipGraphBuilder` + `GraphRepository` | Stable ids already make diffing possible |
 | Neo4j | `GraphRepository` | Swap the implementation; the interface is already traversal-shaped |
 

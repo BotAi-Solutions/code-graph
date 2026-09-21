@@ -1,6 +1,6 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { CodeNode, Repository, SourceWindow } from '@ckg/shared';
+import type { CodeNode, SourceWindow } from '@ckg/shared';
 import {
   ERROR_CODES,
   SOURCE_DEFAULT_CONTEXT_LINES,
@@ -8,6 +8,12 @@ import {
   SOURCE_MAX_LINES,
 } from '@ckg/shared';
 import { AppError } from '../../common/errors/index.js';
+import {
+  contains,
+  SourceRoots,
+  type SourceRepositoryResolver,
+  type SourceRootOptions,
+} from './source-root.js';
 
 /**
  * Reading source back out of an indexed repository.
@@ -31,23 +37,11 @@ import { AppError } from '../../common/errors/index.js';
  *    where the repository sits.
  */
 
-export interface SourceRepositoryResolver {
-  getForProject(projectId: string): Promise<Repository>;
-}
-
 export interface SourceNodeResolver {
   getNode(projectId: string, nodeId: string): Promise<CodeNode>;
 }
 
-export interface SourceServiceOptions {
-  enabled: boolean;
-  /**
-   * Base a relative repository `sourcePath` resolves against. The stored path
-   * may be relative so the bundled samples keep working; which directory that
-   * is relative *to* is a deployment fact, not a request one.
-   */
-  repositoryBaseDirectory: string;
-}
+export type SourceServiceOptions = SourceRootOptions;
 
 export interface SourceRequest {
   projectId: string;
@@ -68,17 +62,21 @@ interface Highlight {
 }
 
 export class SourceService {
+  private readonly roots: SourceRoots;
+
   constructor(
-    private readonly repositories: SourceRepositoryResolver,
+    repositories: SourceRepositoryResolver,
     private readonly nodes: SourceNodeResolver,
-    private readonly options: SourceServiceOptions,
-  ) {}
+    options: SourceServiceOptions,
+  ) {
+    this.roots = new SourceRoots(repositories, options);
+  }
 
   async read(request: SourceRequest): Promise<SourceWindow> {
-    this.assertEnabled();
+    this.roots.assertEnabled();
 
     const { relativePath, highlight } = await this.locate(request);
-    const root = await this.repositoryRoot(request.projectId);
+    const root = await this.roots.resolve(request.projectId);
     const absolute = await this.resolveWithinRepository(root, relativePath);
 
     const contents = await this.readFile(absolute, relativePath);
@@ -188,34 +186,6 @@ export class SourceService {
     };
   }
 
-  /** The absolute directory this project's source was indexed from. */
-  private async repositoryRoot(projectId: string): Promise<string> {
-    const repository = await this.repositories.getForProject(projectId);
-
-    if (repository.sourceType !== 'local') {
-      // A git source is shallow-cloned into the worker's scratch space and
-      // deleted when the run finishes, so there is nothing left to read. Saying
-      // so is better than reading whatever happens to sit at that path now.
-      throw new AppError(
-        ERROR_CODES.SOURCE_NOT_READABLE,
-        'Source retrieval is only available for repositories indexed from a local path',
-        { context: { projectId, sourceType: repository.sourceType } },
-      );
-    }
-
-    const absolute = path.resolve(this.options.repositoryBaseDirectory, repository.sourcePath);
-
-    try {
-      return await realpath(absolute);
-    } catch {
-      throw new AppError(
-        ERROR_CODES.REPOSITORY_PATH_NOT_FOUND,
-        'The repository directory for this project is no longer readable',
-        { context: { projectId } },
-      );
-    }
-  }
-
   /**
    * Resolves a repository-relative path and proves it stayed inside the root.
    *
@@ -271,14 +241,6 @@ export class SourceService {
     } catch (error) {
       throw this.statError(relativePath, error);
     }
-  }
-
-  private assertEnabled(): void {
-    if (this.options.enabled) return;
-    throw new AppError(
-      ERROR_CODES.FILESYSTEM_ACCESS_DISABLED,
-      'Local filesystem access is disabled on this server',
-    );
   }
 
   private outsideRepository(relativePath: string): AppError {
@@ -348,12 +310,6 @@ function normalizeRelative(requested: string): string {
   }
 
   return segments.join('/');
-}
-
-/** True when `candidate` is the root itself or sits beneath it. */
-function contains(root: string, candidate: string): boolean {
-  if (candidate === root) return true;
-  return candidate.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
 }
 
 /**

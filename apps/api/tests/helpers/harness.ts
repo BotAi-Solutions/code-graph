@@ -4,12 +4,13 @@ import type { ApiResponse, CodeGraph, Project, ProjectSummary } from '@ckg/share
 import { buildApp } from '../../src/app.js';
 import type { ApiConfig } from '../../src/config/index.js';
 import { AnalysisService } from '../../src/modules/analysis/index.js';
+import { CodeSearchService } from '../../src/modules/code-search/index.js';
 import { FilesystemService } from '../../src/modules/filesystem/index.js';
 import { GraphService } from '../../src/modules/graph/index.js';
 import { HealthService } from '../../src/modules/health/index.js';
 import { ProjectService } from '../../src/modules/projects/index.js';
 import { RepositoryService } from '../../src/modules/repositories/index.js';
-import { SourceService } from '../../src/modules/source/index.js';
+import { SourceRoots, SourceService } from '../../src/modules/source/index.js';
 import {
   InMemoryAnalysisJobStore,
   InMemoryGraphStore,
@@ -143,7 +144,19 @@ interface Harness {
 }
 
 async function createHarness(
-  options: { healthy?: boolean; filesystemEnabled?: boolean } = {},
+  options: {
+    healthy?: boolean;
+    filesystemEnabled?: boolean;
+    /**
+     * Whether path resolution may resolve symlinks. Off by default so the
+     * route suite's assertions depend on the paths a test wrote and not on the
+     * runner's own filesystem; the resolution suite turns it on where that is
+     * the thing under test.
+     */
+    canonicalizePaths?: boolean;
+    /** Overridden by suites that build a throwaway repository on disk. */
+    repositoryBaseDirectory?: string;
+  } = {},
 ): Promise<Harness> {
   const projectStore = new InMemoryProjectStore();
   const repositoryStore = new InMemoryRepositoryStore();
@@ -155,9 +168,19 @@ async function createHarness(
   projectStore.analyses = analysisStore;
   projectStore.graph = graphStore;
 
-  const projects = new ProjectService(projectStore);
+  const projects = new ProjectService(projectStore, repositoryStore, {
+    repositoryBaseDirectory: WORKSPACE_ROOT,
+    canonicalizePaths: options.canonicalizePaths ?? false,
+  });
   const repositories = new RepositoryService(repositoryStore, projects);
   const graph = new GraphService(graphStore, projects);
+
+  // The real source-access policy, so the suites that search or read files go
+  // through the same root resolution production does.
+  const sourceRoots = new SourceRoots(repositories, {
+    enabled: options.filesystemEnabled ?? true,
+    repositoryBaseDirectory: options.repositoryBaseDirectory ?? WORKSPACE_ROOT,
+  });
 
   const app = await buildApp({
     config: CONFIG,
@@ -173,8 +196,9 @@ async function createHarness(
       graph,
       source: new SourceService(repositories, graph, {
         enabled: options.filesystemEnabled ?? true,
-        repositoryBaseDirectory: WORKSPACE_ROOT,
+        repositoryBaseDirectory: options.repositoryBaseDirectory ?? WORKSPACE_ROOT,
       }),
+      codeSearch: new CodeSearchService(sourceRoots, projects),
       health: new HealthService(new StubHealthProbe(options.healthy ?? true)),
     },
   });

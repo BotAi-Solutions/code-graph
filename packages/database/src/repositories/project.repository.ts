@@ -9,7 +9,7 @@ import type {
 } from '@ckg/shared';
 import type { Queryable } from '../client.js';
 import { toProject, type ProjectRow } from './row-mappers.js';
-import { PROJECT_SUMMARY_SQL } from './project-summary.sql.js';
+import { PROJECT_SUMMARY_BY_IDS_SQL, PROJECT_SUMMARY_SQL } from './project-summary.sql.js';
 
 export interface CreateProjectInput {
   name: string;
@@ -145,6 +145,23 @@ export class ProjectRepository {
       items: items.rows.map(toProjectSummary),
       total: total.rows[0]?.count ?? 0,
     };
+  }
+
+  /**
+   * Summaries for a known set of projects, in one round trip.
+   *
+   * Path resolution arrives holding project ids rather than a page number: it
+   * has already worked out which repositories enclose a path and now needs the
+   * same row the dashboard shows for each. Ids that name no project are simply
+   * absent from the result, which is what lets the caller treat a project
+   * deleted between the two queries as "no longer a match" rather than an
+   * error.
+   */
+  async findSummariesByIds(ids: readonly string[]): Promise<ProjectSummary[]> {
+    if (ids.length === 0) return [];
+
+    const result = await this.db.query<ProjectSummaryRow>(PROJECT_SUMMARY_BY_IDS_SQL, [[...ids]]);
+    return result.rows.map(toProjectSummary);
   }
 
   async exists(id: string): Promise<boolean> {

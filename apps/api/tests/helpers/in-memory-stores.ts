@@ -129,6 +129,20 @@ export class InMemoryProjectStore {
     return { items, total: page.total };
   }
 
+  /**
+   * Mirrors `PROJECT_SUMMARY_BY_IDS_SQL`: the same rows the listing produces,
+   * narrowed to a known set and in the listing's own order. Ids that name no
+   * project are absent rather than null, which is what path resolution relies
+   * on to drop a project deleted between its two queries.
+   */
+  async findSummariesByIds(ids: readonly string[]): Promise<ProjectSummary[]> {
+    if (ids.length === 0) return [];
+
+    const wanted = new Set(ids);
+    const all = await this.listSummaries({ limit: Number.MAX_SAFE_INTEGER, offset: 0 });
+    return all.items.filter((summary) => wanted.has(summary.id));
+  }
+
   /** Set by the harness so summaries can join across the fakes. */
   repositories?: InMemoryRepositoryStore;
   analyses?: InMemoryAnalysisJobStore;
@@ -160,6 +174,13 @@ export class InMemoryRepositoryStore {
 
   async findByProjectId(projectId: string): Promise<Repository | null> {
     return this.byProject.get(projectId) ?? null;
+  }
+
+  /** Ordered like the SQL: longest source path first, then id. */
+  async listAll(): Promise<Repository[]> {
+    return [...this.byProject.values()].sort(
+      (a, b) => b.sourcePath.length - a.sourcePath.length || a.id.localeCompare(b.id),
+    );
   }
 }
 

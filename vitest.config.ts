@@ -108,6 +108,15 @@ export default defineConfig({
         },
       },
       {
+        resolve: { alias },
+        test: {
+          name: 'mcp',
+          root: './apps/mcp',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
         // The web project's pure view logic: what the canvas is handed, and
         // what it is drawn with. The components themselves are exercised by
         // running the app, not by a simulated DOM.

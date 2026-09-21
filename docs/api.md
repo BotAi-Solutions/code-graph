@@ -222,6 +222,76 @@ touched — this deletes what was derived from it.
 
 ### `GET /api/projects/:projectId` → `200`
 
+### `GET /api/projects/resolve?path=…` → `200`
+
+The inverse of the intake flow, and the way in for anything holding a working
+directory rather than a project id. Intake starts from a folder and creates a
+project; this starts from a folder and asks which project was already created
+from it.
+
+```json
+{
+  "path": "/Users/example/projects/my-app/src/services",
+  "matches": [
+    {
+      "project": { "id": "…", "name": "my-app", "nodeCount": 1184, "edgeCount": 4102,
+                   "repository": { "sourceType": "local", "sourcePath": "/Users/example/projects/my-app", "commitHash": null },
+                   "latestAnalysis": { "status": "COMPLETED", "…": null },
+                   "nodeTypeCounts": { "class": 61, "method": 402 } },
+      "repositoryRoot": "/Users/example/projects/my-app",
+      "relativePath": "src/services",
+      "exact": false
+    }
+  ]
+}
+```
+
+`relativePath` is what the path is called *inside* that repository — the form
+every other route speaks, so it can be handed straight to
+`/source?file=…` or to `/graph/search?file=…`. It is `""` when the request named
+the repository root itself, which is also when `exact` is true. `meta` carries
+`{ total, path }`.
+
+**A list, not a project.** In a monorepo the repository root and a package
+inside it may both have been indexed, and the same directory may have been
+indexed twice under two projects. Every project covering the path is returned,
+most specific first. Choosing between them needs to know what the caller is for
+— whether a half-indexed duplicate beats none, whether the outer project or the
+inner one is the subject — so each match carries the full dashboard row and the
+caller decides. This API does not guess.
+
+Ordering is total and derived only from what the caller can see: a deeper
+`repositoryRoot` first, then the newer project, then the id. The same request
+twice returns the same order.
+
+**No match is an answer.** A path no project covers returns `matches: []` and a
+`200`, the way a dismissed folder dialog returns `data: null`. "Nothing here is
+indexed" is a fact a caller acts on — by indexing it, or by reading the files
+directly — not a failure it should have to catch. There is no `404` on this
+route.
+
+**The path is never read.** Nothing here opens, lists or stats the directory, so
+it need not exist: a repository record may still name a path that has since been
+deleted, and the API may be answering about a machine it cannot see. Two
+consequences follow:
+
+- A relative path is resolved against the same base directory a stored relative
+  `sourcePath` is, not against the API process's working directory. So
+  `?path=test-repositories/typescript-sample` finds the project registered under
+  exactly that path.
+- Symlinks are resolved only when `LOCAL_FILESYSTEM_ENABLED` is true — that is
+  the flag that says the API shares a filesystem with whoever is asking. When it
+  is false, paths are compared as written, which is the only thing that can mean
+  anything across two machines. `repositoryRoot` and `relativePath` always
+  compose back to `path`, whichever form matched.
+
+A repository with `sourceType: git` never matches: its `sourcePath` is a clone
+URL, and the worker deletes the clone when the run finishes, so there is no
+directory for a path to be inside of.
+
+`400 VALIDATION_ERROR` for a missing, empty or over-long path, or one containing
+a NUL byte.
+
 ---
 
 ## Repositories
@@ -765,6 +835,131 @@ A repository with `sourceType: git` returns `403 SOURCE_NOT_READABLE`: the
 worker shallow-clones it into scratch space and deletes it when the run
 finishes, so there is nothing left to read, and saying so is better than reading
 whatever happens to sit at that path now.
+
+---
+
+## Code search
+
+### `GET /api/projects/:projectId/code/search?q=…&limit=…` → `200`
+
+Finds literal occurrences of a string in a project’s source files.
+
+Deliberately a different thing from `/graph/search`, which matches the *names*
+of things the indexer recorded. This matches the characters in the files, so it
+finds a string in a comment, in a template literal, in a YAML value and in a
+language nothing in this system can parse — none of which is in the graph.
+
+```
+GET /api/projects/2cd2c90a…/code/search?q=UserRepository&limit=20
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "filePath": "src/app.ts",
+      "line": 8,
+      "column": 9,
+      "match": "UserRepository",
+      "lineText": "import { UserRepository } from './repositories/user.repository';",
+      "lineTruncated": false
+    }
+  ],
+  "error": null,
+  "meta": {
+    "total": 8, "limit": 20, "truncated": false, "query": "UserRepository",
+    "filesSearched": 19, "filesSkipped": 0, "scanTruncated": false
+  }
+}
+```
+
+| Parameter | Default | Notes |
+| --- | --- | --- |
+| `q` | — | **Required.** 1–200 characters. A literal string. |
+| `limit` | `20` | 1–100. Matches one response carries. |
+
+#### Semantics
+
+**Literal and case-sensitive.** Not a regular expression, not a glob, not a
+pattern of any kind. `obj.method(arg)` matches those fifteen characters and
+nothing else; `.` is a full stop and `(` is a parenthesis. `UserRepository` does
+not match `userRepository`.
+
+**Nothing is executed.** There is no subprocess, no `grep`, no shell — the query
+reaches a string comparison and goes no further, so there is no argument or
+interpolation to get wrong.
+
+**One result per occurrence, not per line.** `foo(foo, foo)` searched for `foo`
+is three results at columns 0, 4 and 9. Overlaps are counted the way every other
+literal search counts them: `aa` occurs once in `aaa`, because the scan moves
+past what it matched.
+
+**Coordinates match the rest of this API**: `line` is 1-based, `column` is
+0-based — the same convention as `startLine` and `startCharacter` on a graph
+node.
+
+**Ordering is `filePath`, then `line`, then `column`**, ascending. No relevance
+scoring: the same query over the same tree always produces the same page.
+
+**`lineText` is windowed** when a line is longer than 200 characters — a
+minified bundle is one line of two megabytes. The window follows the match, so
+the match is always visible in it, and `lineTruncated` says when it happened.
+
+#### Which files are searched
+
+The file list comes from the same walk the indexer uses, so the ignore policy is
+the project’s own rather than a second list that would drift from it:
+`node_modules`, `dist`, `build`, `.git`, `coverage`, lock files and the rest are
+already excluded, and symlinks are not followed.
+
+Of what survives that walk, the categories the pipeline treats as analysable are
+searched — **code, documents, configuration, schemas and SQL**. `binary` is
+excluded by classification rather than by an extension blacklist, and
+`generated` and `vendor` are excluded because a match in a bundle or a
+checked-in dependency answers nobody’s question.
+
+A file larger than the source-retrieval ceiling (4 MB) is skipped rather than
+read.
+
+#### What the counts mean
+
+`total` is the number of occurrences across every file searched — not the size
+of `data`, and not a count of matching lines. The scan keeps counting after the
+page is full, and stops *collecting*, so the count stays exact while the
+response stays bounded. `truncated` is `total > data.length`.
+
+Two fields say when `total` is a floor rather than an exact figure, so an
+understated count is never silent:
+
+- `filesSkipped` — files passed over for being too large.
+- `scanTruncated` — the walk stopped early (a repository beyond 25,000 files or
+  24 directories deep).
+
+`filesSearched` is how many files were actually read.
+
+#### Failures
+
+Source access is the same boundary `/source` sits behind, and this route
+inherits all of it:
+
+| Code | Status | When |
+| --- | --- | --- |
+| `PROJECT_NOT_FOUND` | 404 | No such project — checked before anything touches a disk |
+| `REPOSITORY_NOT_FOUND` | 404 | The project has no repository attached |
+| `REPOSITORY_PATH_NOT_FOUND` | 404 | The registered directory is no longer readable |
+| `SOURCE_NOT_READABLE` | 403 | `sourceType: git` — the worker deletes its shallow clone, so there is nothing left to search |
+| `FILESYSTEM_ACCESS_DISABLED` | 403 | `LOCAL_FILESYSTEM_ENABLED=false` |
+| `VALIDATION_ERROR` | 400 | Missing, empty or over-long `q`, or a `limit` outside 1–100 |
+
+**No match is not a failure.** `data: []` with `total: 0` and a `200` means the
+string is not in the project’s source — which is a different statement from the
+source being unreadable, and the two never look alike.
+
+**Project isolation.** The root comes from the project’s own repository record,
+never from the request, so a search reads one project’s tree and no other. A
+query is never joined to a path, so `../../etc/passwd` is a string to look for,
+not a place to look in.
 
 ---
 

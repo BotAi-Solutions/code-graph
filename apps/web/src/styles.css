@@ -620,6 +620,13 @@ code {
   min-height: 44px;
 }
 
+/* For a pane header, where a full-height button would set the row's height. */
+.button--small {
+  font-size: 12px;
+  padding: 3px 9px;
+  min-height: 24px;
+}
+
 /* A secondary action that must not compete with the primary one beside it. */
 .button--quiet {
   background: transparent;
@@ -660,6 +667,45 @@ code {
   font: inherit;
   font-size: 13px;
   min-height: 34px;
+}
+
+.field__control:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.field__control::placeholder {
+  color: var(--text-muted);
+}
+
+/* A native select renders its own control chrome, which on this palette means
+   a light OS widget in the middle of a dark toolbar. Drawing the caret here is
+   what lets the field match every other field. */
+select.field__control {
+  appearance: none;
+  padding-right: 28px;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: right 13px center, right 8px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  text-overflow: ellipsis;
+}
+
+/* A label beside its control rather than above it: a toolbar is a row, and a
+   stacked label there would set the height of everything next to it. */
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.field__control--tiny {
+  width: 4.9rem;
+  min-width: 0;
+  padding-left: 8px;
 }
 
 .form {
@@ -3437,4 +3483,1094 @@ code {
   .app--workspace .app__main {
     padding: 10px;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Retrieval Lab
+   ---------------------------------------------------------------------------
+   A developer workspace, not a dashboard. It fills the window, scrolls inside
+   its own panes, and spends its space on results, source and evidence rather
+   than on chrome.
+
+   Two rules hold the density together. Every control comes from the shared
+   field and button classes, so nothing here renders as a native widget on a
+   dark toolbar. And a pane is the only container: one border weight, one
+   radius, chrome only in a pane's header, never a card inside a card.
+--------------------------------------------------------------------------- */
+
+.lab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Fills the workspace shell rather than sitting in the top of it: the panes
+     below scroll inside themselves, which only works if they have a height. */
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.lab--centred {
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.lab__blank {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+}
+
+/* header ------------------------------------------------------------------ */
+
+.lab__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 20px;
+  flex-shrink: 0;
+}
+
+.lab__identity {
+  min-width: 0;
+}
+
+.lab__title {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+.lab__subtitle {
+  margin: 1px 0 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.lab__project {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+/* Long enough for a name and the path that tells two of them apart, capped so
+   a deeply nested repository cannot push the status chip off the row. */
+.lab__project-select {
+  min-width: 260px;
+  max-width: 460px;
+}
+
+/* index status ------------------------------------------------------------ */
+
+.lab-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.lab-status__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.lab-status--ready .lab-status__dot { background: var(--ok); }
+.lab-status--indexing .lab-status__dot { background: var(--accent); }
+.lab-status--failed .lab-status__dot { background: var(--danger); }
+.lab-status--never_indexed .lab-status__dot { background: var(--text-muted); }
+
+.lab-status--failed { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+
+.lab-status__counts {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-status__counts::before {
+  content: '·';
+  margin-right: 7px;
+}
+
+/* the console: every input on one row ------------------------------------- */
+
+.lab__console {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 9px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.lab__modes {
+  flex-shrink: 0;
+}
+
+.lab__modes .segmented__option:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lab__query-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.lab__query {
+  flex: 1;
+  min-width: 0;
+  padding-left: 30px;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+}
+
+.lab__query-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  pointer-events: none;
+}
+
+/* The shortcut is shown only while the field is empty — once there is a query
+   to read, a hint sitting on top of it is in the way. */
+.lab__query-key {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+/* the three panes --------------------------------------------------------- */
+
+.lab__grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(400px, 1.75fr) minmax(320px, 1.05fr);
+  grid-template-areas: 'results source inspect';
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.lab-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.lab-pane--results { grid-area: results; }
+.lab-pane--source { grid-area: source; }
+.lab-pane--inspect { grid-area: inspect; }
+
+.lab-pane__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  min-height: 38px;
+  padding: 4px 8px 4px 12px;
+  background: color-mix(in srgb, var(--surface-raised) 45%, var(--surface));
+  border-bottom: 1px solid var(--border);
+}
+
+.lab-pane__title {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Secondary by rule: a count, a range or a path, never something to act on. */
+.lab-pane__meta {
+  margin-left: auto;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.73rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-pane__path {
+  font-family: var(--mono);
+  color: var(--text-secondary);
+}
+
+.lab-pane__range {
+  color: var(--text-muted);
+}
+
+.lab-pane__actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+}
+
+.lab-pane__tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: -4px;
+}
+
+.lab-pane__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.lab-pane__tab:hover { color: var(--text); }
+
+.lab-pane__tab--active {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.lab-pane__badge {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-pane__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.lab-pane__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.lab-pane__body--flush {
+  padding: 0;
+}
+
+/* A pane with nothing in it yet says so in the middle of itself, so an empty
+   column reads as waiting rather than broken. */
+.lab-pane__state {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 120px;
+  padding: 24px 18px;
+  text-align: center;
+}
+
+.lab-pane__state .lab-muted {
+  max-width: 34ch;
+}
+
+/* result rows ------------------------------------------------------------- */
+
+/* Occurrences sit under the file they are in. Nine hits in one file is one
+   path read once and nine lines of code, not nine rows of the same path. */
+.lab-groups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lab-group__file {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0 0 2px;
+  padding: 4px 9px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.73rem;
+}
+
+/* The directories give way first: the file name is what is being read. */
+.lab-group__dir {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-group__name {
+  flex-shrink: 0;
+  color: var(--text);
+}
+
+.lab-group__count {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lab-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 5px 9px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lab-hit:hover { background: var(--surface-raised); }
+
+.lab-hit--active {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.lab-hit__where {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lab-hit__name {
+  min-width: 0;
+  font-size: 0.79rem;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-hit__pos {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.lab-hit__line {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.lab-group .lab-hit {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.lab-group .lab-hit__pos {
+  width: 4.5em;
+  text-align: right;
+}
+
+.lab-group .lab-hit__line {
+  flex: 1;
+  min-width: 0;
+}
+
+.lab-hit__line--quiet {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* Lit exactly where the API said the occurrence was — this page is checked
+   against the line numbers it prints, so a highlight is a claim too. */
+.lab-hit__mark {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--text);
+  border-radius: 2px;
+}
+
+.lab-hit--active .lab-hit__line { color: var(--text); }
+
+.lab-hit__blank,
+.lab-hit__cut { color: var(--text-muted); }
+
+/* source viewer ----------------------------------------------------------- */
+
+.lab-pane--source .lab-pane__body {
+  background: var(--surface-sunken);
+}
+
+.lab-source {
+  min-height: 100%;
+}
+
+.lab-source__code {
+  margin: 0;
+  padding: 8px 0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.lab-source__line {
+  display: flex;
+  min-width: max-content;
+}
+
+.lab-source__line:hover {
+  background: color-mix(in srgb, var(--surface-raised) 55%, transparent);
+}
+
+/* Inset rather than a border: a real border would shift the text of one line
+   half a character away from the lines above and below it. */
+.lab-source__line--lit,
+.lab-source__line--lit:hover {
+  background: color-mix(in srgb, var(--accent) 17%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.lab-source__gutter {
+  flex-shrink: 0;
+  width: 3.6em;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.lab-source__line--lit .lab-source__gutter {
+  color: var(--accent);
+}
+
+.lab-source__text {
+  padding-right: 16px;
+  white-space: pre;
+}
+
+/* node inspector ---------------------------------------------------------- */
+
+.lab-node {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The identity of what is being inspected stays on screen while its
+   relationships scroll past it — otherwise a long list of neighbours is a list
+   of neighbours of nothing in particular. */
+.lab-node__head {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  margin: -8px -8px 4px;
+  padding: 10px 10px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.lab-node__name {
+  margin: 0;
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.lab-node__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.lab-node__file {
+  margin: 7px 0 0;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.lab-node__parent {
+  margin: 5px 0 0;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.lab-node__none { margin-top: 12px; }
+
+.lab-rel {
+  margin-top: 14px;
+}
+
+.lab-rel__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 4px;
+  padding: 0 2px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.lab-rel__count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-rel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lab-rel__item {
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+}
+
+.lab-rel__item:hover { background: var(--surface-raised); }
+
+.lab-rel__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.lab-rel__link {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.lab-rel__link:hover { text-decoration: underline; }
+
+.lab-rel__item .badge-type--small { flex-shrink: 0; }
+
+/* Present but recessive: the row's subject is the neighbour, not this. */
+.lab-rel__trace {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 1px 7px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.68rem;
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.lab-rel__item:hover .lab-rel__trace,
+.lab-rel__trace:focus-visible {
+  opacity: 1;
+}
+
+.lab-rel__trace:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* evidence ---------------------------------------------------------------- */
+
+.lab-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.lab-evidence__rel {
+  font-family: var(--mono);
+  color: var(--text-secondary);
+}
+
+.lab-evidence__dir {
+  margin-right: 4px;
+  color: var(--text-muted);
+}
+
+.lab-evidence__where {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.lab-evidence__source,
+.lab-evidence__method {
+  opacity: 0.85;
+}
+
+/* trace ------------------------------------------------------------------- */
+
+.lab-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Stacked, because both endpoints are qualified names and this column is
+   narrow: side by side, each one would be truncated to uselessness. */
+.lab-trace__ends {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lab-trace__end {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 9px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.lab-trace__end--unset {
+  border-style: dashed;
+}
+
+.lab-trace__end-label {
+  flex-shrink: 0;
+  width: 3em;
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.lab-trace__end-value {
+  min-width: 0;
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-trace__swap {
+  align-self: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lab-trace__swap:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.lab-trace__swap:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lab-trace__controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lab-trace__result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.lab-chain {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lab-chain__node {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.lab-chain__name {
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.lab-chain__file {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* The connector is the hop: one line from the node above to the node below,
+   with what was followed written on it. */
+.lab-chain__hop {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 14px;
+  padding: 5px 0 5px 14px;
+  border-left: 1px solid var(--border-strong);
+  font-size: 0.7rem;
+}
+
+.lab-chain__rel {
+  font-family: var(--mono);
+  color: var(--text-secondary);
+}
+
+.lab-chain__hop .lab-evidence {
+  margin-top: 0;
+}
+
+.lab-verdict {
+  margin: 0;
+  font-size: 0.83rem;
+}
+
+.lab-verdict--found strong { color: var(--ok); }
+.lab-verdict--none strong { color: var(--text-secondary); }
+.lab-verdict--inconclusive strong { color: var(--warn); }
+
+/* notes, errors, empties -------------------------------------------------- */
+
+.lab-note {
+  margin: 0;
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.77rem;
+  color: var(--text-secondary);
+}
+
+.lab-note--warn {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+}
+
+/* Inside a pane, where the note is one item in a scrolling column. */
+.lab-note--inset {
+  margin: 2px 2px 8px;
+}
+
+.lab-error {
+  margin: 4px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.lab-error__title {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.lab-error__body {
+  margin: 3px 0 0;
+  font-size: 0.77rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.lab-error__code {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.lab-empty {
+  padding: 14px 12px;
+}
+
+.lab-empty__title {
+  margin: 0 0 4px;
+  font-size: 0.86rem;
+}
+
+.lab-empty__hints {
+  margin: 6px 0 10px;
+  padding-left: 18px;
+  font-size: 0.77rem;
+  color: var(--text-muted);
+}
+
+.lab-empty__hints li { margin-top: 2px; }
+
+.lab-muted {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.79rem;
+}
+
+/* request inspector ------------------------------------------------------- */
+
+.lab-inspector {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.lab-inspector__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px 5px 12px;
+  min-height: 32px;
+}
+
+.lab-inspector__toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.lab-inspector__toggle:hover { color: var(--text); }
+.lab-inspector__caret { color: var(--text-muted); }
+
+.lab-inspector__count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-inspector__body {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.lab-inspector__list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lab-inspector__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 8px;
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+}
+
+.lab-inspector__request {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.lab-inspector__status {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ok);
+  font-variant-numeric: tabular-nums;
+}
+
+.lab-inspector__status--error { color: var(--danger); }
+
+.badge-type--small { font-size: 0.66rem; }
+
+/* ---------------------------------------------------------------------------
+   Narrower windows. Three columns is the design; below that the inspector
+   moves under the source it is about, and below that everything stacks and the
+   page scrolls as a page.
+--------------------------------------------------------------------------- */
+
+@media (max-width: 1480px) {
+  .lab__grid {
+    grid-template-columns: minmax(260px, 0.85fr) minmax(400px, 1.6fr);
+    grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr);
+    grid-template-areas:
+      'results source'
+      'results inspect';
+  }
+}
+
+@media (max-width: 1020px) {
+  .lab {
+    overflow: auto;
+  }
+
+  .lab__grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(300px, auto);
+    grid-template-areas:
+      'results'
+      'source'
+      'inspect';
+  }
+
+  .lab__console {
+    flex-wrap: wrap;
+  }
+
+  .lab__query-field {
+    order: -1;
+    flex-basis: 100%;
+  }
+
+  .lab__project {
+    margin-left: 0;
+  }
+}
+
+/*
+ * The global `code` chip is for inline code in prose. Where the lab uses
+ * `<code>` structurally — a result line, a source block, a request — the chip's
+ * border and padding make a row look like an input, so it is reset here rather
+ * than by avoiding the right element.
+ */
+.lab-hit__line,
+.lab-source__code,
+.lab-source__code code,
+.lab-inspector__request {
+  background: none;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.lab-source__code {
+  padding: 8px 0;
 }

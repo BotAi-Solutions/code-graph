@@ -880,10 +880,12 @@ describe('API', () => {
       expect.arrayContaining([
         '/health',
         '/api/projects',
+        '/api/projects/resolve',
         '/api/projects/{projectId}',
         '/api/projects/{projectId}/repository',
         '/api/projects/{projectId}/analysis',
         '/api/projects/{projectId}/analysis/{analysisId}',
+        '/api/projects/{projectId}/code/search',
         '/api/projects/{projectId}/graph',
         '/api/projects/{projectId}/graph/nodes/{nodeId}',
         '/api/projects/{projectId}/graph/nodes/{nodeId}/callers',

@@ -46,6 +46,26 @@ export class SourceRepositoryRepository {
     return row ? toRepository(row) : null;
   }
 
+  /**
+   * Every registered repository.
+   *
+   * Unpaged on purpose. This exists for path resolution, which has to consider
+   * all of them — the question "which indexed repository encloses this
+   * directory" cannot be answered by a page — and the row count is bounded by
+   * the number of projects an installation holds, one each. The caller applies
+   * its own ceiling.
+   *
+   * Ordered so that repeated lookups rank identically: longest path first, so
+   * the most specific repository is considered before the one that contains it,
+   * then by id to break ties the path itself cannot.
+   */
+  async listAll(): Promise<Repository[]> {
+    const result = await this.db.query<RepositoryRow>(
+      `SELECT ${COLUMNS} FROM repositories ORDER BY length(source_path) DESC, id`,
+    );
+    return result.rows.map(toRepository);
+  }
+
   async findById(id: string): Promise<Repository | null> {
     const result = await this.db.query<RepositoryRow>(
       `SELECT ${COLUMNS} FROM repositories WHERE id = $1`,

@@ -13,6 +13,7 @@ import type { ApiConfig } from './config/index.js';
 import { registerErrorHandler } from './common/errors/index.js';
 import { createLogController } from './common/middleware/index.js';
 import { analysisRoutes, type AnalysisService } from './modules/analysis/index.js';
+import { codeSearchRoutes, type CodeSearchService } from './modules/code-search/index.js';
 import { filesystemRoutes, type FilesystemService } from './modules/filesystem/index.js';
 import { graphRoutes, type GraphService } from './modules/graph/index.js';
 import { healthRoutes, type HealthService } from './modules/health/index.js';
@@ -35,6 +36,7 @@ export interface AppServices {
   analysis: AnalysisService;
   graph: GraphService;
   source: SourceService;
+  codeSearch: CodeSearchService;
   health: HealthService;
 }
 
@@ -95,6 +97,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           name: 'source',
           description: 'Reading source from a project\u2019s indexed repository',
         },
+        {
+          name: 'code-search',
+          description: 'Literal text search over a project\u2019s source files',
+        },
       ],
     },
     transform: jsonSchemaTransform,
@@ -113,6 +119,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await api.register(analysisRoutes(services.analysis));
       await api.register(graphRoutes(services.graph));
       await api.register(sourceRoutes(services.source));
+      await api.register(codeSearchRoutes(services.codeSearch));
     },
     { prefix: API_PREFIX },
   );

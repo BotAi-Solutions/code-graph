@@ -31,6 +31,7 @@ there and proxies to it, so you only ever open 5173.
 pnpm dev:api      # just the API        → /docs for the OpenAPI UI
 pnpm dev:worker   # just the worker
 pnpm dev:web      # just the web app
+pnpm dev:mcp      # just the MCP server (an MCP client normally launches it)
 pnpm test         # the whole suite
 pnpm typecheck    # type-check everything
 pnpm build        # type-check, emit packages, build the web app
@@ -319,6 +320,9 @@ apps/
   worker/     The analysis pipeline. Claims jobs, runs SCIP, persists graphs.
   web/        React + Vite + Sigma.js/Graphology (WebGL). Loads everything
               from the API and owns none of the graph.
+  mcp/        MCP server over stdio. An adapter and nothing else: it holds no
+              domain logic and no database credentials, and reaches the graph
+              through the same HTTP API the web client uses.
 
 packages/
   scip/                SCIP indexer adapters, protobuf parser, internal types.
@@ -389,6 +393,7 @@ afterwards means a sample actually changed.
 | `packages/database` | Migration contract, row mapping, and the graph SQL against a real PostgreSQL |
 | `apps/api` | Envelope, every route, projections, direction, search paging, node detail, error codes, OpenAPI, and the local-folder intake boundary |
 | `apps/worker` | The pipeline end to end against both fixtures, including phase-by-phase progress, the statistics it records, and a run surviving a broken analyzer |
+| `apps/mcp` | Tool metadata, all seven tools against a stub API, every index state, project isolation and result bounding, path and no-path semantics, evidence preservation, literal-query forwarding, result versus scan truncation, source-window validation, config resolution, and one real process handshaking over stdio |
 | `apps/web` | Graph merging for expand-on-click, projections, the visual language's completeness, and the folder-picker abstraction's three outcomes |
 
 The `packages/database` integration suite skips itself when no database is
@@ -421,11 +426,23 @@ relationships joining a contract to its handler and prose to its subject, a
 central confidence policy, evidence carrying a file and a line, and a benchmark
 that scores all of it against a hand-written ground truth.
 
+Implemented since that: path resolution — `GET /api/projects/resolve` turns a
+directory into the projects indexed from it — and an **MCP server**
+(`apps/mcp`) over stdio, exposing seven tools: `resolve_project` turns a working
+directory into a project id, `get_index_status` says whether that project is
+ready, indexing, failed or never indexed, `search_graph` searches that one
+project, `get_node` inspects one node with its relationships and the evidence
+behind them, `trace_path` finds the shortest route between two of them,
+`search_code` searches the source text itself, and `get_source` reads the code
+at any location the others report. The same project id is passed through every
+call; there is no implicit project.
+
 Not implemented, and intentionally so: Qdrant, embeddings, LLM/Claude
-integration, MCP, OAuth, authentication, multi-tenancy, Neo4j, distributed
-workers, AI summaries, incremental indexing and production deployment. The
-architecture is arranged so each can be added without restructuring — see the
-last section of [docs/architecture.md](docs/architecture.md).
+integration, the rest of the MCP tool surface, OAuth, authentication,
+multi-tenancy, Neo4j, distributed workers, AI summaries, incremental indexing
+and production deployment. The architecture is arranged so each can be added
+without restructuring — see the last section of
+[docs/architecture.md](docs/architecture.md).
 
 The graph is shaped so that a future context engine can ask it: search entities,
 get source, find references, find callers and callees, find dependencies, find a
@@ -440,4 +457,5 @@ queries against what is there today.
 - [docs/repository-knowledge.md](docs/repository-knowledge.md) — file categories, parsers, cross-source relationships, what the pipeline refuses to do
 - [docs/benchmark.md](docs/benchmark.md) — ground truth, metrics, CI
 - [docs/scip.md](docs/scip.md) — indexers, parsing, adding a language
-- [docs/api.md](docs/api.md) — endpoints, envelope, error codes
+- [docs/api.md](docs/api.md) — endpoints, envelope, error codes (including code search)
+- [docs/mcp.md](docs/mcp.md) — the MCP server, its one tool, and why it holds no logic

@@ -29,6 +29,12 @@ import {
   SOURCE_TREE_MAX_LIMIT,
 } from '../constants/graph.js';
 import { GRAPH_PROJECTION_IDS } from '../constants/projections.js';
+import { PROJECT_PATH_MAX_LENGTH } from '../constants/projects.js';
+import {
+  CODE_SEARCH_DEFAULT_LIMIT,
+  CODE_SEARCH_MAX_LIMIT,
+  CODE_SEARCH_MAX_QUERY_LENGTH,
+} from '../constants/code-search.js';
 import { SOURCE_DEFAULT_CONTEXT_LINES } from '../constants/source.js';
 
 /**
@@ -152,6 +158,62 @@ export const projectSchema = z.object({
   description: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+});
+
+// --- Resolving a path to a project ----------------------------------------
+//
+// The inverse of the intake flow. Intake starts from a folder and creates a
+// project; resolution starts from a folder and asks which project was already
+// created from it — the question anything holding a working directory rather
+// than a project id has to ask first.
+
+/**
+ * A path to resolve.
+ *
+ * Normally absolute, because the caller is naming a directory on the machine it
+ * is running on. A relative path is resolved the same way a stored relative
+ * `sourcePath` is — against the installation's repository base directory — so
+ * that the bundled samples can be looked up by the path they were registered
+ * with.
+ */
+export const resolveProjectQuerySchema = z.object({
+  path: z.string().trim().min(1).max(PROJECT_PATH_MAX_LENGTH),
+});
+
+/**
+ * One project whose indexed repository encloses the requested path.
+ *
+ * `relativePath` is what the path is called *inside* that repository, which is
+ * the form every other route speaks: it can be handed straight to source
+ * retrieval or to a graph search narrowed by file.
+ */
+export const projectPathMatchSchema = z.object({
+  /** The full dashboard row, so a caller can tell an indexed project from an empty one without a second request. */
+  project: projectSummarySchema,
+  /** Absolute directory this project was indexed from, with a relative `sourcePath` already resolved. */
+  repositoryRoot: z.string(),
+  /**
+   * The requested path relative to `repositoryRoot`, in POSIX form. Empty
+   * string when the request named the repository root itself.
+   */
+  relativePath: z.string(),
+  /** True when the requested path *is* the repository root rather than something inside it. */
+  exact: z.boolean(),
+});
+
+/**
+ * Every project that covers the path, most specific first.
+ *
+ * A list rather than one project because a repository root and a package inside
+ * it may both be indexed, and picking between them is the caller's decision to
+ * make with the facts in front of it — this API does not guess. An empty
+ * `matches` is a successful answer meaning "nothing indexed covers this path",
+ * not an error.
+ */
+export const projectResolutionSchema = z.object({
+  /** The requested path, normalised to absolute. */
+  path: z.string(),
+  matches: z.array(projectPathMatchSchema),
 });
 
 // --- Repositories ---------------------------------------------------------
@@ -564,6 +626,50 @@ export const graphPathSchema = z.object({
   truncated: z.boolean(),
 });
 
+// --- Code search ----------------------------------------------------------
+
+/**
+ * Searching a project's source *text*, as opposed to its graph.
+ *
+ * Deliberately a different thing from `/graph/search`, which matches the names
+ * of things the indexer recorded. This matches the characters in the files: it
+ * finds a string in a comment, in a template, in a config value and in a
+ * language nothing in this system can parse — none of which is in the graph.
+ */
+export const codeSearchQuerySchema = z.object({
+  /** A literal string. Not a regular expression, not a glob, not a pattern. */
+  q: z.string().min(1).max(CODE_SEARCH_MAX_QUERY_LENGTH),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(CODE_SEARCH_MAX_LIMIT)
+    .default(CODE_SEARCH_DEFAULT_LIMIT),
+});
+
+/**
+ * One occurrence.
+ *
+ * One result per occurrence rather than per line, so `column` always points at
+ * a specific match and a line containing a term three times is three results —
+ * which is what makes `total` a count of occurrences rather than a count of
+ * lines that happen to contain one.
+ */
+export const codeSearchMatchSchema = z.object({
+  /** Repository-relative POSIX path. Nothing about the host's layout leaks. */
+  filePath: z.string(),
+  /** 1-based, as an editor counts. */
+  line: z.number().int(),
+  /** 0-based, matching `startCharacter` everywhere else in this API. */
+  column: z.number().int(),
+  /** The matched text, which for a literal search is always the query itself. */
+  match: z.string(),
+  /** The line the match sits on, windowed around it when the line is very long. */
+  lineText: z.string(),
+  /** True when `lineText` is a window rather than the whole line. */
+  lineTruncated: z.boolean(),
+});
+
 // --- Source tree ----------------------------------------------------------
 
 /**
@@ -661,6 +767,9 @@ export const sourceSchema = z.object({
 
 export type CreateProjectBody = z.infer<typeof createProjectBodySchema>;
 export type ListProjectsQuery = z.infer<typeof listProjectsQuerySchema>;
+export type ResolveProjectQuery = z.infer<typeof resolveProjectQuerySchema>;
+export type ProjectPathMatch = z.infer<typeof projectPathMatchSchema>;
+export type ProjectResolution = z.infer<typeof projectResolutionSchema>;
 export type CreateRepositoryBody = z.infer<typeof createRepositoryBodySchema>;
 export type CreateAnalysisBody = z.infer<typeof createAnalysisBodySchema>;
 export type BrowseDirectoryQuery = z.infer<typeof browseDirectoryQuerySchema>;
@@ -680,6 +789,8 @@ export type GraphPath = z.infer<typeof graphPathSchema>;
 export type SourceTreeQuery = z.infer<typeof sourceTreeQuerySchema>;
 export type SourceTreeEntry = z.infer<typeof sourceTreeEntrySchema>;
 export type SourceTree = z.infer<typeof sourceTreeSchema>;
+export type CodeSearchQuery = z.infer<typeof codeSearchQuerySchema>;
+export type CodeSearchMatch = z.infer<typeof codeSearchMatchSchema>;
 export type SourceQuery = z.infer<typeof sourceQuerySchema>;
 export type SourceLine = z.infer<typeof sourceLineSchema>;
 export type SourceWindow = z.infer<typeof sourceSchema>;

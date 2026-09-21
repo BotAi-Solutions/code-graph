@@ -19,7 +19,7 @@ export interface AppLayoutProps {
  * rather than as a page. One class is the whole difference.
  */
 function shellVariant(route: Route): string {
-  return route.name === 'project' ? ' app--workspace' : '';
+  return route.name === 'project' || route.name === 'retrieval' ? ' app--workspace' : '';
 }
 
 export function AppLayout({ route, children }: AppLayoutProps): React.JSX.Element {
@@ -51,6 +51,16 @@ export function AppLayout({ route, children }: AppLayoutProps): React.JSX.Elemen
             }}
           >
             Dashboard
+          </a>
+          <a
+            className={`app__nav-link${route.name === 'retrieval' ? ' app__nav-link--active' : ''}`}
+            href="#/retrieval"
+            onClick={(event) => {
+              event.preventDefault();
+              navigate({ name: 'retrieval', projectId: null });
+            }}
+          >
+            Retrieval Lab
           </a>
           <a
             className="app__nav-link"
