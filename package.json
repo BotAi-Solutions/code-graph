@@ -23,7 +23,8 @@
     "setup:scip": "tsx scripts/setup-scip.ts",
     "fixtures:build": "pnpm build:packages && tsx scripts/build-fixtures.ts",
     "analyze:sample": "pnpm build:packages && tsx scripts/dev-analysis.ts",
-    "benchmark": "pnpm build:packages && pnpm --filter @ckg/benchmark benchmark"
+    "benchmark": "pnpm build:packages && pnpm --filter @ckg/benchmark benchmark",
+    "evaluate:retrieval": "pnpm build:packages && pnpm --filter @ckg/retrieval-eval evaluate"
   },
   "devDependencies": {
     "@ckg/analysis": "workspace:*",
@@ -32,6 +33,7 @@
     "@ckg/graph": "workspace:*",
     "@ckg/language-detection": "workspace:*",
     "@ckg/mcp": "workspace:*",
+    "@ckg/retrieval-eval": "workspace:*",
     "@ckg/scip": "workspace:*",
     "@ckg/shared": "workspace:*",
     "@sourcegraph/scip-typescript": "^0.4.0",

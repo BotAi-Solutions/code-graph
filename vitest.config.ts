@@ -18,6 +18,10 @@ const alias = {
   '@ckg/graph': new URL('./packages/graph/src/index.ts', import.meta.url).pathname,
   '@ckg/analysis': new URL('./packages/analysis/src/index.ts', import.meta.url).pathname,
   '@ckg/benchmark': new URL('./packages/benchmark/src/index.ts', import.meta.url).pathname,
+  '@ckg/retrieval-eval': new URL(
+    './packages/retrieval-eval/src/index.ts',
+    import.meta.url,
+  ).pathname,
   '@ckg/database': new URL('./packages/database/src/index.ts', import.meta.url).pathname,
 };
 
@@ -76,6 +80,15 @@ export default defineConfig({
         test: {
           name: 'benchmark',
           root: './packages/benchmark',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
+        resolve: { alias },
+        test: {
+          name: 'retrieval-eval',
+          root: './packages/retrieval-eval',
           environment: 'node',
           include: ['tests/**/*.test.ts'],
         },

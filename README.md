@@ -340,6 +340,8 @@ packages/
   database/            Pool, migrations, repositories. The only place with SQL.
   benchmark/           Precision, recall, evidence and path correctness against
                        a hand-written ground truth. Runs the real pipeline.
+  retrieval-eval/      Whether the *public API* can retrieve the evidence real
+                       code questions need. An HTTP client, no internals.
   shared/              Types, Zod schemas and constants everything else speaks,
                        including the confidence policy.
 
@@ -367,6 +369,8 @@ pnpm typecheck      # type-check only
 pnpm test           # the whole suite (Vitest)
 pnpm test:watch
 pnpm benchmark      # score the pipeline against the golden fixture
+pnpm evaluate:retrieval   # score the retrieval API against real questions
+                          # (needs `pnpm dev:api` and the fixtures indexed)
 ```
 
 TypeScript is strict everywhere, ESM throughout, with project references so
@@ -390,6 +394,7 @@ afterwards means a sample actually changed.
 | `packages/graph` | Builder (symbols→nodes, references→edges), the assembler's merge rules, symbol index, determinism, traversal |
 | `packages/analysis` | Module resolution, bindings, SQL/Prisma/vendor detection, the Markdown/JSON/YAML/SQL/OpenAPI parsers, every analyzer end to end against the Express and mixed-format samples, and what happens when one file cannot be read or parsed |
 | `packages/benchmark` | The metric arithmetic, the evaluator against synthetic graphs where the answer is obvious, ground-truth validation, and the real pipeline against the golden fixture |
+| `packages/retrieval-eval` | The matchers at their edges — the right relationship between the wrong nodes, the right nodes in the wrong order — aggregation, project isolation, and the dataset's own invariants |
 | `packages/database` | Migration contract, row mapping, and the graph SQL against a real PostgreSQL |
 | `apps/api` | Envelope, every route, projections, direction, search paging, node detail, error codes, OpenAPI, and the local-folder intake boundary |
 | `apps/worker` | The pipeline end to end against both fixtures, including phase-by-phase progress, the statistics it records, and a run surviving a broken analyzer |
@@ -456,6 +461,7 @@ queries against what is there today.
 - [docs/graph-model.md](docs/graph-model.md) — nodes, edges, evidence, confidence, identity
 - [docs/repository-knowledge.md](docs/repository-knowledge.md) — file categories, parsers, cross-source relationships, what the pipeline refuses to do
 - [docs/benchmark.md](docs/benchmark.md) — ground truth, metrics, CI
+- [docs/retrieval-evaluation.md](docs/retrieval-evaluation.md) — retrieval cases, pass/partial/fail, and what retrieval cannot answer yet
 - [docs/scip.md](docs/scip.md) — indexers, parsing, adding a language
 - [docs/api.md](docs/api.md) — endpoints, envelope, error codes (including code search)
 - [docs/mcp.md](docs/mcp.md) — the MCP server, its one tool, and why it holds no logic

@@ -26,6 +26,9 @@ importers:
       '@ckg/mcp':
         specifier: workspace:*
         version: link:apps/mcp
+      '@ckg/retrieval-eval':
+        specifier: workspace:*
+        version: link:packages/retrieval-eval
       '@ckg/scip':
         specifier: workspace:*
         version: link:packages/scip
@@ -254,6 +257,16 @@ importers:
       '@ckg/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/retrieval-eval:
+    dependencies:
+      '@ckg/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      tsx:
+        specifier: ^4.23.13
+        version: 4.23.13
 
   packages/scip:
     dependencies:

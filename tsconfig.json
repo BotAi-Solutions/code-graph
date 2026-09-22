@@ -20,6 +20,9 @@
       "path": "./packages/benchmark"
     },
     {
+      "path": "./packages/retrieval-eval"
+    },
+    {
       "path": "./packages/database"
     },
     {
