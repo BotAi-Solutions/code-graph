@@ -414,6 +414,194 @@ suite('GraphRepository against PostgreSQL', () => {
     });
   });
 
+  /**
+   * Architectural edges, read from the architectural end.
+   *
+   * Its own project rather than extra nodes on the shared fixture: the cases
+   * above assert exact traversal results and composition counts, and a fixture
+   * that grows under them stops testing what it says it tests.
+   *
+   * The bug this pins dropped a row that the query had already read. Sectioning
+   * tested the node type of the *other* endpoint, so an edge whose neighbour was
+   * a class — which is every architectural edge, seen from the API, queue, event
+   * or table — matched no section and was discarded.
+   */
+  describe('architectural relations from either end', () => {
+    let architectural: string;
+
+    function architecturalFixture(project: string): CodeGraph {
+      const node = (id: string, type: CodeNode['type'], name: string): CodeNode => ({
+        id: `${project}-${id}`,
+        projectId: project,
+        type,
+        name,
+        qualifiedName: name,
+      });
+
+      const edge = (
+        source: string,
+        relationship: CodeEdge['relationship'],
+        target: string,
+      ): CodeEdge => ({
+        id: `${project}-${source}-${relationship}-${target}`,
+        projectId: project,
+        sourceNodeId: `${project}-${source}`,
+        targetNodeId: `${project}-${target}`,
+        relationship,
+        metadata: { source: 'api-analyzer', confidence: 'high' },
+      });
+
+      return {
+        nodes: [
+          node('route', 'api', 'POST /users'),
+          node('controller', 'class', 'UserController'),
+          node('service', 'class', 'UserService'),
+          node('repository', 'class', 'UserRepository'),
+          node('other-repository', 'class', 'OrderRepository'),
+          node('worker', 'function', 'startWelcomeEmailWorker'),
+          node('queue', 'queue', 'welcome-emails'),
+          node('event', 'event', 'user.created'),
+          node('table', 'table', 'postgresql.users'),
+          node('other-table', 'table', 'postgresql.orders'),
+        ],
+        edges: [
+          edge('route', 'ROUTES_TO', 'controller'),
+          edge('service', 'PUBLISHES', 'queue'),
+          edge('worker', 'SUBSCRIBES', 'queue'),
+          edge('service', 'PUBLISHES', 'event'),
+          edge('repository', 'READS_FROM', 'table'),
+          edge('other-repository', 'READS_FROM', 'other-table'),
+        ],
+      };
+    }
+
+    beforeAll(async () => {
+      const project = await projects.create({
+        name: `architectural-${randomUUID().slice(0, 8)}`,
+        description: 'created by the architectural relations suite',
+      });
+      architectural = project.id;
+      await graph.replaceProjectGraph(architectural, architecturalFixture(architectural));
+    }, 60_000);
+
+    afterAll(async () => {
+      if (architectural) {
+        await db.query('DELETE FROM projects WHERE id = $1', [architectural]);
+      }
+    });
+
+    /** `NAME RELATIONSHIP` oriented the way the edge actually runs. */
+    const edgesOf = (
+      entries: readonly { name: string; relationship: string; direction: string }[],
+      subject: string,
+    ): string[] =>
+      entries
+        .map((entry) =>
+          entry.direction === 'outgoing'
+            ? `${subject} ${entry.relationship} ${entry.name}`
+            : `${entry.name} ${entry.relationship} ${subject}`,
+        )
+        .sort();
+
+    it('reports the controller an API routes to, from the API', async () => {
+      const relations = await graph.nodeRelations(architectural, `${architectural}-route`, 10);
+
+      expect(edgesOf(relations.apis, 'POST /users')).toEqual([
+        'POST /users ROUTES_TO UserController',
+      ]);
+    });
+
+    it('reports what feeds a queue, from the queue', async () => {
+      const relations = await graph.nodeRelations(architectural, `${architectural}-queue`, 10);
+
+      expect(edgesOf(relations.databases, 'welcome-emails')).toEqual([
+        'UserService PUBLISHES welcome-emails',
+        'startWelcomeEmailWorker SUBSCRIBES welcome-emails',
+      ]);
+    });
+
+    it('reports what publishes an event, from the event', async () => {
+      const relations = await graph.nodeRelations(architectural, `${architectural}-event`, 10);
+
+      expect(edgesOf(relations.databases, 'user.created')).toEqual([
+        'UserService PUBLISHES user.created',
+      ]);
+    });
+
+    it('reports what reads a table, from the table', async () => {
+      const relations = await graph.nodeRelations(architectural, `${architectural}-table`, 10);
+
+      expect(edgesOf(relations.databases, 'postgresql.users')).toEqual([
+        'UserRepository READS_FROM postgresql.users',
+      ]);
+    });
+
+    it('keeps the code-side direction working', async () => {
+      const [controller, service, repository] = await Promise.all([
+        graph.nodeRelations(architectural, `${architectural}-controller`, 10),
+        graph.nodeRelations(architectural, `${architectural}-service`, 10),
+        graph.nodeRelations(architectural, `${architectural}-repository`, 10),
+      ]);
+
+      expect(edgesOf(controller.apis, 'UserController')).toEqual([
+        'POST /users ROUTES_TO UserController',
+      ]);
+      expect(edgesOf(service.databases, 'UserService')).toEqual([
+        'UserService PUBLISHES user.created',
+        'UserService PUBLISHES welcome-emails',
+      ]);
+      expect(edgesOf(repository.databases, 'UserRepository')).toEqual([
+        'UserRepository READS_FROM postgresql.users',
+      ]);
+    });
+
+    it('does not surface a relationship between another pair of endpoints', async () => {
+      const relations = await graph.nodeRelations(architectural, `${architectural}-table`, 10);
+
+      expect(relations.databases.every((entry) => entry.name !== 'OrderRepository')).toBe(true);
+    });
+
+    it('carries the evidence when read from the architectural end', async () => {
+      const relations = await graph.nodeRelations(architectural, `${architectural}-table`, 10);
+
+      expect(relations.databases).toEqual([
+        expect.objectContaining({
+          name: 'UserRepository',
+          relationship: 'READS_FROM',
+          direction: 'incoming',
+          confidence: 'high',
+          evidenceSource: 'api-analyzer',
+        }),
+      ]);
+    });
+
+    it('never reaches into another project for a relationship', async () => {
+      // The other fixture holds its own `api ROUTES_TO controller` and
+      // `repository WRITES_TO table`, so a query that leaked across projects
+      // would find something plausible rather than nothing.
+      const relations = await graph.nodeRelations(projectId, `${projectId}-table`, 10);
+
+      expect(relations.databases.map((entry) => entry.projectId)).toEqual([projectId]);
+      expect(edgesOf(relations.databases, 'users')).toEqual([
+        'UserRepository WRITES_TO users',
+      ]);
+    });
+
+    it('leaves graph traversal from an architectural node unchanged', async () => {
+      const result = await graph.traverse(architectural, {
+        rootNodeId: `${architectural}-table`,
+        depth: 1,
+        limit: 50,
+      });
+
+      expect(result.edges.map((item) => item.relationship)).toEqual(['READS_FROM']);
+      expect(result.nodes.map((item) => item.name).sort()).toEqual([
+        'UserRepository',
+        'postgresql.users',
+      ]);
+    });
+  });
+
   describe('relations', () => {
     it('reports dependencies and dependents with their evidence', async () => {
       const dependencies = await graph.dependencies(projectId, `${projectId}-svc`, 10);

@@ -34,19 +34,22 @@ import {
 /** Rows per INSERT statement when persisting a graph. */
 const INSERT_CHUNK_SIZE = 1000;
 
-/** Relationships that answer "which APIs reach this node". */
+/**
+ * Relationships that answer "which APIs reach this node, and which does it
+ * serve" — both directions, with `direction` saying which end this node is.
+ */
 const API_RELATIONSHIPS: readonly CodeRelationship[] = ['ROUTES_TO'];
 
-/** Relationships that answer "which data stores does this node touch". */
+/**
+ * Relationships that answer "which data stores does this node touch, and what
+ * touches this store" — both directions, as above.
+ */
 const DATA_RELATIONSHIPS: readonly CodeRelationship[] = [
   'READS_FROM',
   'WRITES_TO',
   'PUBLISHES',
   'SUBSCRIBES',
 ];
-
-/** Node types that count as a data store for the purposes of the above. */
-const DATA_NODE_TYPES: readonly CodeNodeType[] = ['database', 'table', 'queue', 'event'];
 
 /**
  * Relationships that answer "what does the repository say about this".
@@ -705,12 +708,19 @@ export class GraphRepository {
         continue;
       }
 
-      if (API_RELATIONSHIPS.includes(relationship) && related.type === 'api') {
+      // Section by relationship, never by the *other* endpoint's node type.
+      // These relationship sets are disjoint, so the relationship alone decides
+      // the section and `direction` says which end this node is. Testing
+      // `related.type` here instead would silently drop every one of these
+      // edges when the node being inspected is the API, table, queue or event:
+      // the neighbour is then a class, and the edge — which the query already
+      // read, in both directions — would match no section and be discarded.
+      if (API_RELATIONSHIPS.includes(relationship)) {
         pushLimited(relations.apis, related, limitPerSection);
         continue;
       }
 
-      if (DATA_RELATIONSHIPS.includes(relationship) && DATA_NODE_TYPES.includes(related.type)) {
+      if (DATA_RELATIONSHIPS.includes(relationship)) {
         pushLimited(relations.databases, related, limitPerSection);
         continue;
       }

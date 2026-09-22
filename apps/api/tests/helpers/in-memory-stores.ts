@@ -506,7 +506,6 @@ export class InMemoryGraphStore {
       'PUBLISHES',
       'SUBSCRIBES',
     ]);
-    const dataTypes = new Set<CodeNodeType>(['database', 'table', 'queue', 'event']);
     const dependencyRelationships = new Set<CodeRelationship>(DEPENDENCY_RELATIONSHIPS);
     const documentationRelationships = new Set<CodeRelationship>(['DOCUMENTS', 'LINKS_TO']);
     const contractRelationships = new Set<CodeRelationship>(['DEFINES', 'IMPLEMENTED_BY']);
@@ -544,11 +543,14 @@ export class InMemoryGraphStore {
         push(relations.references, other);
         continue;
       }
-      if (edge.relationship === 'ROUTES_TO' && other.type === 'api') {
+      // Sectioned by relationship, never by the other endpoint's node type —
+      // the same invariant the real repository holds, so this double cannot
+      // agree with a bug the production query does not have.
+      if (edge.relationship === 'ROUTES_TO') {
         push(relations.apis, related);
         continue;
       }
-      if (dataRelationships.has(edge.relationship) && dataTypes.has(other.type)) {
+      if (dataRelationships.has(edge.relationship)) {
         push(relations.databases, related);
         continue;
       }

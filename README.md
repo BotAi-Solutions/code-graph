@@ -462,6 +462,7 @@ queries against what is there today.
 - [docs/repository-knowledge.md](docs/repository-knowledge.md) — file categories, parsers, cross-source relationships, what the pipeline refuses to do
 - [docs/benchmark.md](docs/benchmark.md) — ground truth, metrics, CI
 - [docs/retrieval-evaluation.md](docs/retrieval-evaluation.md) — retrieval cases, pass/partial/fail, and what retrieval cannot answer yet
+- [docs/retrieval-evaluation-report.md](docs/retrieval-evaluation-report.md) — baseline results (45/49), the one gap the four failures shared, and the post-fix re-measurement (49/49)
 - [docs/scip.md](docs/scip.md) — indexers, parsing, adding a language
 - [docs/api.md](docs/api.md) — endpoints, envelope, error codes (including code search)
 - [docs/mcp.md](docs/mcp.md) — the MCP server, its one tool, and why it holds no logic

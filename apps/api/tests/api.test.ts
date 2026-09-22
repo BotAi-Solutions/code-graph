@@ -778,6 +778,190 @@ describe('API', () => {
     });
   });
 
+  /**
+   * Both ends of an architectural edge.
+   *
+   * The node inspector once sectioned a relationship by the node type of the
+   * *other* endpoint, which meant every architectural edge vanished when the
+   * node being inspected was the one the section is named after: asking the
+   * table what reads it, or the queue what feeds it, returned nothing while the
+   * edge sat in the graph and a depth-1 traversal returned it happily. These
+   * cases pin both directions of all four shapes, because only one of the two
+   * was ever broken and a test of the working half would have stayed green.
+   */
+  describe('architectural relationships from either end', () => {
+    let projectId: string;
+
+    /** One graph holding all four architectural shapes, plus a near-miss of each. */
+    function bothEndsGraph(project: string): CodeGraph {
+      const node = (id: string, type: CodeGraph['nodes'][number]['type'], name: string) => ({
+        id,
+        projectId: project,
+        type,
+        name,
+        qualifiedName: name,
+      });
+
+      const edge = (
+        source: string,
+        relationship: CodeGraph['edges'][number]['relationship'],
+        target: string,
+      ) => ({
+        id: `${source}-${relationship}-${target}`,
+        projectId: project,
+        sourceNodeId: source,
+        targetNodeId: target,
+        relationship,
+        metadata: { source: 'api-analyzer', confidence: 'high' as const },
+      });
+
+      return {
+        nodes: [
+          node('route', 'api', 'POST /users'),
+          node('other-route', 'api', 'GET /orders'),
+          node('controller', 'class', 'UserController'),
+          node('order-controller', 'class', 'OrderController'),
+          node('service', 'class', 'UserService'),
+          node('repository', 'class', 'UserRepository'),
+          node('other-repository', 'class', 'OrderRepository'),
+          node('worker', 'function', 'startWelcomeEmailWorker'),
+          node('queue', 'queue', 'welcome-emails'),
+          node('other-queue', 'queue', 'password-resets'),
+          node('event', 'event', 'user.created'),
+          node('table', 'table', 'postgresql.users'),
+          node('other-table', 'table', 'postgresql.orders'),
+        ],
+        edges: [
+          edge('route', 'ROUTES_TO', 'controller'),
+          edge('other-route', 'ROUTES_TO', 'order-controller'),
+          edge('service', 'PUBLISHES', 'queue'),
+          edge('worker', 'SUBSCRIBES', 'queue'),
+          edge('service', 'PUBLISHES', 'event'),
+          edge('repository', 'READS_FROM', 'table'),
+          edge('repository', 'WRITES_TO', 'table'),
+          edge('other-repository', 'READS_FROM', 'other-table'),
+        ],
+      };
+    }
+
+    beforeAll(async () => {
+      const created = await harness.app.inject({
+        method: 'POST',
+        url: '/api/projects',
+        payload: { name: 'both-ends-project' },
+      });
+      projectId = (body<Project>(created).data as Project).id;
+      harness.graph.setGraph(bothEndsGraph(projectId));
+    });
+
+    const sections = async (nodeId: string) =>
+      body<{
+        apis: Array<{ name: string; relationship: string; direction: string }>;
+        databases: Array<{ name: string; relationship: string; direction: string }>;
+      }>(
+        await harness.app.inject({
+          method: 'GET',
+          url: `/api/projects/${projectId}/graph/nodes/${nodeId}`,
+        }),
+      ).data;
+
+    /** `NAME RELATIONSHIP` for an outgoing entry, reversed for an incoming one. */
+    const edgesOf = (
+      entries: Array<{ name: string; relationship: string; direction: string }> | undefined,
+      subject: string,
+    ) =>
+      (entries ?? [])
+        .map((entry) =>
+          entry.direction === 'outgoing'
+            ? `${subject} ${entry.relationship} ${entry.name}`
+            : `${entry.name} ${entry.relationship} ${subject}`,
+        )
+        .sort();
+
+    it('reports the controller an API routes to, from the API', async () => {
+      expect(edgesOf((await sections('route'))?.apis, 'POST /users')).toEqual([
+        'POST /users ROUTES_TO UserController',
+      ]);
+    });
+
+    it('still reports the API that reaches a controller, from the controller', async () => {
+      expect(edgesOf((await sections('controller'))?.apis, 'UserController')).toEqual([
+        'POST /users ROUTES_TO UserController',
+      ]);
+    });
+
+    it('reports what publishes to and subscribes to a queue, from the queue', async () => {
+      expect(edgesOf((await sections('queue'))?.databases, 'welcome-emails')).toEqual([
+        'UserService PUBLISHES welcome-emails',
+        'startWelcomeEmailWorker SUBSCRIBES welcome-emails',
+      ]);
+    });
+
+    it('reports what publishes an event, from the event', async () => {
+      expect(edgesOf((await sections('event'))?.databases, 'user.created')).toEqual([
+        'UserService PUBLISHES user.created',
+      ]);
+    });
+
+    it('still reports the queue and event a service publishes to, from the service', async () => {
+      expect(edgesOf((await sections('service'))?.databases, 'UserService')).toEqual([
+        'UserService PUBLISHES user.created',
+        'UserService PUBLISHES welcome-emails',
+      ]);
+    });
+
+    it('reports what reads and writes a table, from the table', async () => {
+      expect(edgesOf((await sections('table'))?.databases, 'postgresql.users')).toEqual([
+        'UserRepository READS_FROM postgresql.users',
+        'UserRepository WRITES_TO postgresql.users',
+      ]);
+    });
+
+    it('still reports the table a repository touches, from the repository', async () => {
+      expect(edgesOf((await sections('repository'))?.databases, 'UserRepository')).toEqual([
+        'UserRepository READS_FROM postgresql.users',
+        'UserRepository WRITES_TO postgresql.users',
+      ]);
+    });
+
+    it('does not report a relationship belonging to another pair of endpoints', async () => {
+      // The right relationship between the wrong endpoints is a wrong answer:
+      // OrderRepository READS_FROM postgresql.orders must not surface on the
+      // users table, nor password-resets on the welcome-emails queue.
+      const table = edgesOf((await sections('table'))?.databases, 'postgresql.users');
+      expect(table).not.toContain('OrderRepository READS_FROM postgresql.users');
+      expect(table.some((entry) => entry.includes('OrderRepository'))).toBe(false);
+
+      const queue = edgesOf((await sections('queue'))?.databases, 'welcome-emails');
+      expect(queue.some((entry) => entry.includes('password-resets'))).toBe(false);
+
+      const route = edgesOf((await sections('route'))?.apis, 'POST /users');
+      expect(route.some((entry) => entry.includes('OrderController'))).toBe(false);
+    });
+
+    it('carries the evidence on an entry read from the architectural end', async () => {
+      const [entry] = (await sections('table'))?.databases ?? [];
+
+      expect(entry).toEqual(
+        expect.objectContaining({
+          relationship: 'READS_FROM',
+          direction: 'incoming',
+          confidence: 'high',
+          evidenceSource: 'api-analyzer',
+        }),
+      );
+    });
+
+    it('leaves a section empty for a node with no such relationship', async () => {
+      const worker = await sections('worker');
+
+      expect(worker?.apis).toEqual([]);
+      expect(edgesOf(worker?.databases, 'startWelcomeEmailWorker')).toEqual([
+        'startWelcomeEmailWorker SUBSCRIBES welcome-emails',
+      ]);
+    });
+  });
+
   describe('node detail over an architectural graph', () => {
     let projectId: string;
 
