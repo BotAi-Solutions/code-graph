@@ -11,7 +11,7 @@ the code.**
 ![Retrieval eval](https://img.shields.io/badge/retrieval%20eval-49%2F49-brightgreen)
 ![Tests](https://img.shields.io/badge/tests-1225%20passing-brightgreen)
 
-<img src="ref-image/Screenshot%202026-09-23%20at%2011.26.57%20AM.png" alt="Universe view of a 5,877-node graph" width="100%">
+<img src="ref-image/universe.png" alt="Universe view of a 5,877-node graph" width="100%">
 
 ---
 
@@ -102,7 +102,7 @@ showing how much of the graph the current projection is drawing.
 
 ### Universe — the whole repository at once
 
-<img src="ref-image/Screenshot%202026-09-23%20at%2011.26.57%20AM.png" alt="Universe view" width="100%">
+<img src="ref-image/universe.png" alt="Universe view" width="100%">
 
 Every node and relationship type together. Nodes are laid out as a galaxy:
 clustered by source directory, placed by a force simulation, and sized and lit
@@ -115,7 +115,7 @@ out you see structure, close in you see symbols.
 
 ### Files — the physical structure
 
-<img src="ref-image/Screenshot%202026-09-23%20at%2011.28.00%20AM.png" alt="Files view" width="100%">
+<img src="ref-image/files.png" alt="Files view" width="100%">
 
 Only files and directories, joined by containment. Each flower-shaped cluster is
 a directory and each square a file, radiating from the repository root
@@ -125,7 +125,7 @@ directories are large, which are deep, and where the entry points (12 here) sit.
 
 ### Dependencies — what the project leans on
 
-<img src="ref-image/Screenshot%202026-09-23%20at%2011.28.09%20AM.png" alt="Dependencies view" width="100%">
+<img src="ref-image/dependencies.png" alt="Dependencies view" width="100%">
 
 The same file structure, overlaid with the **external dependencies** the code
 imports or calls: npm packages (`tailwindcss`, `xterm`,
@@ -137,7 +137,7 @@ or *"which third-party services does this app reach out to?"*
 
 ### Documentation — prose linked to code
 
-<img src="ref-image/Screenshot%202026-09-23%20at%2011.28.20%20AM.png" alt="Documentation view" width="100%">
+<img src="ref-image/documentation.png" alt="Documentation view" width="100%">
 
 Markdown documents (yellow — `CLAUDE.md`, `SKILL.md`, `adding-a-career.md`,
 `react-router-v6.md`, …) each surrounded by their own sections, next to the
@@ -149,7 +149,7 @@ for this?"* gets an answer with evidence rather than a guess.
 
 ### APIs — the callable surface
 
-<img src="ref-image/Screenshot%202026-09-23%20at%2011.28.41%20AM.png" alt="APIs view" width="100%">
+<img src="ref-image/apis.png" alt="APIs view" width="100%">
 
 Functions and components and the calls between them — `AppIcon()`,
 `Button()`, `CoursesPage()`, `useResolveEntity()`, `cn()` and so on. Heavily
