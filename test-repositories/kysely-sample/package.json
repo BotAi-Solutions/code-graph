@@ -1,0 +1,8 @@
+{
+  "name": "kysely-sample",
+  "private": true,
+  "description": "Fixture: a Kysely data layer shaped like Immich's, for the database analyzer.",
+  "dependencies": {
+    "kysely": "^0.28.0"
+  }
+}

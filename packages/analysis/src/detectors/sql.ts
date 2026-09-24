@@ -91,7 +91,16 @@ export function findTableReferences(text: string): TableReference[] {
   );
 }
 
-/** Strips quoting and any schema prefix, and rejects non-identifiers. */
+/**
+ * Strips quoting and any schema prefix, and rejects non-identifiers.
+ *
+ * Exported so every detector that names a table — SQL text, a query builder —
+ * normalises it the same way, and the same table is always the same node.
+ */
+export function normalizeTableIdentifier(raw: string): string | null {
+  return normalizeIdentifier(raw);
+}
+
 function normalizeIdentifier(raw: string): string | null {
   if (raw.includes(SUBSTITUTION_MARK)) return null;
 

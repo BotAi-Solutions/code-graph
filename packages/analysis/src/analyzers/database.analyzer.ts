@@ -24,15 +24,18 @@ import { moduleSetFor } from '../source/shared.js';
 import { databaseDraft, tableDraft } from '../source/table-node.js';
 import type { ParsedModule } from '../source/module-set.js';
 import { findTableReferences, type SqlAccess } from '../detectors/sql.js';
+import { findKyselyTableAccesses } from '../detectors/kysely.js';
 import { detectDatabaseProvider, prismaSchemaOf } from '../detectors/provider.js';
 import { clientPropertyFor, PRISMA_METHODS, type PrismaSchema } from '../detectors/prisma.js';
 
 /**
  * The data layer: which tables exist, and who reads and writes them.
  *
- * Three independent detectors, each resting on declarative evidence:
+ * Four independent detectors, each resting on declarative evidence:
  *
  *   SQL       a statement in a string literal names its table
+ *   Kysely    a query-builder call names its table as a literal
+ *             (`selectFrom('album')`), CTE names excluded by query scope
  *   Prisma    `schema.prisma` declares the provider and every model
  *   ORM       `@Entity('users')` maps a class to a table
  *
@@ -52,9 +55,20 @@ interface TableAccess {
   access: SqlAccess;
   relativePath: string;
   line: number;
+  /** Zero-based, where the detector knows it. */
+  column?: number;
+  /** The enclosing declaration's lines, where the detector read them from the AST. */
+  declaration?: { startLine: number; endLine: number } | null;
   interpolated: boolean;
-  detector: 'sql' | 'prisma';
+  detector: 'sql' | 'prisma' | 'kysely';
   statement: string;
+}
+
+/** Packages whose import marks a module as building Kysely queries. */
+function importsKysely(module: ParsedModule): boolean {
+  return module.bindings.importsFrom(
+    (name) => name === 'kysely' || name.startsWith('kysely-') || name === 'nestjs-kysely',
+  );
 }
 
 export class DatabaseAnalyzer implements CodeAnalyzer {
@@ -114,11 +128,32 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
     }
 
     const accesses: TableAccess[] = [];
+    const kysely = { accesses: 0, cteReferences: 0, dynamicReferences: 0, undetermined: 0 };
 
     for (const module of parsed) {
       if (!context.symbols.file(module.relativePath)) continue;
 
       accesses.push(...this.sqlAccesses(module));
+      if (importsKysely(module)) {
+        const scan = findKyselyTableAccesses(module.sourceFile);
+        kysely.accesses += scan.accesses.length;
+        kysely.cteReferences += scan.cteReferences;
+        kysely.dynamicReferences += scan.dynamicReferences;
+        kysely.undetermined += scan.undetermined;
+        for (const found of scan.accesses) {
+          accesses.push({
+            table: found.table,
+            access: found.access,
+            relativePath: module.relativePath,
+            line: found.line,
+            column: found.column,
+            declaration: found.declaration,
+            interpolated: false,
+            detector: 'kysely',
+            statement: found.statement,
+          });
+        }
+      }
       if (schema) accesses.push(...this.prismaAccesses(resolution, module, schema));
 
       edges.push(...this.entityMappings(resolution, module, tableRef));
@@ -133,14 +168,22 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
       else readCount += 1;
 
       const target = tableRef(access.table);
-      const { definition, container } = attribute(resolution, access.relativePath, access.line);
+      const { definition, container } = attributeAccess(resolution, access);
 
       const observed = edgeEvidence({
         source: 'database-analyzer',
-        basis: access.interpolated ? 'interpolatedStatement' : 'sqlLiteral',
+        // A literal table argument to a builder call is an unambiguous
+        // syntactic fact; a SQL string is a literal statement.
+        basis:
+          access.detector === 'kysely'
+            ? 'astDirect'
+            : access.interpolated
+              ? 'interpolatedStatement'
+              : 'sqlLiteral',
         method: 'ast',
         file: access.relativePath,
         line: access.line,
+        ...(access.column === undefined ? {} : { column: access.column }),
         matched: access.table,
       });
       const metadata = {
@@ -186,6 +229,10 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
         tableCount: [...nodes.values()].filter((node) => node.type === 'table').length,
         readCount,
         writeCount,
+        kyselyAccessCount: kysely.accesses,
+        kyselyCteReferenceCount: kysely.cteReferences,
+        kyselyDynamicReferenceCount: kysely.dynamicReferences,
+        kyselyUndeterminedCount: kysely.undetermined,
       },
     };
   }
@@ -304,6 +351,40 @@ export class DatabaseAnalyzer implements CodeAnalyzer {
 
     return edges;
   }
+}
+
+/** Graph node types a declaration read from the AST can correspond to. */
+const DECLARATION_NODE_TYPES = new Set(['method', 'function', 'variable', 'property']);
+
+/**
+ * The node an access belongs to.
+ *
+ * When the detector read the enclosing declaration from the AST, the node
+ * spanning exactly those lines is it — which a same-line symbol cannot
+ * displace. Otherwise, or when no node spans them, the shared line-based
+ * attribution every source analyzer uses.
+ */
+function attributeAccess(
+  resolution: Resolution,
+  access: TableAccess,
+): ReturnType<typeof attribute> {
+  const range = access.declaration;
+  if (range) {
+    const exact = resolution.symbols
+      .inFile(access.relativePath)
+      .filter(
+        (node) =>
+          DECLARATION_NODE_TYPES.has(node.type) &&
+          node.startLine === range.startLine &&
+          (node.endLine ?? node.startLine) === range.endLine,
+      )
+      .sort((a, b) => Number(b.type === 'method' || b.type === 'function') - Number(a.type === 'method' || a.type === 'function'));
+    const definition = exact[0];
+    if (definition) {
+      return { definition, container: resolution.symbols.enclosingContainer(definition.id) };
+    }
+  }
+  return attribute(resolution, access.relativePath, access.line);
 }
 
 /** `@Entity('users')` or `@Table({ tableName: 'users' })`. */

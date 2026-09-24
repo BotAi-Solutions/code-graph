@@ -512,3 +512,260 @@ and one partial directly, and it lights up a whole question class ("what
 touches table X", "trace a route to its writes") across about 729 call sites.
 The arrow-function change fixes one partial, and needs a node-identity decision
 first.
+
+---
+
+# Kysely Database Access Extraction
+
+```text
+Snapshot:   same clone, commit a4af86282d13…, working tree clean, same project id
+Change:     a Kysely detector feeding the existing database analyzer
+Unchanged:  MCP output, ranking, node identity, node types, edge types,
+            arrow-function handling (export const fn = () => … is still a variable)
+```
+
+## Motivation
+
+After the MCP surface work, two benchmark questions still failed for one
+reason. C1 (route → table) and C4 (what writes a table) both depend on
+repository methods having `READS_FROM` / `WRITES_TO` edges. In Immich those
+methods build every query with Kysely (`this.db.insertInto('album')`), which the
+database analyzer did not recognise. The graph could reach `postgresql.album`
+only through SQL snapshot files, migrations and a class-level `USES` edge.
+
+## Existing Database Access Model
+
+Reused as it was:
+
+1. **Access record.** A detector produces
+   `{ table, access: read|write, statement, file, line }`, the same record the
+   SQL-string and Prisma detectors produce.
+2. **Read/write.** `read` becomes `READS_FROM`, `write` becomes `WRITES_TO`.
+   `metadata.statement` carries `SELECT` / `INSERT` / `UPDATE` / `DELETE` /
+   `JOIN`, in the SQL detector's vocabulary, and `metadata.detector` names the
+   detector.
+3. **Evidence.** The existing `EdgeEvidence` record: `source: database-analyzer`,
+   `method: ast`, `file`, `line`, `column`, `matched: <table>`. The existing
+   basis `astDirect` ("an unambiguous syntactic fact", high confidence) is used.
+4. **Table names.** The SQL detector's normaliser, now exported and shared: it
+   strips quotes and schema prefixes and validates identifiers. Aliases
+   (`'album as a'`) are stripped first.
+5. **Nodes and edges.** Through `tableDraft()`, so a table reached by SQL and by
+   Kysely is **one node**; a test asserts this. Plus the existing derived
+   class-level edge. Duplicate accesses merge into one edge with `occurrences`.
+
+The only new code is `packages/analysis/src/detectors/kysely.ts` and about 60
+lines in `database.analyzer.ts` that call it.
+
+## Supported Kysely Patterns
+
+The methods were chosen from what Immich actually calls, not from Kysely's whole
+API. A module is only scanned when it imports `kysely` (or `kysely-*` /
+`nestjs-kysely`); all 41 production files with builder calls do.
+
+| Kysely Pattern | Detected | Table Relationship | Evidence | Notes |
+|---|---|---|---|---|
+| `selectFrom('t')` | ✅ | `READS_FROM` (SELECT) | file, line, column of the literal | also `selectFrom(['a', 'b'])`, each literal |
+| `insertInto('t')` | ✅ | `WRITES_TO` (INSERT) | same | |
+| `updateTable('t')` | ✅ | `WRITES_TO` (UPDATE) | same | |
+| `deleteFrom('t')` | ✅ | `WRITES_TO` (DELETE) | same | |
+| `innerJoin('t', …)` / `leftJoin` / `crossJoin` | ✅ | `READS_FROM` (JOIN) | same | a subquery in the table position is scanned, not treated as a table |
+| `'t as alias'`, `'schema.t'` | ✅ | as above, on `t` | same | normalised like SQL |
+| `with('name', …)` / `withRecursive` | CTE scope | **none** | — | the name is query-scoped, see below |
+| `selectFrom(variable)`, `(call())`, `` (`${x}_t`) `` | ❌ by design | none | — | counted as non-literal, never guessed |
+| `.from('t')`, `.table('t')`, `.using('x')` | ❌ by design | none | — | in Immich these are UPDATE…FROM (5 uses, one a CTE), `eb.table()` row references and index methods (`gist`, `gin`) |
+
+## CTE Handling
+
+A CTE name is scoped to its query, following the builder chain:
+
+- **After the link.** The name enters scope *after* its `with(...)` link, so a
+  non-recursive CTE's own body still means the physical table. This is exactly
+  Immich's `.with('album', (db) => db.insertInto('album'))`, which writes the
+  real `album`.
+- **Visibility.** It stays visible to later links, and to subqueries built
+  inside those links' callbacks.
+- **Recursive CTEs.** `withRecursive` puts the name in scope inside its own body.
+- **Column lists.** `with('ranked(id, rank)', …)` is recognised.
+- **No leakage.** The name never reaches an unrelated query elsewhere in the
+  file; there is no file-wide set.
+- **Through variables.** A builder carried through a variable
+  (`let query = db.with('deleted_ocr', …); query = query.with(…)`) keeps its CTE
+  names within the same function. This can only suppress edges, never create
+  one.
+- **Unreadable names.** If a CTE name isn't a literal, every reference it could
+  shadow is skipped, not guessed.
+
+**Attribution.** Accesses are attributed to the enclosing declaration read from
+the AST (method, function, constructor, accessor, or function-valued variable),
+matched to the graph node spanning exactly those lines. The first end-to-end
+test found why this is needed. SCIP emits a node for the shorthand property in
+`.set({ albumName })`, and the shared line-based lookup attributed the one-line
+`update()` method's write to that synthetic node. Where no node spans the
+declaration, the existing `attribute()` is used unchanged.
+
+## Evidence
+
+Every Kysely edge carries `source: database-analyzer`, `confidence: high`,
+`method: ast`, the file, the **line and column of the table literal**, and
+`matched`. Derived class-level edges carry `derivedFromContainer` (medium), as
+for SQL. For example, `AlbumRepository.create → WRITES_TO album` points at
+`src/repositories/album.repository.ts:325`, the `insertInto('album')` inside the
+first CTE.
+
+## Tests
+
+`packages/analysis/tests/kysely.test.ts`, 29 tests:
+
+- **Detector, 19 tests:**
+  - each statement kind (1–4), several tables, joins and long chains (5–7);
+  - aliases and schema prefixes, and literal arrays;
+  - dynamic names ignored (8);
+  - one CTE (9), several CTEs (10), a CTE shadowing a real table (11);
+  - CTE confined to its own query; recursive CTE; column-list CTE; CTE carried
+    through a variable; unreadable CTE name skipped;
+  - nested subqueries inheriting scope (12);
+  - look-alike methods ignored;
+  - literal line and column (14);
+  - duplicates reported per occurrence (15).
+- **Pipeline, 10 tests,** over the new `test-repositories/kysely-sample` with a
+  real SCIP index (`packages/scip/tests/fixtures/kysely-sample.scip`), going
+  through the real refiner, builder and analyzers:
+  - only the existing `table` node type, no CTE-named tables;
+  - the correct enclosing method (13), including a one-line method;
+  - writes, not reads, for a table-shadowing CTE;
+  - a table named by a variable produces nothing;
+  - duplicates merge into one edge with `occurrences: 2`;
+  - the evidence record;
+  - the class-level derived edges;
+  - one table node shared with the SQL detector;
+  - controller → service → repository → table through the call graph.
+
+The three retrieval-evaluation fixtures are untouched.
+
+## Immich Validation
+
+Re-indexed through `index_project` (forced) at `a4af862`.
+
+| Measure | Before | After |
+|---|---:|---:|
+| Nodes | 9,394 | 9,395 |
+| Edges | 51,391 | 52,324 |
+| `READS_FROM` edges | 280 | 960 |
+| `WRITES_TO` edges | 256 | 508 |
+| Table nodes | 134 | 135 |
+
+| Kysely detection | Count |
+|---|---:|
+| Table accesses detected (occurrences) | 827 (718 in 41 production files, 669 of them in 38 files under `repositories/`; 109 in 21 test files) |
+| CTE references correctly not treated as tables | 22 |
+| Non-literal table arguments ignored (variable, call, subquery) | 32 |
+| Skipped as undetermined (unreadable CTE name in scope) | 3 |
+| Method-level edges | 687 (621 methods, 36 functions, 30 function-valued variables) — no edge on a synthetic node |
+| Class-level derived edges | 245 |
+| Distinct tables reached | 53 |
+
+**Cross-check.** Grep finds 741 production calls of the seven supported methods
+with a literal first argument. 718 detected + 22 CTE references + 3 undetermined
+= 743. The investigation estimated about 729 call sites across 41 files; the
+detector found 41 production files. Test-file accesses mostly sit in `it(...)`
+callbacks with no declaration node, so they produce no method edge, as for SQL.
+
+**One overlap, not a loss.** In `AssetRepository.getByDayOfYear`, a raw SQL
+fragment (`` sql`… from asset` ``) and `selectFrom('asset')` both reach `asset`.
+They merge into one `READS_FROM` edge with `occurrences: 2`, labelled by the
+first detector. The graph does not distinguish where an edge came from.
+
+**Verified examples against the source:**
+
+| Statement | Edge | Source |
+|---|---|---|
+| INSERT | `AlbumRepository.create → WRITES_TO album` | `album.repository.ts:325` `insertInto('album')` inside `.with('album', …)` |
+| UPDATE | `AlbumRepository.update → WRITES_TO album` | `album.repository.ts:363` `updateTable('album')` |
+| DELETE | `AlbumRepository.delete → WRITES_TO album` | `album.repository.ts:373` `deleteFrom('album')` |
+| SELECT / JOIN | `AssetRepository.getByDayOfYear → READS_FROM asset_job_status, asset_file` | lines 483, 490, inside a lateral-join subquery of a CTE |
+| CTE shadowing | `AlbumRepository.create` has no `READS_FROM album` | the later `selectFrom('album')` reads the CTE, correctly not the table |
+
+**C1:**
+```
+POST /api/albums →ROUTES_TO→ AlbumController.createAlbum →CALLS→ AlbumService.create
+  →CALLS→ AlbumRepository.create →WRITES_TO→ postgresql.album
+  (database-analyzer/high, album.repository.ts:325)
+```
+
+**C4:** `get_node(postgresql.album, relationship: "databases")` returns 46 links.
+The code writers are the seven `AlbumRepository` methods (`create`, `update`,
+`delete`, `deleteAll`, `restoreAll`, `softDeleteAll`, `updateThumbnails`) —
+exactly the seven `insertInto` / `updateTable` / `deleteFrom('album')` sites
+grep finds in `album.repository.ts` — plus migration `up`/`down` functions and
+one test helper. 15 code readers are listed alongside.
+
+## False Positive Audit
+
+- **Declared tables.** Of the 53 tables reached by Kysely edges, 52 are declared
+  `@Table`s. The 53rd, `kysely_migrations`, is physical: Kysely's migration
+  table, declared in `DB` (`schema/index.ts:202`) and read by
+  `DatabaseRepository` (`database.repository.ts:271`). It is the only new table
+  node (134 → 135).
+- **CTE names.** Immich has 28 distinct CTE names. 4 coincide with real tables
+  (`album`, `album_asset`, `album_user`, `asset`). **None of the 24 CTE-only
+  names is reached by a Kysely edge.**
+- **Pre-existing CTE-named nodes.** 11 table nodes named like CTEs (`agg`,
+  `cte`, `res`, `today`, …) exist. All of them existed before this change, from
+  the SQL analyzer reading `src/queries/*.sql`. They carry no Kysely detector
+  and are the baseline's F-10, unchanged.
+- **Other names.** No query alias (`as a`), temporary name or migration-only
+  name was introduced by the Kysely detector. All 68 declared tables are still
+  present.
+
+**False positives introduced: 0.**
+
+## Performance
+
+| Metric | Before | After | Notes |
+|---|---:|---:|---|
+| `database-analyzer` duration (median of 3, controlled harness) | 54 ms | 91 ms | the only measured cost of the detector |
+| All analyzers (assembler, median of 3) | 932 ms | 830 ms | within run-to-run noise |
+| First index, total (new project, fresh insert) | 6.6 s | 8.0 s | SCIP 3.0 → 3.6 s and persist 2.3 → 2.9 s account for the difference; neither runs the detector |
+| Persist, fresh insert, same DB conditions | 2.4–2.8 s (without Kysely edges) | 2.4–2.9 s (with) | persist-bench, 2 rounds each |
+| Persist, replace, same DB conditions | 10.1–11.7 s (without) | 10.6–15.2 s (with) | replace cost is dominated by database state, not by the 933 extra edges |
+
+Re-indexing this project took 13.3–14.5 s during this work, against 11 s
+earlier. The controlled persist benchmark shows the replace path costs about
+10 s with or without the Kysely edges, so the increase is database state (many
+delete-and-reinsert cycles of about 52k edges today), not this change. That is
+the baseline's F-13 (no incremental indexing), unchanged.
+
+## MCP Benchmark Before/After
+
+The same 23 questions, the same snapshot, the same calls, the same scoring rule
+(the answer must be in the tool's text output, verified against the source).
+
+| Metric | Before | After |
+|---|---:|---:|
+| Correct | 19 | 21 |
+| Partial | 2 | 1 |
+| Failed | 2 | 1 |
+
+| # | Before | After | Reason |
+|---|---|---|---|
+| C1 | ⚠️ class-level path, no data edge from any method | ✅ method-level chain to `WRITES_TO album` (high) | Kysely extraction |
+| C4 | ❌ only SQL snapshots and migrations | ✅ all 7 repository writers, plus migrations and one test helper | Kysely extraction |
+| All others | unchanged | unchanged | 21 re-checked programmatically |
+
+## Remaining Failures
+
+- **C3 (partial):** calls to `export const addAssets = (…) =>` are stored as
+  `REFERENCES`, so the helper that does the bulk insert is missing from
+  `AlbumService.addAssets`'s callees. Deliberately untouched in this change:
+  fixing it involves node identity (see the previous section).
+- **E3 (fail):** `NestInterceptor` has no node because the repository was
+  indexed without `node_modules`. This is environment, not extraction.
+- **Kysely patterns left out on purpose:**
+  - `.from('t')` (UPDATE…FROM: 4 uses — 2 in `person.repository`, 1 in
+    `duplicate.repository`, 1 in a migration — plus 1 on a CTE);
+  - `eb.table('t')` (a row reference to a table already in scope);
+  - table names passed through variables (32 non-literal arguments);
+  - accesses inside helper functions that receive a builder whose CTEs were
+    defined by the caller — not observed in Immich, but out of the detector's
+    lexical view.

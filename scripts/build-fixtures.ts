@@ -22,6 +22,7 @@ const SAMPLES = [
   'typescript-sample',
   'express-postgres-sample',
   'repository-knowledge-sample',
+  'kysely-sample',
 ] as const;
 
 const FIXTURE_DIR = 'packages/scip/tests/fixtures';

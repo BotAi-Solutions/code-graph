@@ -234,8 +234,10 @@ about, and what it never reads at all.
   unambiguously and nothing else. No parser's own representation leaves this
   directory.
 - **`detectors/`** — the pattern knowledge, in tables: HTTP methods, SQL
-  statement forms, Prisma schema syntax, database drivers, vendor packages and
-  API hosts, frameworks. Data rather than code, so adding a vendor is a line.
+  statement forms, Kysely builder methods, Prisma schema syntax, database
+  drivers, vendor packages and API hosts, frameworks. Data rather than code, so
+  adding a vendor is a line. The Kysely detector also scopes CTE names to their
+  query, so a `with('album', …)` never becomes the table `album`.
 - **`analyzers/`** — one analyzer per kind of fact, each returning a description
   of what it observed with the evidence for it, and nothing when the evidence is
   weak.

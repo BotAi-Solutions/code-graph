@@ -58,7 +58,7 @@ analyzers, each from evidence named in `metadata`.
 | `api` | An HTTP route. `metadata`: `httpMethod`, `path`, `framework`, `handler`, `mountedAt`. | A NestJS route decorator, or a router method call on a router built by express/fastify |
 | `service` | The deployable unit this repository is. One per manifest. | `package.json` `name` |
 | `database` | A datastore, named by its provider. | A Prisma datasource, a declared driver, a connection scheme in an example env file |
-| `table` | A table or collection. No `filePath`: the same table touched from three files is one node. | A SQL statement, a Prisma model, an ORM entity decorator |
+| `table` | A table or collection. No `filePath`: the same table touched from three files is one node. | A SQL statement, a Kysely builder call with a literal table (`selectFrom('users')`), a Prisma model, an ORM entity decorator |
 | `queue` | A work queue, by its name. | `new Queue('welcome-emails')` from a queue library |
 | `event` | A domain event, by its name. | `emitter.emit('user.created')`, `@OnEvent(...)` |
 | `external_service` | A third party this code talks to. `metadata`: `vendor`, `category`, `package` or `host`. | A vendor SDK import, or an absolute `https://` URL |
@@ -196,8 +196,8 @@ interface CodeEdge {
 | --- | --- | --- |
 | `ROUTES_TO` | An API dispatches to a handler | The handler argument of a route, resolved through bindings; also lifted to the handler's class |
 | `USES` | Uses without calling | An SDK import; an ORM entity's table mapping |
-| `READS_FROM` | Reads data | `SELECT`/`JOIN` in a literal statement, or a Prisma read method |
-| `WRITES_TO` | Writes data | `INSERT`/`UPDATE`/`DELETE`/`CREATE TABLE`/`TRUNCATE`, or a Prisma write method |
+| `READS_FROM` | Reads data | `SELECT`/`JOIN` in a literal statement, a Kysely `selectFrom`/`innerJoin`/`leftJoin`/`crossJoin`, or a Prisma read method |
+| `WRITES_TO` | Writes data | `INSERT`/`UPDATE`/`DELETE`/`CREATE TABLE`/`TRUNCATE`, a Kysely `insertInto`/`updateTable`/`deleteFrom`, or a Prisma write method |
 | `PUBLISHES` | Emits | A queue producer, or `emit` on a declared emitter |
 | `SUBSCRIBES` | Handles | A queue worker, `on` on a declared emitter, or an event-handler decorator |
 | `CONFIGURED_BY` | Is configured by | A configuration file in the repository |
