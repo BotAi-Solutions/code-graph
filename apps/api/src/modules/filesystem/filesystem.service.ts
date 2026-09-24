@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type {
@@ -169,6 +169,23 @@ export class FilesystemService {
    * anything is created in the database: picking the wrong folder should cost a
    * second, not a full indexing run.
    */
+  /**
+   * A folder someone asked to index without a dialog in the way — an agent,
+   * through the index route — validated exactly as a chosen folder is, and
+   * returned symlink-free so the same directory always registers as the same
+   * project.
+   */
+  async resolveProjectDirectory(requested: string): Promise<string> {
+    this.assertEnabled();
+
+    const absolute = await this.resolveDirectory(requested);
+    try {
+      return await realpath(absolute);
+    } catch {
+      return absolute;
+    }
+  }
+
   async inspectProject(requested: string): Promise<ProjectMetadata> {
     this.assertEnabled();
 

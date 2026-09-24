@@ -3,6 +3,7 @@ import {
   analysisJob,
   apiFailure,
   createMcpHarness,
+  indexFreshness,
   ok,
   PROJECT_ID,
   textOf,
@@ -61,8 +62,19 @@ describe('tool metadata', () => {
 });
 
 describe('get_index_status', () => {
-  it('reads the existing analysis endpoint rather than a new one', async () => {
+  it('reads the existing analysis endpoint, then the freshness of the graph it found', async () => {
     harness = await createMcpHarness(() => ({ body: ok([analysisJob()]) }));
+
+    await call();
+
+    expect(harness.requests).toEqual([
+      { path: `/api/projects/${PROJECT_ID}/analysis`, query: {} },
+      { path: `/api/projects/${PROJECT_ID}/freshness`, query: {} },
+    ]);
+  });
+
+  it('does not ask about freshness when there is no graph to compare', async () => {
+    harness = await createMcpHarness(() => ({ body: ok([]) }));
 
     await call();
 
@@ -301,6 +313,188 @@ describe('get_index_status', () => {
       edgeCount: null,
     });
     expect(textOf(result)).toMatch(/recorded no size/);
+  });
+});
+
+describe('freshness: does the stored graph still match the files?', () => {
+  /** The analysis list on one route and a freshness report on the other, as the API serves them. */
+  const serve =
+    (runs: ReturnType<typeof analysisJob>[], freshness: unknown) =>
+    (request: { path: string }) =>
+      request.path.endsWith('/freshness')
+        ? { body: ok(freshness) }
+        : { body: ok(runs) };
+
+  it('CURRENT: ready, not stale, with the indexed commit', async () => {
+    harness = await createMcpHarness(serve([analysisJob()], indexFreshness()));
+
+    const result = await call();
+
+    expect(result.structuredContent).toMatchObject({
+      state: 'ready',
+      indexed: true,
+      indexing: false,
+      stale: false,
+      freshness: 'current',
+      indexedCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      currentCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      changedFiles: 0,
+      lastIndexedAt: '2026-01-01T00:01:00.000Z',
+      indexingJobId: null,
+    });
+    expect(textOf(result)).toMatch(/matches the files on disk/);
+  });
+
+  it('STALE: says which files changed and what to do about it', async () => {
+    harness = await createMcpHarness(
+      serve(
+        [analysisJob()],
+        indexFreshness({
+          state: 'stale',
+          currentCommit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          changedFiles: 3,
+          changedPaths: ['src/a.ts', 'src/b.ts'],
+          reason: '3 file(s) differ from what was indexed.',
+        }),
+      ),
+    );
+
+    const result = await call();
+
+    expect(result.structuredContent).toMatchObject({
+      state: 'stale',
+      indexed: true,
+      usable: true,
+      stale: true,
+      freshness: 'stale',
+      changedFiles: 3,
+      changedPaths: ['src/a.ts', 'src/b.ts'],
+      indexedCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      currentCommit: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    });
+    const text = textOf(result);
+    expect(text).toMatch(/STALE/);
+    expect(text).toContain('src/a.ts');
+    expect(text).toMatch(/and 1 more/);
+    expect(text).toMatch(/may be outdated/);
+    expect(text).toMatch(/index_project/);
+  });
+
+  it('INDEXING: reports the run id, and says a stored graph predates it', async () => {
+    harness = await createMcpHarness(
+      serve(
+        [
+          analysisJob({ id: '22222222-2222-4222-8222-222222222222', status: 'PARSING', completedAt: null }),
+          analysisJob(),
+        ],
+        indexFreshness({ state: 'stale', changedFiles: 1, changedPaths: ['src/a.ts'] }),
+      ),
+    );
+
+    const result = await call();
+
+    expect(result.structuredContent).toMatchObject({
+      state: 'indexing',
+      indexing: true,
+      indexed: true,
+      indexingJobId: '22222222-2222-4222-8222-222222222222',
+      stale: true,
+    });
+  });
+
+  it('NOT_INDEXED: nothing stored, no freshness, and index_project is the way out', async () => {
+    harness = await createMcpHarness(() => ({ body: ok([]) }));
+
+    const result = await call();
+
+    expect(result.structuredContent).toMatchObject({
+      state: 'never_indexed',
+      indexed: false,
+      indexing: false,
+      stale: null,
+      freshness: null,
+    });
+  });
+
+  it('unknown freshness leaves the project ready, with the reason shown', async () => {
+    harness = await createMcpHarness(
+      serve(
+        [analysisJob()],
+        indexFreshness({
+          state: 'unknown',
+          indexedCommit: null,
+          currentCommit: null,
+          changedFiles: null,
+          reason: 'This project was indexed from a git URL; there is no local working tree to compare.',
+        }),
+      ),
+    );
+
+    const result = await call();
+
+    expect(result.structuredContent).toMatchObject({ state: 'ready', stale: null, freshness: 'unknown' });
+    expect(textOf(result)).toMatch(/freshness: unknown — This project was indexed from a git URL/);
+  });
+
+  it('an API without the freshness route still answers, with freshness unknown', async () => {
+    harness = await createMcpHarness((request) =>
+      request.path.endsWith('/freshness')
+        ? { status: 404, body: apiFailure('NOT_FOUND', 'Route GET /freshness not found') }
+        : { body: ok([analysisJob()]) },
+    );
+
+    const result = await call();
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({ state: 'ready', freshness: 'unknown', stale: null });
+    expect(textOf(result)).toMatch(/Freshness could not be checked/);
+  });
+
+  it('a freshness report about another project is not believed', async () => {
+    harness = await createMcpHarness(
+      serve([analysisJob()], indexFreshness({ projectId: '7c1f2b34-5d6e-4f80-9a1b-2c3d4e5f6071', state: 'current' })),
+    );
+
+    const result = await call();
+
+    expect(result.structuredContent).toMatchObject({ freshness: 'unknown', stale: null });
+  });
+
+  it('warns that the worker may be down when a run sits in the queue', async () => {
+    harness = await createMcpHarness(() => ({
+      body: ok([
+        analysisJob({
+          status: 'QUEUED',
+          startedAt: null,
+          completedAt: null,
+          stats: null,
+          createdAt: new Date(Date.now() - 120_000).toISOString(),
+        }),
+      ]),
+    }));
+
+    const result = await call();
+
+    expect(textOf(result)).toMatch(/worker may not be running/);
+    expect(textOf(result)).toMatch(/pnpm dev:all/);
+  });
+
+  it('does not cry wolf about a run queued a moment ago', async () => {
+    harness = await createMcpHarness(() => ({
+      body: ok([
+        analysisJob({
+          status: 'QUEUED',
+          startedAt: null,
+          completedAt: null,
+          stats: null,
+          createdAt: new Date().toISOString(),
+        }),
+      ]),
+    }));
+
+    const result = await call();
+
+    expect(textOf(result)).not.toMatch(/worker may not be running/);
   });
 });
 

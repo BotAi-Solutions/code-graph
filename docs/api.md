@@ -381,6 +381,27 @@ failure — is still null. A job recorded before progress existed has
 The statistics beyond the first five are optional for the same reason: a run
 that did not measure them does not report them, and nothing derives them.
 
+### `POST /api/projects/index` → `202` / `200`
+
+Register-if-needed and index, in one call — what the MCP `index_project` tool
+uses. Body: `{ "path": "/absolute/dir", "force"?: false }`. Validates the path
+like the intake flow, finds the project registered at exactly that root or
+creates one, and queues a run through the same service as
+`POST /api/projects/:projectId/analysis`. Returns `action`: `started` (202),
+`already_indexing` (200, the active run is returned; no duplicate is queued) or
+`up_to_date` (200, the graph matches the files; nothing queued unless `force`).
+Refuses relative paths and URLs (`INVALID_PROJECT_PATH`), missing or unreadable
+directories, and everything when `LOCAL_FILESYSTEM_ENABLED=false`.
+
+### `GET /api/projects/:projectId/freshness` → `200`
+
+Whether the latest completed graph still matches the files: `state` is
+`current`, `stale`, `unknown` (with `reason`) or `not_indexed`, with
+`indexedCommit`, `currentCommit`, `changedFiles` and up to 20 `changedPaths`.
+Git working trees are compared by content against the commit recorded when the
+run started (uncommitted edits included); other directories by modification
+time. See [mcp.md — What STALE means](mcp.md#what-stale-means).
+
 ### `GET /api/projects/:projectId/analysis` → `200`
 
 Recent runs, newest first.
@@ -484,7 +505,8 @@ for rather than offering a chip that can only return nothing.
 
 Query: `q` (required), `nodeTypes` (CSV or repeated), `categories` (CSV or
 repeated: `code`, `architecture`, `knowledge`), `file` (a repository-relative
-path prefix), `limit` (1–100, default 20), `offset` (default 0).
+path prefix, case-insensitive, applied in the query before paging so `total`
+counts only what it keeps), `limit` (1–100, default 20), `offset` (default 0).
 
 Case-insensitive substring match on **name**, **qualified name** and **file
 path**, which between them cover every way a person refers to anything in the
@@ -584,7 +606,10 @@ query, not one per section:
   "implementations": [ { "type": "interface", "name": "UserStore",
                          "relationship": "IMPLEMENTS", "direction": "outgoing" } ],
   "parent":       { "type": "file", "name": "user.repository.ts" },
-  "children":     [ { "type": "method", "name": "findById" } ]
+  "children":     [ { "type": "method", "name": "findById" } ],
+  "totals":       { "callers": 1, "callees": 0, "references": 1, "dependencies": 0,
+                    "dependents": 0, "apis": 0, "databases": 1, "documentation": 1,
+                    "contracts": 0, "implementations": 1, "children": 1 }
 }
 ```
 
@@ -641,7 +666,11 @@ go and check it. A section with nothing in it is `[]`, never absent.
 | `file`, `line`, `column` | where to check. Absent for a compiler fact, which is located by its endpoints |
 | `matched` | the entity the producer matched |
 
-Query: `limit` (default 100) caps each list.
+Query: `limit` (default 100) caps each list. **`totals`** is the exact size of
+every section before that cap, counted with the same bucketing rules, so a list
+shorter than its total is known to be incomplete; its route below pages through
+the rest. Each section is capped on its own — a crowded section cannot use up
+another's share.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/callers` → `200`
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/callees` → `200`
@@ -650,11 +679,22 @@ Query: `limit` (default 100) caps each list.
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/dependents` → `200`
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/implementations` → `200`
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/children` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/apis` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/databases` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/documentation` → `200`
+### `GET /api/projects/:projectId/graph/nodes/:nodeId/contracts` → `200`
 
-The same lists on their own routes, for clients that want one of them — or want
-more of one than the detail's per-section `limit` carried. `dependencies`,
-`dependents` and `implementations` return the related-node shape with its
-evidence; the rest return plain nodes. Query: `limit` (default 100).
+The same lists on their own routes, paged, for clients that want one of them —
+or all of one. `callers`, `callees`, `references` and `children` return plain
+nodes; the rest return the related-node shape with its evidence.
+
+Query: `limit` (default 100), `offset` (default 0); `implementations` also takes
+`direction` (`both`, default, `incoming` — what implements or extends this node —
+or `outgoing`). The order is total and stable (name then id; source order for
+`children`; direction, relationship, name for the related sections), so an
+offset addresses the same entry on every request. `data` is the page; `meta` is
+`{ total, limit, offset, hasMore, nextOffset }`, where `total` is the full
+section count, never the page size.
 
 ### `GET /api/projects/:projectId/graph/nodes/:nodeId/definition` → `200`
 

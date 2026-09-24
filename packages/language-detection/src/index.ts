@@ -6,3 +6,4 @@ export * from './ignore.js';
 export * from './project-scan.js';
 export * from './scan.js';
 export * from './types/index.js';
+export * from './source-revision.js';

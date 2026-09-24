@@ -8,6 +8,7 @@ import { CodeSearchService } from '../../src/modules/code-search/index.js';
 import { FilesystemService } from '../../src/modules/filesystem/index.js';
 import { GraphService } from '../../src/modules/graph/index.js';
 import { HealthService } from '../../src/modules/health/index.js';
+import { FreshnessService, IndexingService } from '../../src/modules/indexing/index.js';
 import { ProjectService } from '../../src/modules/projects/index.js';
 import { RepositoryService } from '../../src/modules/repositories/index.js';
 import { SourceRoots, SourceService } from '../../src/modules/source/index.js';
@@ -182,17 +183,23 @@ async function createHarness(
     repositoryBaseDirectory: options.repositoryBaseDirectory ?? WORKSPACE_ROOT,
   });
 
+  const filesystem = new FilesystemService({
+    enabled: options.filesystemEnabled ?? true,
+    picker: { isAvailable: () => false, pick: async () => null },
+    pickerTimeoutMs: 1000,
+  });
+  const analysis = new AnalysisService(analysisStore, projects, repositories);
+  const freshness = new FreshnessService(analysisStore, projects, sourceRoots);
+
   const app = await buildApp({
     config: CONFIG,
     services: {
-      filesystem: new FilesystemService({
-        enabled: true,
-        picker: { isAvailable: () => false, pick: async () => null },
-        pickerTimeoutMs: 1000,
-      }),
+      filesystem,
       projects,
       repositories,
-      analysis: new AnalysisService(analysisStore, projects, repositories),
+      analysis,
+      indexing: new IndexingService(filesystem, projects, repositories, analysis, freshness, analysisStore),
+      freshness,
       graph,
       source: new SourceService(repositories, graph, {
         enabled: options.filesystemEnabled ?? true,

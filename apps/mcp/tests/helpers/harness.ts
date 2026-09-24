@@ -9,6 +9,8 @@ import type {
   CodeSearchMatch,
   CodeNode,
   GraphPath,
+  IndexFreshness,
+  IndexProjectResult,
   NodeDetail,
   ProjectResolution,
   ProjectSummary,
@@ -113,6 +115,40 @@ export function analysisJob(overrides: Partial<AnalysisJob> = {}): AnalysisJob {
     errors: [],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:01:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A freshness report, current by default. */
+export function indexFreshness(overrides: Partial<IndexFreshness> = {}): IndexFreshness {
+  return {
+    projectId: PROJECT_ID,
+    state: 'current',
+    analysisId: '11111111-1111-4111-8111-111111111111',
+    vcs: 'git',
+    indexedAt: '2026-01-01T00:01:00.000Z',
+    indexedCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    currentCommit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    changedFiles: 0,
+    changedPaths: [],
+    reason: 'No file differs from what was indexed.',
+    checkedAt: '2026-01-02T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** What the index route returns, a freshly queued first run by default. */
+export function indexProjectResult(overrides: Partial<IndexProjectResult> = {}): IndexProjectResult {
+  return {
+    action: 'started',
+    projectCreated: true,
+    jobCreated: true,
+    projectId: PROJECT_ID,
+    projectName: 'app',
+    repositoryRoot: '/srv/app',
+    job: analysisJob({ status: 'QUEUED', startedAt: null, completedAt: null, stats: null }),
+    freshness: null,
+    reason: 'No project was registered at this directory; one was created and its first run queued.',
     ...overrides,
   };
 }

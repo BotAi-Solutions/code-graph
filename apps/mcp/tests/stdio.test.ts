@@ -108,6 +108,7 @@ describe('the server over stdio', () => {
     expect(tools?.tools.map((tool) => tool.name)).toEqual([
       'resolve_project',
       'get_index_status',
+      'index_project',
       'search_graph',
       'get_node',
       'trace_path',

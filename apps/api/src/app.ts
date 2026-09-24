@@ -17,6 +17,11 @@ import { codeSearchRoutes, type CodeSearchService } from './modules/code-search/
 import { filesystemRoutes, type FilesystemService } from './modules/filesystem/index.js';
 import { graphRoutes, type GraphService } from './modules/graph/index.js';
 import { healthRoutes, type HealthService } from './modules/health/index.js';
+import {
+  indexingRoutes,
+  type FreshnessService,
+  type IndexingService,
+} from './modules/indexing/index.js';
 import { projectRoutes, type ProjectService } from './modules/projects/index.js';
 import { repositoryRoutes, type RepositoryService } from './modules/repositories/index.js';
 import { sourceRoutes, type SourceService } from './modules/source/index.js';
@@ -34,6 +39,8 @@ export interface AppServices {
   projects: ProjectService;
   repositories: RepositoryService;
   analysis: AnalysisService;
+  indexing: IndexingService;
+  freshness: FreshnessService;
   graph: GraphService;
   source: SourceService;
   codeSearch: CodeSearchService;
@@ -117,6 +124,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await api.register(projectRoutes(services.projects));
       await api.register(repositoryRoutes(services.repositories));
       await api.register(analysisRoutes(services.analysis));
+      await api.register(indexingRoutes(services.indexing, services.freshness));
       await api.register(graphRoutes(services.graph));
       await api.register(sourceRoutes(services.source));
       await api.register(codeSearchRoutes(services.codeSearch));

@@ -14,6 +14,7 @@ import { CodeSearchService } from './modules/code-search/index.js';
 import { FilesystemService, NativeDirectoryPicker } from './modules/filesystem/index.js';
 import { GraphService } from './modules/graph/index.js';
 import { HealthService } from './modules/health/index.js';
+import { FreshnessService, IndexingService } from './modules/indexing/index.js';
 import { ProjectService } from './modules/projects/index.js';
 import { RepositoryService } from './modules/repositories/index.js';
 import { SourceRoots, SourceService } from './modules/source/index.js';
@@ -53,15 +54,24 @@ async function main(): Promise<void> {
     repositoryBaseDirectory: config.filesystem.repositoryBaseDirectory,
   });
 
+  const analysisJobs = new AnalysisJobRepository(database);
+  const filesystem = new FilesystemService({
+    enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
+    picker: new NativeDirectoryPicker(),
+    pickerTimeoutMs: config.filesystem.DIRECTORY_PICKER_TIMEOUT_MS,
+  });
+  const analysis = new AnalysisService(analysisJobs, projects, repositories);
+  const freshness = new FreshnessService(analysisJobs, projects, sourceRoots);
+
   const services: AppServices = {
-    filesystem: new FilesystemService({
-      enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,
-      picker: new NativeDirectoryPicker(),
-      pickerTimeoutMs: config.filesystem.DIRECTORY_PICKER_TIMEOUT_MS,
-    }),
+    filesystem,
     projects,
     repositories,
-    analysis: new AnalysisService(new AnalysisJobRepository(database), projects, repositories),
+    analysis,
+    // The one-call intake an agent uses: the same services the UI's three
+    // calls reach, composed, so there is no second way to register or index.
+    indexing: new IndexingService(filesystem, projects, repositories, analysis, freshness, analysisJobs),
+    freshness,
     graph,
     source: new SourceService(repositories, graph, {
       enabled: config.filesystem.LOCAL_FILESYSTEM_ENABLED,

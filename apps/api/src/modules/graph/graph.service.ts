@@ -9,8 +9,10 @@ import type {
   GraphPathDirection,
   GraphPathStep,
   GraphProjectionId,
+  ImplementationDirection,
   NodeCategory,
   NodeDetail,
+  NodeRelationshipTotals,
   RelatedNode,
   SourceTree,
 } from '@ckg/shared';
@@ -29,6 +31,7 @@ import type {
   GraphComposition,
   GraphResult,
   NodeRelations,
+  PagedSection,
   PathResult,
   SearchResult,
   TreeLevel,
@@ -76,21 +79,45 @@ export interface GraphStore {
   searchNodes(
     projectId: string,
     term: string,
-    options: { nodeTypes?: CodeNodeType[] | undefined; limit: number; offset: number },
+    options: {
+      nodeTypes?: CodeNodeType[] | undefined;
+      filePrefix?: string | undefined;
+      limit: number;
+      offset: number;
+    },
   ): Promise<SearchResult>;
   nodeRelations(
     projectId: string,
     nodeId: string,
     limitPerSection: number,
   ): Promise<NodeRelations>;
-  callers(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]>;
-  callees(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]>;
-  references(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]>;
-  dependencies(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]>;
-  dependents(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]>;
-  implementations(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]>;
+  callers(projectId: string, nodeId: string, limit: number, offset?: number): Promise<CodeNode[]>;
+  callees(projectId: string, nodeId: string, limit: number, offset?: number): Promise<CodeNode[]>;
+  references(projectId: string, nodeId: string, limit: number, offset?: number): Promise<CodeNode[]>;
+  dependencies(projectId: string, nodeId: string, limit: number, offset?: number): Promise<RelatedNode[]>;
+  dependents(projectId: string, nodeId: string, limit: number, offset?: number): Promise<RelatedNode[]>;
+  implementations(
+    projectId: string,
+    nodeId: string,
+    limit: number,
+    offset?: number,
+    direction?: ImplementationDirection,
+  ): Promise<RelatedNode[]>;
   parent(projectId: string, nodeId: string): Promise<CodeNode | null>;
-  children(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]>;
+  children(projectId: string, nodeId: string, limit: number, offset?: number): Promise<CodeNode[]>;
+  apis(projectId: string, nodeId: string, limit: number, offset?: number): Promise<RelatedNode[]>;
+  databases(projectId: string, nodeId: string, limit: number, offset?: number): Promise<RelatedNode[]>;
+  documentation(projectId: string, nodeId: string, limit: number, offset?: number): Promise<RelatedNode[]>;
+  contracts(projectId: string, nodeId: string, limit: number, offset?: number): Promise<RelatedNode[]>;
+  /** Exact size of every node-detail section. */
+  relationshipTotals(projectId: string, nodeId: string): Promise<NodeRelationshipTotals>;
+  /** Exact size of one paged section, counted as its list is built. */
+  countSection(
+    projectId: string,
+    nodeId: string,
+    section: PagedSection,
+    direction?: ImplementationDirection,
+  ): Promise<number>;
   findFileNode(projectId: string, filePath: string): Promise<CodeNode | null>;
   treeLevel(projectId: string, directoryPath: string, limit: number): Promise<TreeLevel>;
   findPath(
@@ -154,6 +181,19 @@ export interface GraphSearchResult {
   offset: number;
   /** The node types actually searched, after categories were resolved. */
   nodeTypes: CodeNodeType[] | null;
+}
+
+export interface PageRequest {
+  limit: number;
+  offset: number;
+}
+
+/** One page of a relationship section, with the full count it was cut from. */
+export interface SectionPage<TItem> {
+  items: TItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface GraphSearchOptions {
@@ -247,11 +287,16 @@ export class GraphService {
     // Four reads, issued together rather than in sequence: the bucketed sweep
     // over everything touching the node, the two halves of containment, and
     // the inheritance relation, which the sweep deliberately does not carry.
-    const [relations, implementations, parent, children] = await Promise.all([
+    // Five reads, issued together rather than in sequence: the bucketed sweep
+    // over everything touching the node, the two halves of containment, the
+    // inheritance relation, which the sweep deliberately does not carry, and
+    // the exact size of every section — so a list cut by `limit` says so.
+    const [relations, implementations, parent, children, totals] = await Promise.all([
       this.graph.nodeRelations(projectId, nodeId, limit),
       this.graph.implementations(projectId, nodeId, limit),
       this.graph.parent(projectId, nodeId),
       this.graph.children(projectId, nodeId, limit),
+      this.graph.relationshipTotals(projectId, nodeId),
     ]);
 
     return {
@@ -270,6 +315,7 @@ export class GraphService {
       implementations,
       parent,
       children,
+      totals,
     };
   }
 
@@ -321,23 +367,67 @@ export class GraphService {
     };
   }
 
-  async getDependencies(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    await this.getNode(projectId, nodeId);
-    return this.graph.dependencies(projectId, nodeId, limit);
+  async getDependencies(projectId: string, nodeId: string, page: PageRequest): Promise<SectionPage<RelatedNode>> {
+    return this.page(projectId, nodeId, 'dependencies', page, () =>
+      this.graph.dependencies(projectId, nodeId, page.limit, page.offset),
+    );
   }
 
-  async getDependents(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    await this.getNode(projectId, nodeId);
-    return this.graph.dependents(projectId, nodeId, limit);
+  async getDependents(projectId: string, nodeId: string, page: PageRequest): Promise<SectionPage<RelatedNode>> {
+    return this.page(projectId, nodeId, 'dependents', page, () =>
+      this.graph.dependents(projectId, nodeId, page.limit, page.offset),
+    );
   }
 
   async getImplementations(
     projectId: string,
     nodeId: string,
-    limit: number,
-  ): Promise<RelatedNode[]> {
+    page: PageRequest & { direction?: ImplementationDirection | undefined },
+  ): Promise<SectionPage<RelatedNode>> {
+    const direction = page.direction ?? 'both';
+    return this.page(
+      projectId,
+      nodeId,
+      'implementations',
+      page,
+      () => this.graph.implementations(projectId, nodeId, page.limit, page.offset, direction),
+      direction,
+    );
+  }
+
+  /** One page of one of the four architectural sections, both directions. */
+  async getArchitecturalSection(
+    projectId: string,
+    nodeId: string,
+    section: 'apis' | 'databases' | 'documentation' | 'contracts',
+    page: PageRequest,
+  ): Promise<SectionPage<RelatedNode>> {
+    return this.page(projectId, nodeId, section, page, () =>
+      this.graph[section](projectId, nodeId, page.limit, page.offset),
+    );
+  }
+
+  /**
+   * One page of one section, with its exact total.
+   *
+   * The list and the count are separate reads of the same predicate, issued
+   * together. Counted rather than inferred from the page, because a page's
+   * length says nothing about what lies past it.
+   */
+  private async page<TItem>(
+    projectId: string,
+    nodeId: string,
+    section: PagedSection,
+    page: PageRequest,
+    read: () => Promise<TItem[]>,
+    direction?: ImplementationDirection,
+  ): Promise<SectionPage<TItem>> {
     await this.getNode(projectId, nodeId);
-    return this.graph.implementations(projectId, nodeId, limit);
+    const [items, total] = await Promise.all([
+      read(),
+      this.graph.countSection(projectId, nodeId, section, direction),
+    ]);
+    return { items, total, limit: page.limit, offset: page.offset };
   }
 
   /**
@@ -367,9 +457,10 @@ export class GraphService {
     return chain;
   }
 
-  async getChildren(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    await this.getNode(projectId, nodeId);
-    return this.graph.children(projectId, nodeId, limit);
+  async getChildren(projectId: string, nodeId: string, page: PageRequest): Promise<SectionPage<CodeNode>> {
+    return this.page(projectId, nodeId, 'children', page, () =>
+      this.graph.children(projectId, nodeId, page.limit, page.offset),
+    );
   }
 
   /** One level of the repository tree, derived from the graph's path nodes. */
@@ -480,19 +571,22 @@ export class GraphService {
     };
   }
 
-  async getCallers(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    await this.getNode(projectId, nodeId);
-    return this.graph.callers(projectId, nodeId, limit);
+  async getCallers(projectId: string, nodeId: string, page: PageRequest): Promise<SectionPage<CodeNode>> {
+    return this.page(projectId, nodeId, 'callers', page, () =>
+      this.graph.callers(projectId, nodeId, page.limit, page.offset),
+    );
   }
 
-  async getCallees(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    await this.getNode(projectId, nodeId);
-    return this.graph.callees(projectId, nodeId, limit);
+  async getCallees(projectId: string, nodeId: string, page: PageRequest): Promise<SectionPage<CodeNode>> {
+    return this.page(projectId, nodeId, 'callees', page, () =>
+      this.graph.callees(projectId, nodeId, page.limit, page.offset),
+    );
   }
 
-  async getReferences(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    await this.getNode(projectId, nodeId);
-    return this.graph.references(projectId, nodeId, limit);
+  async getReferences(projectId: string, nodeId: string, page: PageRequest): Promise<SectionPage<CodeNode>> {
+    return this.page(projectId, nodeId, 'references', page, () =>
+      this.graph.references(projectId, nodeId, page.limit, page.offset),
+    );
   }
 
   /**
@@ -516,18 +610,19 @@ export class GraphService {
       return { nodes: [], total: 0, limit: options.limit, offset: options.offset, nodeTypes };
     }
 
+    // The path prefix is applied by the store, before paging. Filtering the
+    // page after the fact — as this once did — dropped every match that was
+    // not on the first page and then reported the survivors as the total.
+    const filePrefix = normalisePathPrefix(options.file);
+
     const result = await this.graph.searchNodes(projectId, term, {
       ...(nodeTypes ? { nodeTypes } : {}),
+      ...(filePrefix ? { filePrefix } : {}),
       limit: options.limit,
       offset: options.offset,
     });
 
-    const filtered =
-      options.file === undefined || options.file === ''
-        ? result
-        : narrowToFile(result, options.file);
-
-    return { ...filtered, limit: options.limit, offset: options.offset, nodeTypes };
+    return { ...result, limit: options.limit, offset: options.offset, nodeTypes };
   }
 
   async summary(projectId: string): Promise<GraphComposition & { rootNodeId: string | null }> {
@@ -566,13 +661,9 @@ function resolveSearchTypes(options: GraphSearchOptions): CodeNodeType[] | null 
  * first. `total` is corrected to the filtered count so a caller is not told
  * there are more pages than there are.
  */
-function narrowToFile(
-  result: { nodes: CodeNode[]; total: number },
-  prefix: string,
-): { nodes: CodeNode[]; total: number } {
-  const normalized = prefix.replace(/^\/+|\/+$/g, '').toLowerCase();
-  const nodes = result.nodes.filter((node) =>
-    (node.filePath ?? '').toLowerCase().startsWith(normalized),
-  );
-  return { nodes, total: nodes.length };
+/** A repository-relative path prefix as the store compares it, or null for none. */
+function normalisePathPrefix(prefix: string | undefined): string | null {
+  if (prefix === undefined) return null;
+  const normalised = prefix.replace(/^\/+|\/+$/g, '').toLowerCase();
+  return normalised === '' ? null : normalised;
 }

@@ -5,6 +5,8 @@ import type {
   CodeNodeType,
   CodeRelationship,
   GraphDirection,
+  ImplementationDirection,
+  NodeRelationshipTotals,
   NodeTypeCounts,
   RelatedNode,
   RelationshipCounts,
@@ -109,6 +111,12 @@ export interface OverviewOptions {
 
 export interface SearchOptions {
   nodeTypes?: CodeNodeType[] | undefined;
+  /**
+   * Repository-relative path prefix, already normalised (no leading or
+   * trailing slash, lower case). Applied in the query, before paging, so
+   * `total` counts what the filter keeps and no page can hide a match.
+   */
+  filePrefix?: string | undefined;
   limit: number;
   offset: number;
 }
@@ -149,6 +157,20 @@ export interface NodeRelations {
 }
 
 export type NeighbourDirection = 'incoming' | 'outgoing';
+
+/** The node-detail sections that have their own paged route. */
+export type PagedSection =
+  | 'callers'
+  | 'callees'
+  | 'references'
+  | 'dependencies'
+  | 'dependents'
+  | 'implementations'
+  | 'children'
+  | 'apis'
+  | 'databases'
+  | 'documentation'
+  | 'contracts';
 
 /** One level of the repository tree, derived from the graph's path nodes. */
 export interface TreeEntry {
@@ -359,14 +381,21 @@ export class GraphRepository {
     // The two queries share a predicate but not a parameter list: Postgres
     // cannot infer the type of a parameter a statement never references, so
     // the clause is written once and numbered per statement.
+    const filePrefix = options.filePrefix === undefined || options.filePrefix === '' ? null : options.filePrefix;
+
     const matchClause = (
       project: number,
       like: number,
       types: number,
       type: number,
+      file: number,
     ): string => `
       WHERE project_id = $${String(project)}
         AND ($${String(types)}::text[] IS NULL OR node_type = ANY($${String(types)}::text[]))
+        -- A prefix compared with left() rather than LIKE, so a path holding
+        -- % or _ matches itself and nothing wider.
+        AND ($${String(file)}::text IS NULL
+             OR left(lower(coalesce(file_path, '')), length($${String(file)}::text)) = $${String(file)}::text)
         AND (
           lower(name) LIKE $${String(like)}
           OR lower(coalesce(qualified_name, '')) LIKE $${String(like)}
@@ -378,7 +407,7 @@ export class GraphRepository {
       this.db.query<CodeNodeRow>(
         `SELECT ${CODE_NODE_COLUMNS}
            FROM code_nodes
-          ${matchClause(1, 2, 5, 6)}
+          ${matchClause(1, 2, 5, 6, 11)}
           ORDER BY
             CASE
               WHEN lower(name) = $3 THEN 0
@@ -406,11 +435,12 @@ export class GraphRepository {
           options.offset,
           fileName,
           token,
+          filePrefix,
         ],
       ),
       this.db.query<{ total: number }>(
-        `SELECT count(*)::bigint AS total FROM code_nodes ${matchClause(1, 2, 3, 4)}`,
-        [projectId, contains, nodeTypes, typeTerm],
+        `SELECT count(*)::bigint AS total FROM code_nodes ${matchClause(1, 2, 3, 4, 5)}`,
+        [projectId, contains, nodeTypes, typeTerm, filePrefix],
       ),
     ]);
 
@@ -614,6 +644,7 @@ export class GraphRepository {
     direction: NeighbourDirection,
     relationships: readonly CodeRelationship[],
     limit: number,
+    offset = 0,
   ): Promise<CodeNode[]> {
     const [anchorColumn, otherColumn] =
       direction === 'outgoing'
@@ -628,10 +659,74 @@ export class GraphRepository {
           AND e.${anchorColumn} = $2
           AND e.relationship = ANY($3::text[])
         ORDER BY n.name, n.id
-        LIMIT $4`,
-      [projectId, nodeId, relationships, limit],
+        LIMIT $4 OFFSET $5`,
+      [projectId, nodeId, relationships, limit, offset],
     );
     return result.rows.map(toCodeNode);
+  }
+
+  /**
+   * How many distinct neighbours a section has, before any limit.
+   *
+   * Counted the way the section lists are built — distinct neighbour per
+   * relationship and direction — so a total and the pages it describes can
+   * never disagree about what one entry is.
+   */
+  async countRelated(
+    projectId: string,
+    nodeId: string,
+    relationships: readonly CodeRelationship[],
+    direction: NeighbourDirection | 'both',
+  ): Promise<number> {
+    const result = await this.db.query<{ total: string | number }>(
+      `SELECT count(*)::bigint AS total FROM (
+         SELECT DISTINCT x.id, x.relationship, x.direction
+           FROM (
+             SELECT target_node_id AS id, relationship, 'outgoing' AS direction
+               FROM code_edges
+              WHERE project_id = $1 AND source_node_id = $2
+                AND relationship = ANY($3::text[]) AND $4 <> 'incoming'
+             UNION ALL
+             SELECT source_node_id AS id, relationship, 'incoming' AS direction
+               FROM code_edges
+              WHERE project_id = $1 AND target_node_id = $2
+                AND relationship = ANY($3::text[]) AND $4 <> 'outgoing'
+           ) x
+           JOIN code_nodes n ON n.id = x.id AND n.project_id = $1
+       ) counted`,
+      [projectId, nodeId, relationships, direction],
+    );
+    return Number(result.rows[0]?.total ?? 0);
+  }
+
+  /**
+   * The exact size of every node-detail section, in one grouped query.
+   *
+   * Bucketed by the same rules as `nodeRelations`, so each total describes
+   * exactly the list it sits beside — including the edges that list leaves
+   * out (outgoing REFERENCES, which no section shows).
+   */
+  async relationshipTotals(projectId: string, nodeId: string): Promise<NodeRelationshipTotals> {
+    const result = await this.db.query<{ relationship: CodeRelationship; direction: NeighbourDirection; total: string | number }>(
+      `SELECT x.relationship, x.direction, count(DISTINCT x.id)::bigint AS total
+         FROM (
+           SELECT target_node_id AS id, relationship, 'outgoing' AS direction
+             FROM code_edges WHERE project_id = $1 AND source_node_id = $2
+           UNION ALL
+           SELECT source_node_id AS id, relationship, 'incoming' AS direction
+             FROM code_edges WHERE project_id = $1 AND target_node_id = $2
+         ) x
+         JOIN code_nodes n ON n.id = x.id AND n.project_id = $1
+        GROUP BY x.relationship, x.direction`,
+      [projectId, nodeId],
+    );
+
+    const totals = emptyTotals();
+    for (const row of result.rows) {
+      const section = sectionOf(row.relationship, row.direction);
+      if (section) totals[section] += Number(row.total);
+    }
+    return totals;
   }
 
   /**
@@ -658,26 +753,33 @@ export class GraphRepository {
       ...CONTRACT_RELATIONSHIPS,
     ];
 
-    // The per-section limit is applied after bucketing; the query itself is
-    // capped generously so a hub node cannot be used to read the whole graph.
-    const hardLimit = Math.max(limitPerSection * relationships.length, limitPerSection) + 1;
-
+    // Capped per relationship and direction, inside the query. A single cap
+    // across the whole union — as this once was — let one crowded
+    // relationship early in the sort order fill the budget and silently empty
+    // every section after it on a hub node. Each partition now keeps its own
+    // first `limit` rows in the sections' order, so a hub node still cannot
+    // read the whole graph, and no section can starve another.
     const result = await this.db.query<RelatedNodeRow>(
-      `SELECT ${prefixed(CODE_NODE_COLUMNS, 'n')}, x.relationship, x.direction,
-              x.metadata AS edge_metadata
+      `SELECT ${prefixed(CODE_NODE_COLUMNS, 'r')}, r.relationship, r.direction, r.edge_metadata
          FROM (
-           SELECT target_node_id AS id, relationship, 'outgoing' AS direction, metadata
-             FROM code_edges
-            WHERE project_id = $1 AND source_node_id = $2 AND relationship = ANY($3::text[])
-           UNION ALL
-           SELECT source_node_id AS id, relationship, 'incoming' AS direction, metadata
-             FROM code_edges
-            WHERE project_id = $1 AND target_node_id = $2 AND relationship = ANY($3::text[])
-         ) x
-         JOIN code_nodes n ON n.id = x.id AND n.project_id = $1
-        ORDER BY x.relationship, n.name, n.id
-        LIMIT $4`,
-      [projectId, nodeId, relationships, hardLimit],
+           SELECT n.*, x.relationship, x.direction, x.metadata AS edge_metadata,
+                  row_number() OVER (
+                    PARTITION BY x.relationship, x.direction ORDER BY n.name, n.id
+                  ) AS position
+             FROM (
+               SELECT target_node_id AS id, relationship, 'outgoing' AS direction, metadata
+                 FROM code_edges
+                WHERE project_id = $1 AND source_node_id = $2 AND relationship = ANY($3::text[])
+               UNION ALL
+               SELECT source_node_id AS id, relationship, 'incoming' AS direction, metadata
+                 FROM code_edges
+                WHERE project_id = $1 AND target_node_id = $2 AND relationship = ANY($3::text[])
+             ) x
+             JOIN code_nodes n ON n.id = x.id AND n.project_id = $1
+         ) r
+        WHERE r.position <= $4
+        ORDER BY r.relationship, r.name, r.id`,
+      [projectId, nodeId, relationships, limitPerSection],
     );
 
     const relations: NodeRelations = {
@@ -745,17 +847,17 @@ export class GraphRepository {
     return relations;
   }
 
-  async callers(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    return this.neighbours(projectId, nodeId, 'incoming', ['CALLS'], limit);
+  async callers(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
+    return this.neighbours(projectId, nodeId, 'incoming', ['CALLS'], limit, offset);
   }
 
-  async callees(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    return this.neighbours(projectId, nodeId, 'outgoing', ['CALLS'], limit);
+  async callees(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
+    return this.neighbours(projectId, nodeId, 'outgoing', ['CALLS'], limit, offset);
   }
 
   /** Everything that points at this node with REFERENCES. */
-  async references(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    return this.neighbours(projectId, nodeId, 'incoming', ['REFERENCES'], limit);
+  async references(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
+    return this.neighbours(projectId, nodeId, 'incoming', ['REFERENCES'], limit, offset);
   }
 
   /**
@@ -773,6 +875,7 @@ export class GraphRepository {
     relationships: readonly CodeRelationship[],
     direction: NeighbourDirection | 'both',
     limit: number,
+    offset = 0,
   ): Promise<RelatedNode[]> {
     const result = await this.db.query<RelatedNodeRow>(
       `SELECT ${prefixed(CODE_NODE_COLUMNS, 'n')}, x.relationship, x.direction,
@@ -792,21 +895,21 @@ export class GraphRepository {
          ) x
          JOIN code_nodes n ON n.id = x.id AND n.project_id = $1
         ORDER BY x.direction, x.relationship, n.name, n.id
-        LIMIT $4`,
-      [projectId, nodeId, relationships, limit, direction],
+        LIMIT $4 OFFSET $6`,
+      [projectId, nodeId, relationships, limit, direction, offset],
     );
 
     return result.rows.map(toRelatedNode);
   }
 
   /** What this node depends on, along the dependency-bearing relationships. */
-  async dependencies(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    return this.relatedNeighbours(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', limit);
+  async dependencies(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', limit, offset);
   }
 
   /** What depends on this node. */
-  async dependents(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    return this.relatedNeighbours(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', limit);
+  async dependents(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', limit, offset);
   }
 
   /**
@@ -817,8 +920,75 @@ export class GraphRepository {
     projectId: string,
     nodeId: string,
     limit: number,
+    offset = 0,
+    direction: ImplementationDirection = 'both',
   ): Promise<RelatedNode[]> {
-    return this.relatedNeighbours(projectId, nodeId, IMPLEMENTATION_RELATIONSHIPS, 'both', limit);
+    return this.relatedNeighbours(
+      projectId,
+      nodeId,
+      IMPLEMENTATION_RELATIONSHIPS,
+      direction,
+      limit,
+      offset,
+    );
+  }
+
+  /**
+   * Exact totals for the paged section routes, counted as their lists are
+   * built. `implementations` takes the same direction as its list.
+   */
+  async countSection(
+    projectId: string,
+    nodeId: string,
+    section: PagedSection,
+    direction: ImplementationDirection = 'both',
+  ): Promise<number> {
+    switch (section) {
+      case 'callers':
+        return this.countRelated(projectId, nodeId, ['CALLS'], 'incoming');
+      case 'callees':
+        return this.countRelated(projectId, nodeId, ['CALLS'], 'outgoing');
+      case 'references':
+        return this.countRelated(projectId, nodeId, ['REFERENCES'], 'incoming');
+      case 'dependencies':
+        return this.countRelated(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing');
+      case 'dependents':
+        return this.countRelated(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming');
+      case 'implementations':
+        return this.countRelated(projectId, nodeId, IMPLEMENTATION_RELATIONSHIPS, direction);
+      case 'children':
+        return this.countRelated(projectId, nodeId, ['CONTAINS'], 'outgoing');
+      case 'apis':
+        return this.countRelated(projectId, nodeId, API_RELATIONSHIPS, 'both');
+      case 'databases':
+        return this.countRelated(projectId, nodeId, DATA_RELATIONSHIPS, 'both');
+      case 'documentation':
+        return this.countRelated(projectId, nodeId, DOCUMENTATION_RELATIONSHIPS, 'both');
+      case 'contracts':
+        return this.countRelated(projectId, nodeId, CONTRACT_RELATIONSHIPS, 'both');
+    }
+  }
+
+  /**
+   * The four architectural sections on their own, both directions, for the
+   * paged routes. Ordered as `relatedNeighbours` orders — direction first — so
+   * a page sequence is stable; the node detail's preview of the same section
+   * is ordered by relationship alone, which is why a page read starts at 0.
+   */
+  async apis(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, API_RELATIONSHIPS, 'both', limit, offset);
+  }
+
+  async databases(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, DATA_RELATIONSHIPS, 'both', limit, offset);
+  }
+
+  async documentation(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, DOCUMENTATION_RELATIONSHIPS, 'both', limit, offset);
+  }
+
+  async contracts(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.relatedNeighbours(projectId, nodeId, CONTRACT_RELATIONSHIPS, 'both', limit, offset);
   }
 
   /**
@@ -844,7 +1014,7 @@ export class GraphRepository {
   }
 
   /** Nodes this one CONTAINS, in source order where positions were indexed. */
-  async children(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
+  async children(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
     const result = await this.db.query<CodeNodeRow>(
       `SELECT ${prefixed(CODE_NODE_COLUMNS, 'n')}
          FROM code_edges e
@@ -853,8 +1023,8 @@ export class GraphRepository {
           AND e.source_node_id = $2
           AND e.relationship = 'CONTAINS'
         ORDER BY n.start_line NULLS LAST, n.name, n.id
-        LIMIT $3`,
-      [projectId, nodeId, limit],
+        LIMIT $3 OFFSET $4`,
+      [projectId, nodeId, limit, offset],
     );
     return result.rows.map(toCodeNode);
   }
@@ -1083,6 +1253,45 @@ function prefixed(columns: string, alias: string): string {
     .split(', ')
     .map((column) => `${alias}.${column}`)
     .join(', ');
+}
+
+function emptyTotals(): NodeRelationshipTotals {
+  return {
+    callers: 0,
+    callees: 0,
+    references: 0,
+    dependencies: 0,
+    dependents: 0,
+    apis: 0,
+    databases: 0,
+    documentation: 0,
+    contracts: 0,
+    implementations: 0,
+    children: 0,
+  };
+}
+
+/**
+ * Which node-detail section an edge of this relationship and direction lands
+ * in, or null for one no section shows. The same rules `nodeRelations`
+ * buckets by, plus the two sections it leaves to their own queries.
+ */
+function sectionOf(
+  relationship: CodeRelationship,
+  direction: NeighbourDirection,
+): keyof NodeRelationshipTotals | null {
+  if (relationship === 'CALLS') return direction === 'incoming' ? 'callers' : 'callees';
+  if (relationship === 'REFERENCES') return direction === 'incoming' ? 'references' : null;
+  if (relationship === 'CONTAINS') return direction === 'outgoing' ? 'children' : null;
+  if (IMPLEMENTATION_RELATIONSHIPS.includes(relationship)) return 'implementations';
+  if (API_RELATIONSHIPS.includes(relationship)) return 'apis';
+  if (DATA_RELATIONSHIPS.includes(relationship)) return 'databases';
+  if (DOCUMENTATION_RELATIONSHIPS.includes(relationship)) return 'documentation';
+  if (CONTRACT_RELATIONSHIPS.includes(relationship)) return 'contracts';
+  if (DEPENDENCY_RELATIONSHIPS.includes(relationship)) {
+    return direction === 'outgoing' ? 'dependencies' : 'dependents';
+  }
+  return null;
 }
 
 function pushLimited<T>(bucket: T[], value: T, limit: number): void {

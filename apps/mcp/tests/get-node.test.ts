@@ -342,18 +342,22 @@ describe('bounding the relationships', () => {
     });
   });
 
-  it('never prints more than a handful of neighbours in the text', async () => {
+  it('prints a bounded preview in the text, and says the rest exists and how to read it', async () => {
+    // Replaces "never prints more than five": hiding everything past five, with
+    // no pointer to the rest, is the defect the real-repository validation
+    // found. The preview is still bounded; what changed is that it is never
+    // mistakable for the whole list.
     const many = Array.from({ length: 21 }, (_, index) =>
       codeNode({ id: `c-${String(index)}`, name: `Caller${String(index)}` }),
     );
     harness = await createMcpHarness(() => ({ body: ok(nodeDetail({ callers: many })) }));
 
     const result = await get();
-    const printed = textOf(result)
-      .split('\n')
-      .filter((line) => line.trimStart().startsWith('- Caller'));
+    const text = textOf(result);
+    const printed = text.split('\n').filter((line) => line.trimStart().startsWith('- Caller'));
 
-    expect(printed.length).toBeLessThanOrEqual(5);
+    expect(printed.length).toBeLessThanOrEqual(10);
+    expect(text).toMatch(/more exist — get_node with relationship "callers", offset 10/);
   });
 });
 

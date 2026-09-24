@@ -10,15 +10,33 @@ import {
   graphQuerySchema,
   graphSearchQuerySchema,
   graphSummarySchema,
+  implementationsPageQuerySchema,
   neighbourQuerySchema,
   nodeDetailSchema,
   projectIdParamSchema,
   relatedNodeSchema,
+  relationshipPageQuerySchema,
   sourceTreeQuerySchema,
   sourceTreeSchema,
 } from '@ckg/shared';
 import { commonErrorResponses, envelopeSchema, success } from '../../common/utils/response.js';
-import type { GraphService } from './graph.service.js';
+import type { GraphService, SectionPage } from './graph.service.js';
+
+/**
+ * A section page in the envelope: the list as `data`, exactly as before, and
+ * the paging facts in `meta`. `total` is the full count, never the page's.
+ */
+function pageMeta(page: SectionPage<unknown>) {
+  const nextOffset = page.offset + page.items.length;
+  const hasMore = nextOffset < page.total;
+  return {
+    total: page.total,
+    limit: page.limit,
+    offset: page.offset,
+    hasMore,
+    nextOffset: hasMore ? nextOffset : null,
+  };
+}
 
 export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
   return async (app) => {
@@ -135,7 +153,7 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'Node details with callers, callees, references, dependencies, APIs and data stores',
           description:
-            'One round trip for everything the inspector shows. `callers`, `callees` and `references` are plain nodes; the remaining sections carry the relationship and its evidence alongside each entry.',
+            'One round trip for everything the inspector shows. `callers`, `callees` and `references` are plain nodes; the remaining sections carry the relationship and its evidence alongside each entry. Each list is capped at `limit`; `totals` gives the exact size of every section, and the per-section routes page through the rest.',
           params: graphNodeParamsSchema,
           querystring: neighbourQuerySchema,
           response: { 200: envelopeSchema(nodeDetailSchema), ...commonErrorResponses },
@@ -158,17 +176,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'Nodes that call this node',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: relationshipPageQuerySchema,
           response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getCallers(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getCallers(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 
@@ -179,17 +196,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'Nodes this node calls',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: relationshipPageQuerySchema,
           response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getCallees(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getCallees(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 
@@ -200,17 +216,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'Nodes that reference this node',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: relationshipPageQuerySchema,
           response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getReferences(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getReferences(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 
@@ -247,17 +262,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           description:
             'Outgoing DEPENDS_ON, DEPENDS_ON_SERVICE, IMPORTS and USES edges. Each entry carries the relationship that produced it and its evidence, because \u201cdepends on\u201d covers four different facts and the caller should be told which.',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: relationshipPageQuerySchema,
           response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getDependencies(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getDependencies(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 
@@ -269,17 +283,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           summary: 'What depends on this node',
           description: 'The same four relationships as `dependencies`, read the other way.',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: relationshipPageQuerySchema,
           response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getDependents(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getDependents(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 
@@ -315,17 +328,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           description:
             'The members of a class, the symbols of a file, the entries of a directory \u2014 in source order where the indexer recorded positions.',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: relationshipPageQuerySchema,
           response: { 200: envelopeSchema(z.array(codeNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getChildren(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getChildren(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 
@@ -336,19 +348,103 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'What implements or extends this node, and what it implements',
           description:
-            'Both directions of IMPLEMENTS and EXTENDS in one list. `direction: incoming` is something that implements or extends this node; `outgoing` is what this node implements or extends.',
+            'Both directions of IMPLEMENTS and EXTENDS in one list. `direction: incoming` is something that implements or extends this node; `outgoing` is what this node implements or extends. The `direction` query narrows to one side. Paged: `limit`, `offset`; `meta.total` is the full count.',
           params: graphNodeParamsSchema,
-          querystring: neighbourQuerySchema,
+          querystring: implementationsPageQuerySchema,
           response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
         },
       },
       async (request, reply) => {
-        const nodes = await service.getImplementations(
-          request.params.projectId,
-          request.params.nodeId,
-          request.query.limit,
-        );
-        return reply.send(success(nodes, { total: nodes.length }));
+        const page = await service.getImplementations(request.params.projectId, request.params.nodeId, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+          direction: request.query.direction,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/apis',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'API routes that route to this node, or that this route reaches',
+          description: 'The node detail\u2019s `apis` section on its own, both directions, with its evidence. Paged: `limit`, `offset`; `meta.total` is the full count.',
+          params: graphNodeParamsSchema,
+          querystring: relationshipPageQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const page = await service.getArchitecturalSection(request.params.projectId, request.params.nodeId, 'apis', {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/databases',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'Tables, databases, queues and events this node reads, writes, publishes or subscribes to — or, for a data node, what touches it',
+          description: 'The node detail\u2019s `databases` section on its own, both directions, with its evidence. Paged: `limit`, `offset`; `meta.total` is the full count.',
+          params: graphNodeParamsSchema,
+          querystring: relationshipPageQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const page = await service.getArchitecturalSection(request.params.projectId, request.params.nodeId, 'databases', {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/documentation',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'Documentation that describes this node, and what a document describes or links to',
+          description: 'The node detail\u2019s `documentation` section on its own, both directions, with its evidence. Paged: `limit`, `offset`; `meta.total` is the full count.',
+          params: graphNodeParamsSchema,
+          querystring: relationshipPageQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const page = await service.getArchitecturalSection(request.params.projectId, request.params.nodeId, 'documentation', {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
+      },
+    );
+
+    app.get(
+      '/projects/:projectId/graph/nodes/:nodeId/contracts',
+      {
+        schema: {
+          tags: ['graph'],
+          summary: 'What declares this node, and what fulfils what it declares',
+          description: 'The node detail\u2019s `contracts` section on its own, both directions, with its evidence. Paged: `limit`, `offset`; `meta.total` is the full count.',
+          params: graphNodeParamsSchema,
+          querystring: relationshipPageQuerySchema,
+          response: { 200: envelopeSchema(z.array(relatedNodeSchema)), ...commonErrorResponses },
+        },
+      },
+      async (request, reply) => {
+        const page = await service.getArchitecturalSection(request.params.projectId, request.params.nodeId, 'contracts', {
+          limit: request.query.limit,
+          offset: request.query.offset,
+        });
+        return reply.send(success(page.items, pageMeta(page)));
       },
     );
 

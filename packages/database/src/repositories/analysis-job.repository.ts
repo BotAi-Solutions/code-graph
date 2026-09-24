@@ -4,6 +4,7 @@ import type {
   AnalysisStats,
   AnalysisStatus,
   IndexingError,
+  SourceRevision,
   SupportedLanguage,
 } from '@ckg/shared';
 import { TERMINAL_ANALYSIS_STATUSES } from '@ckg/shared';
@@ -25,6 +26,7 @@ export interface UpdateAnalysisJobInput {
   stats?: AnalysisStats | null;
   progress?: AnalysisProgress | null;
   errors?: IndexingError[] | null;
+  sourceRevision?: SourceRevision | null;
 }
 
 const COLUMNS =
@@ -122,6 +124,12 @@ export class AnalysisJobRepository {
     if (patch.errors !== undefined) {
       push('errors', patch.errors === null ? null : JSON.stringify(patch.errors));
     }
+    if (patch.sourceRevision !== undefined) {
+      push(
+        'source_revision',
+        patch.sourceRevision === null ? null : JSON.stringify(patch.sourceRevision),
+      );
+    }
 
     params.push(id);
 
@@ -131,6 +139,20 @@ export class AnalysisJobRepository {
     );
     const row = result.rows[0];
     return row ? toAnalysisJob(row) : null;
+  }
+
+  /**
+   * What a run saw on disk when it started, for the freshness check.
+   *
+   * Its own read rather than a column on every job: the record can be large,
+   * and the job listing is polled by the dashboard.
+   */
+  async findSourceRevision(id: string): Promise<SourceRevision | null> {
+    const result = await this.db.query<{ source_revision: SourceRevision | null }>(
+      `SELECT source_revision FROM analysis_jobs WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0]?.source_revision ?? null;
   }
 
   /** Convenience used by the pipeline to advance through its phases. */

@@ -5,6 +5,7 @@ import type {
   CodeNodeType,
   IndexingError,
   ProjectMetadata,
+  SourceRevision,
   SupportedLanguage,
 } from '@ckg/shared';
 import type { Logger } from '@ckg/shared/logger';
@@ -16,6 +17,7 @@ import type {
 import {
   LanguageDetectionService,
   ProjectScanError,
+  captureSourceRevision,
   scanProject,
   type RepositoryScan,
 } from '@ckg/language-detection';
@@ -74,6 +76,12 @@ export interface AnalyzeRepositoryJobDependencies {
    * exactly the SCIP-only graph this pipeline produced before they existed.
    */
   analyzers?: readonly CodeAnalyzer[] | undefined;
+  /**
+   * Fingerprints the working tree before the run reads it, so a later
+   * freshness check can say whether the stored graph still matches the files.
+   * Defaults to the real one; a test can pass a stub.
+   */
+  captureRevision?: ((directory: string) => Promise<SourceRevision>) | undefined;
 }
 
 export class AnalysisFailedError extends Error {
@@ -118,6 +126,10 @@ export class AnalyzeRepositoryJob {
     const workspaceDirectory = await this.deps.workspace.prepare(job.id);
     const loaded = await this.deps.repositoryLoader.load(repository, workspaceDirectory);
     log.info({ repositoryName: loaded.name }, 'repository ready');
+
+    // Before the scan reads anything: a file saved mid-run is then newer than
+    // the capture, and the finished graph reads as stale rather than current.
+    const sourceRevision = await this.captureRevision(loaded.path, log);
 
     // --- scan -----------------------------------------------------------
     // One walk of the tree, shared by language detection, the source loader
@@ -308,6 +320,7 @@ export class AnalyzeRepositoryJob {
       // Capped: the record is for telling someone which files to look at, not
       // for storing a repository's worth of failures.
       errors: graph.errors.slice(0, MAX_RECORDED_ERRORS),
+      sourceRevision,
     });
 
     progress.report({
@@ -329,6 +342,26 @@ export class AnalyzeRepositoryJob {
 
     log.info({ stats }, 'analysis completed');
     return stats;
+  }
+
+  /**
+   * The revision, or null when it could not be taken.
+   *
+   * Never fatal. A graph whose freshness is unknown is still a graph; failing
+   * the run because git misbehaved would trade a caveat for nothing at all.
+   */
+  private async captureRevision(directory: string, log: Logger): Promise<SourceRevision | null> {
+    try {
+      const revision = await (this.deps.captureRevision ?? captureSourceRevision)(directory);
+      log.info(
+        { vcs: revision.vcs, commit: revision.commit, changedFiles: revision.changeCount },
+        'source revision captured',
+      );
+      return revision;
+    } catch (error) {
+      log.warn({ err: error }, 'source revision could not be captured; freshness will be unknown');
+      return null;
+    }
   }
 
   /**

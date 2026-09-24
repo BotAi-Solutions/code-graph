@@ -130,6 +130,17 @@ export default defineConfig({
         },
       },
       {
+        // The workspace scripts: what `pnpm dev:all` starts, and the MCP
+        // configuration a client launches.
+        resolve: { alias },
+        test: {
+          name: 'scripts',
+          root: './scripts',
+          environment: 'node',
+          include: ['tests/**/*.test.ts'],
+        },
+      },
+      {
         // The web project's pure view logic: what the canvas is handed, and
         // what it is drawn with. The components themselves are exercised by
         // running the app, not by a simulated DOM.

@@ -9,6 +9,7 @@ import type {
   AnalysisStats,
   CodeGraph,
   Repository,
+  SourceRevision,
 } from '@ckg/shared';
 import { createSilentLogger } from '@ckg/shared/logger';
 import { findWorkspaceRoot } from '@ckg/shared/node';
@@ -197,7 +198,10 @@ describe('AnalyzeRepositoryJob', () => {
   function createJob(
     commandRunner: CommandRunner,
     repository: Repository = LOCAL_REPOSITORY,
-    options: { analyzers?: CodeAnalyzer[] } = {},
+    options: {
+      analyzers?: CodeAnalyzer[];
+      captureRevision?: (directory: string) => Promise<SourceRevision>;
+    } = {},
   ): {
     job: AnalyzeRepositoryJob;
     analysisJobs: FakeAnalysisJobRepository;
@@ -221,6 +225,7 @@ describe('AnalyzeRepositoryJob', () => {
       logger: createSilentLogger(),
       scipTimeoutMs: 1000,
       ...(options.analyzers ? { analyzers: options.analyzers } : {}),
+      ...(options.captureRevision ? { captureRevision: options.captureRevision } : {}),
     });
 
     return { job, analysisJobs, graph };
@@ -396,6 +401,50 @@ describe('AnalyzeRepositoryJob', () => {
 
     await expect(job.run(queued)).rejects.toThrow(/exited with code 1/);
     expect(graph.replaceCount).toBe(0);
+  });
+
+  it('records what it indexed from on the completed run, for the freshness check', async () => {
+    const revision: SourceRevision = {
+      vcs: 'git',
+      commit: 'abc123abc123abc123abc123abc123abc123abcd',
+      changes: {},
+      changeCount: 0,
+      digest: 'd',
+      capturedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const captured: string[] = [];
+    const { job, analysisJobs } = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+      captureRevision: async (directory) => {
+        captured.push(directory);
+        return revision;
+      },
+    });
+    const queued = analysisJobs.seed(queuedJob());
+
+    await job.run(queued);
+
+    expect(captured).toHaveLength(1);
+    expect(path.isAbsolute(captured[0] ?? '')).toBe(true);
+    expect(analysisJobs.jobs.get(queued.id)).toMatchObject({
+      status: 'COMPLETED',
+      sourceRevision: revision,
+    });
+  });
+
+  it('completes with an unknown revision when it cannot be captured', async () => {
+    const { job, analysisJobs } = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+      captureRevision: async () => {
+        throw new Error('git exploded');
+      },
+    });
+    const queued = analysisJobs.seed(queuedJob());
+
+    await job.run(queued);
+
+    expect(analysisJobs.jobs.get(queued.id)).toMatchObject({
+      status: 'COMPLETED',
+      sourceRevision: null,
+    });
   });
 
   it('resolves a relative repository path the way the UI sends it', async () => {

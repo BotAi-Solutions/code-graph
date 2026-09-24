@@ -187,6 +187,7 @@ there and proxies to it, so you only ever open 5173.
 | Command | What it does |
 | --- | --- |
 | `pnpm dev` | API, worker and web together, in watch mode |
+| `pnpm dev:all` | Everything an MCP client needs: PostgreSQL (if not already up), build, migrations, API, worker and web (`--no-web` to skip it) |
 | `pnpm dev:api` | Just the API (OpenAPI UI at `/docs`) |
 | `pnpm dev:worker` | Just the indexing worker |
 | `pnpm dev:web` | Just the web app |
@@ -387,7 +388,8 @@ credentials, and reaches the graph through the same HTTP API the web UI uses.
 | Tool | What it does |
 | --- | --- |
 | `resolve_project` | Turn a working directory into a project id |
-| `get_index_status` | Is that project ready, indexing, failed, or never indexed? |
+| `get_index_status` | Is that project ready, stale, indexing, failed, or never indexed? |
+| `index_project` | Register a local directory if needed and index it — never a duplicate run |
 | `search_graph` | Search the project's symbols and nodes |
 | `get_node` | Inspect one node, its relationships and the evidence behind them |
 | `trace_path` | Find the shortest route between two nodes |
@@ -395,7 +397,9 @@ credentials, and reaches the graph through the same HTTP API the web UI uses.
 | `get_source` | Read the code at any location the other tools report |
 
 The same project id is passed through every call; there is no implicit project.
-See [docs/mcp.md](docs/mcp.md).
+`pnpm dev:all` starts everything it needs, and the repository's `.mcp.json`
+connects Claude Code to it. See [docs/mcp.md](docs/mcp.md) for setup,
+verification and what *stale* means.
 
 ---
 
@@ -612,7 +616,7 @@ afterwards means a sample actually changed.
 | `packages/database` | Migration contract, row mapping, graph SQL against a real PostgreSQL |
 | `apps/api` | Envelope, every route, projections, search paging, node detail, error codes, OpenAPI, folder intake |
 | `apps/worker` | The pipeline end to end, phase-by-phase progress, surviving a broken analyzer |
-| `apps/mcp` | All seven tools, index states, project isolation, result bounding, a real stdio handshake |
+| `apps/mcp` | All eight tools, index states and freshness, `.mcp.json`, project isolation, result bounding, a real stdio handshake |
 | `apps/web` | Graph merging, projections, visual language, the folder-picker abstraction |
 
 ---
@@ -629,7 +633,7 @@ afterwards means a sample actually changed.
   evidence with file and line on every edge
 - PostgreSQL persistence, traversal-first HTTP API, path resolution
 - React + WebGL UI with eleven projections, inspector, expand, focus and find-path
-- MCP server with seven tools
+- MCP server with eight tools, including indexing and graph freshness
 - Graph benchmark and retrieval evaluation
 
 **Not implemented yet, intentionally:** languages beyond TS/JS, embeddings and
@@ -650,4 +654,4 @@ restructuring — see the last section of [docs/architecture.md](docs/architectu
 - [docs/retrieval-evaluation-report.md](docs/retrieval-evaluation-report.md) — baseline (45/49), root cause, and post-fix re-measurement (49/49)
 - [docs/scip.md](docs/scip.md) — indexers, parsing, adding a language
 - [docs/api.md](docs/api.md) — endpoints, envelope, error codes
-- [docs/mcp.md](docs/mcp.md) — the MCP server, its seven tools, and why it holds no logic
+- [docs/mcp.md](docs/mcp.md) — the MCP server, its eight tools, setup with `pnpm dev:all`, and why it holds no logic

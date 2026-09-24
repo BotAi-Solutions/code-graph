@@ -13,7 +13,9 @@ import type {
   Project,
   RelatedNode,
   RelationshipCounts,
+  NodeRelationshipTotals,
   Repository,
+  SourceRevision,
 } from '@ckg/shared';
 import {
   DEPENDENCY_RELATIONSHIPS,
@@ -234,6 +236,13 @@ export class InMemoryAnalysisJobStore {
     const job = this.jobs.get(id);
     if (job) this.jobs.set(id, { ...job, status, completedAt: now() });
   }
+
+  /** What each run saw on disk, as the worker records it on completion. */
+  readonly revisions = new Map<string, SourceRevision>();
+
+  async findSourceRevision(id: string): Promise<SourceRevision | null> {
+    return this.revisions.get(id) ?? null;
+  }
 }
 
 export class InMemoryGraphStore {
@@ -310,13 +319,20 @@ export class InMemoryGraphStore {
   async searchNodes(
     projectId: string,
     term: string,
-    options: { nodeTypes?: CodeNodeType[] | undefined; limit: number; offset: number },
+    options: {
+      nodeTypes?: CodeNodeType[] | undefined;
+      filePrefix?: string | undefined;
+      limit: number;
+      offset: number;
+    },
   ): Promise<{ nodes: CodeNode[]; total: number }> {
     const needle = term.toLowerCase();
     const allowed = options.nodeTypes ? new Set(options.nodeTypes) : null;
+    const prefix = options.filePrefix;
 
     const matched = this.nodesOf(projectId)
       .filter((node) => !allowed || allowed.has(node.type))
+      .filter((node) => !prefix || (node.filePath ?? '').toLowerCase().startsWith(prefix))
       .filter(
         (node) =>
           node.name.toLowerCase().includes(needle) ||
@@ -454,17 +470,29 @@ export class InMemoryGraphStore {
     direction: 'incoming' | 'outgoing',
     relationship: CodeRelationship,
     limit: number,
+    offset = 0,
+  ): CodeNode[] {
+    return this.allNeighbours(projectId, nodeId, direction, relationship).slice(offset, offset + limit);
+  }
+
+  /** Mirrors `GraphRepository.neighbours` before paging: distinct, by name then id. */
+  private allNeighbours(
+    projectId: string,
+    nodeId: string,
+    direction: 'incoming' | 'outgoing',
+    relationship: CodeRelationship,
   ): CodeNode[] {
     const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
+    const distinct = new Map<string, CodeNode>();
 
-    return this.edgesOf(projectId)
-      .filter((edge) => edge.relationship === relationship)
-      .filter((edge) =>
-        direction === 'outgoing' ? edge.sourceNodeId === nodeId : edge.targetNodeId === nodeId,
-      )
-      .map((edge) => nodes.get(direction === 'outgoing' ? edge.targetNodeId : edge.sourceNodeId))
-      .filter((node): node is CodeNode => node !== undefined)
-      .slice(0, limit);
+    for (const edge of this.edgesOf(projectId)) {
+      if (edge.relationship !== relationship) continue;
+      if (direction === 'outgoing' ? edge.sourceNodeId !== nodeId : edge.targetNodeId !== nodeId) continue;
+      const other = nodes.get(direction === 'outgoing' ? edge.targetNodeId : edge.sourceNodeId);
+      if (other) distinct.set(other.id, other);
+    }
+
+    return [...distinct.values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }
 
   /**
@@ -570,16 +598,16 @@ export class InMemoryGraphStore {
     return relations;
   }
 
-  async callers(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    return this.neighbours(projectId, nodeId, 'incoming', 'CALLS', limit);
+  async callers(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
+    return this.neighbours(projectId, nodeId, 'incoming', 'CALLS', limit, offset);
   }
 
-  async callees(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    return this.neighbours(projectId, nodeId, 'outgoing', 'CALLS', limit);
+  async callees(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
+    return this.neighbours(projectId, nodeId, 'outgoing', 'CALLS', limit, offset);
   }
 
-  async references(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
-    return this.neighbours(projectId, nodeId, 'incoming', 'REFERENCES', limit);
+  async references(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
+    return this.neighbours(projectId, nodeId, 'incoming', 'REFERENCES', limit, offset);
   }
 
   /** Mirrors `GraphRepository.relatedNeighbours`, ordering included. */
@@ -589,6 +617,7 @@ export class InMemoryGraphStore {
     relationships: readonly CodeRelationship[],
     direction: 'incoming' | 'outgoing' | 'both',
     limit: number,
+    offset = 0,
   ): RelatedNode[] {
     const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
     const allowed = new Set(relationships);
@@ -628,19 +657,119 @@ export class InMemoryGraphStore {
           a.name.localeCompare(b.name) ||
           a.id.localeCompare(b.id),
       )
-      .slice(0, limit);
+      .slice(offset, offset + limit);
   }
 
-  async dependencies(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', limit);
+  async dependencies(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', limit, offset);
   }
 
-  async dependents(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', limit);
+  async dependents(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', limit, offset);
   }
 
-  async implementations(projectId: string, nodeId: string, limit: number): Promise<RelatedNode[]> {
-    return this.related(projectId, nodeId, ['IMPLEMENTS', 'EXTENDS'], 'both', limit);
+  async implementations(
+    projectId: string,
+    nodeId: string,
+    limit: number,
+    offset = 0,
+    direction: 'both' | 'incoming' | 'outgoing' = 'both',
+  ): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, ['IMPLEMENTS', 'EXTENDS'], direction, limit, offset);
+  }
+
+  /** Mirrors `GraphRepository.countSection`. */
+  async countSection(
+    projectId: string,
+    nodeId: string,
+    section:
+      | 'callers'
+      | 'callees'
+      | 'references'
+      | 'dependencies'
+      | 'dependents'
+      | 'implementations'
+      | 'children'
+      | 'apis'
+      | 'databases'
+      | 'documentation'
+      | 'contracts',
+    direction: 'both' | 'incoming' | 'outgoing' = 'both',
+  ): Promise<number> {
+    const all = Number.MAX_SAFE_INTEGER;
+    switch (section) {
+      case 'callers':
+        return this.allNeighbours(projectId, nodeId, 'incoming', 'CALLS').length;
+      case 'callees':
+        return this.allNeighbours(projectId, nodeId, 'outgoing', 'CALLS').length;
+      case 'references':
+        return this.allNeighbours(projectId, nodeId, 'incoming', 'REFERENCES').length;
+      case 'dependencies':
+        return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'outgoing', all).length;
+      case 'dependents':
+        return this.related(projectId, nodeId, DEPENDENCY_RELATIONSHIPS, 'incoming', all).length;
+      case 'implementations':
+        return this.related(projectId, nodeId, ['IMPLEMENTS', 'EXTENDS'], direction, all).length;
+      case 'children':
+        return (await this.children(projectId, nodeId, all)).length;
+      case 'apis':
+      case 'databases':
+      case 'documentation':
+      case 'contracts':
+        return this.related(projectId, nodeId, ARCHITECTURAL[section], 'both', all).length;
+    }
+  }
+
+  async apis(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, ARCHITECTURAL.apis, 'both', limit, offset);
+  }
+
+  async databases(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, ARCHITECTURAL.databases, 'both', limit, offset);
+  }
+
+  async documentation(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, ARCHITECTURAL.documentation, 'both', limit, offset);
+  }
+
+  async contracts(projectId: string, nodeId: string, limit: number, offset = 0): Promise<RelatedNode[]> {
+    return this.related(projectId, nodeId, ARCHITECTURAL.contracts, 'both', limit, offset);
+  }
+
+  /**
+   * Mirrors `GraphRepository.relationshipTotals`: every edge touching the
+   * node, counted into the section `nodeRelations` would put it in.
+   */
+  async relationshipTotals(projectId: string, nodeId: string): Promise<NodeRelationshipTotals> {
+    const nodes = new Set(this.nodesOf(projectId).map((node) => node.id));
+    const seen = new Set<string>();
+    const totals: NodeRelationshipTotals = {
+      callers: 0,
+      callees: 0,
+      references: 0,
+      dependencies: 0,
+      dependents: 0,
+      apis: 0,
+      databases: 0,
+      documentation: 0,
+      contracts: 0,
+      implementations: 0,
+      children: 0,
+    };
+
+    for (const edge of this.edgesOf(projectId)) {
+      const outgoing = edge.sourceNodeId === nodeId;
+      if (!outgoing && edge.targetNodeId !== nodeId) continue;
+      const other = outgoing ? edge.targetNodeId : edge.sourceNodeId;
+      if (!nodes.has(other)) continue;
+      const key = `${other}|${edge.relationship}|${outgoing ? 'o' : 'i'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const section = totalsSectionOf(edge.relationship, outgoing);
+      if (section) totals[section] += 1;
+    }
+    return totals;
   }
 
   async parent(projectId: string, nodeId: string): Promise<CodeNode | null> {
@@ -655,7 +784,7 @@ export class InMemoryGraphStore {
     return owners[0] ?? null;
   }
 
-  async children(projectId: string, nodeId: string, limit: number): Promise<CodeNode[]> {
+  async children(projectId: string, nodeId: string, limit: number, offset = 0): Promise<CodeNode[]> {
     const nodes = new Map(this.nodesOf(projectId).map((node) => [node.id, node]));
 
     return this.edgesOf(projectId)
@@ -668,7 +797,7 @@ export class InMemoryGraphStore {
           a.name.localeCompare(b.name) ||
           a.id.localeCompare(b.id),
       )
-      .slice(0, limit);
+      .slice(offset, offset + limit);
   }
 
   /** Mirrors `GraphRepository.findFileNode`: any node standing for the path. */
@@ -899,6 +1028,33 @@ function searchRank(node: CodeNode, needle: string): number {
   if (file.startsWith(needle)) return 5;
   if (qualified.endsWith(`.${needle}`)) return 6;
   return 7;
+}
+
+/** The architectural sections' relationships, as the repository groups them. */
+const ARCHITECTURAL = {
+  apis: ['ROUTES_TO'],
+  databases: ['READS_FROM', 'WRITES_TO', 'PUBLISHES', 'SUBSCRIBES'],
+  documentation: ['DOCUMENTS', 'LINKS_TO'],
+  contracts: ['DEFINES', 'IMPLEMENTED_BY'],
+} as const satisfies Record<string, readonly CodeRelationship[]>;
+
+/** Mirrors the repository's `sectionOf`. */
+function totalsSectionOf(
+  relationship: CodeRelationship,
+  outgoing: boolean,
+): keyof NodeRelationshipTotals | null {
+  if (relationship === 'CALLS') return outgoing ? 'callees' : 'callers';
+  if (relationship === 'REFERENCES') return outgoing ? null : 'references';
+  if (relationship === 'CONTAINS') return outgoing ? 'children' : null;
+  if (relationship === 'IMPLEMENTS' || relationship === 'EXTENDS') return 'implementations';
+  if (relationship === 'ROUTES_TO') return 'apis';
+  if (['READS_FROM', 'WRITES_TO', 'PUBLISHES', 'SUBSCRIBES'].includes(relationship)) return 'databases';
+  if (relationship === 'DOCUMENTS' || relationship === 'LINKS_TO') return 'documentation';
+  if (relationship === 'DEFINES' || relationship === 'IMPLEMENTED_BY') return 'contracts';
+  if ((DEPENDENCY_RELATIONSHIPS as readonly CodeRelationship[]).includes(relationship)) {
+    return outgoing ? 'dependencies' : 'dependents';
+  }
+  return null;
 }
 
 export class StubHealthProbe {

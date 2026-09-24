@@ -5,7 +5,9 @@ import {
   ANALYSIS_PHASE_BY_STATUS,
   ANALYSIS_PHASE_LABELS,
   analysisProgressFraction,
+  indexFreshnessSchema,
   type AnalysisJob,
+  type IndexFreshness,
 } from '@ckg/shared';
 import { ApiError, ApiUnreachableError, type ApiClient } from '../api-client.js';
 
@@ -19,8 +21,14 @@ import { ApiError, ApiUnreachableError, type ApiClient } from '../api-client.js'
  * reading a half-written graph as the whole truth.
  *
  * It calls `GET /api/projects/:projectId/analysis`, the existing endpoint that
- * lists a project's runs newest first, and adds no state of its own: every
- * judgement below is a reading of what that response already says.
+ * lists a project's runs newest first, and — when there is a stored graph —
+ * `GET /api/projects/:projectId/freshness`, which says whether that graph still
+ * matches the files. It adds no state of its own: every judgement below is a
+ * reading of what those two responses already say.
+ *
+ * Freshness is the third way to be confidently wrong, and the one an agent
+ * editing code walks into by itself: a graph that was complete when it was
+ * built, describing files the agent has since changed.
  */
 
 const TOOL_NAME = 'get_index_status';
@@ -28,12 +36,16 @@ const TOOL_NAME = 'get_index_status';
 /**
  * What the caller should do next, in one word.
  *
- * Deliberately four, matching the four situations that call for different
- * behaviour — ask away, wait, give up on the graph, or index first. The raw
- * `AnalysisStatus` is reported alongside, so nothing is hidden by the
- * simplification.
+ * Five, matching the five situations that call for different behaviour — ask
+ * away, ask but distrust what changed, wait, give up on the graph, or index
+ * first. The raw `AnalysisStatus` is reported alongside, so nothing is hidden
+ * by the simplification.
+ *
+ * In the vocabulary of the docs: `ready` is CURRENT (or freshness unknown —
+ * see `stale`), `stale` is STALE, `indexing` is INDEXING, `never_indexed` is
+ * NOT_INDEXED and `failed` is ERROR.
  */
-const READINESS_STATES = ['ready', 'indexing', 'failed', 'never_indexed'] as const;
+const READINESS_STATES = ['ready', 'stale', 'indexing', 'failed', 'never_indexed'] as const;
 type Readiness = (typeof READINESS_STATES)[number];
 
 const runSchema = {
@@ -45,7 +57,11 @@ const runSchema = {
 
 const outputSchema = {
   projectId: z.string(),
-  state: z.enum(READINESS_STATES).describe('ready: ask away. indexing: wait and retry. failed: do not trust the graph. never_indexed: nothing to query.'),
+  state: z
+    .enum(READINESS_STATES)
+    .describe(
+      'ready: ask away. stale: the graph predates changes on disk — distrust results touching changedPaths, or re-index with index_project. indexing: wait and retry. failed: do not trust the graph. never_indexed: nothing to query — call index_project.',
+    ),
   usable: z
     .boolean()
     .describe(
@@ -80,6 +96,27 @@ const outputSchema = {
     .describe(
       'The most recent completed run, when it is not the latest one. This is the graph that is still stored after a failed or in-flight re-index.',
     ),
+  indexed: z.boolean().describe('A graph is stored and can be queried. Same as usable.'),
+  indexing: z.boolean().describe('A run is queued or in progress.'),
+  indexingJobId: z.string().nullable().describe('The queued or in-progress run, when there is one.'),
+  lastIndexedAt: z.string().nullable().describe('When the stored graph was completed.'),
+  stale: z
+    .boolean()
+    .nullable()
+    .describe('Whether the stored graph predates changes on disk. Null when it could not be determined or there is no graph.'),
+  freshness: z
+    .enum(['current', 'stale', 'unknown'])
+    .nullable()
+    .describe('The stored graph against the files now. Null when there is no stored graph.'),
+  freshnessReason: z.string().nullable(),
+  indexedCommit: z.string().nullable().describe('Git HEAD when the stored graph was built. Null outside git.'),
+  currentCommit: z.string().nullable().describe('Git HEAD now. Null outside git.'),
+  changedFiles: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Files that differ from what was indexed, including uncommitted edits. Null when not countable.'),
+  changedPaths: z.array(z.string()).describe('The first few changed files, repository-relative.'),
 };
 
 /**
@@ -99,9 +136,9 @@ export function registerGetIndexStatus(server: McpServer, api: ApiClient): void 
     {
       title: 'Get project index status',
       description:
-        'Check whether a project’s knowledge graph is ready to be queried. ' +
-        'Call this after resolve_project and before asking anything about the graph: it distinguishes a project that is indexed from one that is still indexing, one whose indexing failed, and one that was never indexed at all. ' +
-        'Reading an empty result from a never-indexed project as "this code does not exist" is the mistake this prevents.',
+        'Check whether a project’s knowledge graph is ready to be queried and still matches the files on disk. ' +
+        'Call this after resolve_project and before relying on graph results: it distinguishes a project that is indexed and current, one whose graph is stale because files changed since indexing (uncommitted edits included), one still indexing, one whose indexing failed, and one never indexed. ' +
+        'Reading an empty result from a never-indexed project as "this code does not exist" is the mistake this prevents. When the state is never_indexed or stale, index_project fixes it.',
       inputSchema: {
         projectId: z
           .uuid()
@@ -128,7 +165,12 @@ export function registerGetIndexStatus(server: McpServer, api: ApiClient): void 
         return failure(error, projectId);
       }
 
-      const status = summarise(projectId, runs);
+      // Only a stored graph can be stale. Asking about freshness with no graph
+      // would be a second request to learn what the first already said.
+      const hasGraph = runs.some((run) => run.status === 'COMPLETED');
+      const freshness = hasGraph ? await readFreshness(api, projectId) : null;
+
+      const status = summarise(projectId, runs, freshness, Date.now());
 
       return {
         content: [{ type: 'text', text: render(status) }],
@@ -149,7 +191,42 @@ export function registerGetIndexStatus(server: McpServer, api: ApiClient): void 
  * run's graph is still what a query would read — so an earlier completed run is
  * what separates "no graph" from "an older graph".
  */
-function summarise(projectId: string, runs: AnalysisJob[]): IndexStatus {
+/**
+ * The freshness report, or an `unknown` one saying why there is none.
+ *
+ * Never a reason to fail the tool: the run list already answered whether a
+ * graph exists, and an API too old to have the route, or a comparison that
+ * broke, leaves that answer intact — it only removes the caveat.
+ */
+async function readFreshness(api: ApiClient, projectId: string): Promise<FreshnessReading> {
+  let raw: unknown;
+  try {
+    raw = await api.get<unknown>(`/api/projects/${encodeURIComponent(projectId)}/freshness`);
+  } catch (error) {
+    return {
+      report: null,
+      reason: `Freshness could not be checked: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const parsed = indexFreshnessSchema.safeParse(raw);
+  if (!parsed.success || parsed.data.projectId !== projectId) {
+    return { report: null, reason: 'Freshness could not be checked: the API returned an unexpected response.' };
+  }
+  return { report: parsed.data, reason: parsed.data.reason };
+}
+
+interface FreshnessReading {
+  report: IndexFreshness | null;
+  reason: string;
+}
+
+function summarise(
+  projectId: string,
+  runs: AnalysisJob[],
+  freshness: FreshnessReading | null,
+  now: number,
+): IndexStatus {
   const latest = runs[0];
 
   if (!latest) {
@@ -168,16 +245,34 @@ function summarise(projectId: string, runs: AnalysisJob[]): IndexStatus {
       error: null,
       progress: null,
       lastSuccessfulRun: null,
+      indexed: false,
+      indexing: false,
+      indexingJobId: null,
+      lastIndexedAt: null,
+      stale: null,
+      freshness: null,
+      freshnessReason: null,
+      indexedCommit: null,
+      currentCommit: null,
+      changedFiles: null,
+      changedPaths: [],
     };
   }
 
-  const state = readinessOf(latest);
+  const report = freshness?.report ?? null;
+  const freshnessState =
+    report?.state === 'current' || report?.state === 'stale' ? report.state : freshness ? 'unknown' : null;
+
+  const runState = readinessOf(latest);
+  const state: Readiness = runState === 'ready' && freshnessState === 'stale' ? 'stale' : runState;
   const previous = runs.slice(1).find((run) => run.status === 'COMPLETED');
+  const lastCompleted = runs.find((run) => run.status === 'COMPLETED');
+  const usable = runState === 'ready' ? true : previous !== undefined;
 
   return {
     projectId,
     state,
-    usable: state === 'ready' ? true : previous !== undefined,
+    usable,
     status: latest.status,
     analysisId: latest.id,
     language: latest.language,
@@ -189,9 +284,9 @@ function summarise(projectId: string, runs: AnalysisJob[]): IndexStatus {
     edgeCount: latest.stats?.edgeCount ?? null,
     warningCount: latest.errors.length,
     error: latest.error,
-    progress: state === 'indexing' ? describeProgress(latest) : null,
+    progress: state === 'indexing' ? describeProgress(latest, now) : null,
     lastSuccessfulRun:
-      state === 'ready' || !previous
+      runState === 'ready' || !previous
         ? null
         : {
             analysisId: previous.id,
@@ -199,6 +294,17 @@ function summarise(projectId: string, runs: AnalysisJob[]): IndexStatus {
             nodeCount: previous.stats?.nodeCount ?? null,
             edgeCount: previous.stats?.edgeCount ?? null,
           },
+    indexed: usable,
+    indexing: state === 'indexing',
+    indexingJobId: state === 'indexing' ? latest.id : null,
+    lastIndexedAt: lastCompleted?.completedAt ?? null,
+    stale: freshnessState === 'stale' ? true : freshnessState === 'current' ? false : null,
+    freshness: freshnessState,
+    freshnessReason: freshness?.reason ?? null,
+    indexedCommit: report?.indexedCommit ?? null,
+    currentCommit: report?.currentCommit ?? null,
+    changedFiles: report?.changedFiles ?? null,
+    changedPaths: report?.changedPaths ?? [],
   };
 }
 
@@ -216,15 +322,35 @@ function readinessOf(run: AnalysisJob): Readiness {
  * opinion about the same run. A job with no finer progress record still has a
  * phase implied by its status, which is better than saying nothing.
  */
-function describeProgress(run: AnalysisJob): { phase: string; percent: number; message: string } {
+function describeProgress(
+  run: AnalysisJob,
+  now: number,
+): { phase: string; percent: number; message: string } {
   const phase = run.progress?.phase ?? ANALYSIS_PHASE_BY_STATUS[run.status];
   const percent = run.progress ? Math.round(analysisProgressFraction(run.progress) * 100) : 0;
 
   return {
     phase,
     percent,
-    message: run.progress?.message ?? ANALYSIS_PHASE_LABELS[phase],
+    message: stuckInQueue(run, now) ?? run.progress?.message ?? ANALYSIS_PHASE_LABELS[phase],
   };
+}
+
+/** A queued run nobody has claimed for this long means no worker is running. */
+const QUEUED_WARNING_MS = 30_000;
+
+/**
+ * The one thing about the worker this layer can see.
+ *
+ * The API cannot tell whether a worker process exists — the queue is a table —
+ * but a run still `QUEUED` well after it was created says it plainly enough,
+ * and "waiting" without that caveat would have an agent poll forever.
+ */
+function stuckInQueue(run: AnalysisJob, now: number): string | null {
+  if (run.status !== 'QUEUED') return null;
+  const waited = now - Date.parse(run.createdAt);
+  if (!(waited > QUEUED_WARNING_MS)) return null;
+  return `Queued for ${String(Math.round(waited / 1000))}s without starting — the worker may not be running (start it with \`pnpm dev:all\` or \`pnpm dev:worker\`).`;
 }
 
 /** The answer as prose, leading with what to do rather than with a status code. */
@@ -233,11 +359,19 @@ function render(status: IndexStatus): string {
 
   switch (status.state) {
     case 'ready': {
-      lines.push(`Project ${status.projectId} is indexed and ready to query.`);
+      lines.push(
+        status.freshness === 'current'
+          ? `Project ${status.projectId} is indexed and ready to query, and the graph matches the files on disk.`
+          : `Project ${status.projectId} is indexed and ready to query.`,
+      );
       lines.push('');
       lines.push(`   graph:     ${describeGraph(status)}`);
       lines.push(`   language:  ${status.language ?? 'unrecorded'}`);
       lines.push(`   indexed:   ${status.completedAt ?? 'unrecorded'}`);
+      if (status.indexedCommit) lines.push(`   commit:    ${status.indexedCommit}`);
+      if (status.freshness === 'unknown') {
+        lines.push(`   freshness: unknown — ${status.freshnessReason ?? 'no reason given'}`);
+      }
       if (status.warningCount > 0) {
         lines.push('');
         lines.push(
@@ -246,6 +380,29 @@ function render(status: IndexStatus): string {
             'read them directly if a question turns on them.',
         );
       }
+      break;
+    }
+
+    case 'stale': {
+      lines.push(
+        `Project ${status.projectId} is indexed, but the graph is STALE: files changed after it was built.`,
+      );
+      lines.push('');
+      lines.push(`   graph:     ${describeGraph(status)}`);
+      lines.push(`   indexed:   ${status.lastIndexedAt ?? 'unrecorded'}`);
+      if (status.indexedCommit || status.currentCommit) {
+        lines.push(`   commit:    ${status.indexedCommit ?? 'unknown'} indexed, ${status.currentCommit ?? 'unknown'} now`);
+      }
+      lines.push(`   changed:   ${status.freshnessReason ?? 'files differ from what was indexed'}`);
+      for (const changed of status.changedPaths) lines.push(`              ${changed}`);
+      if (status.changedFiles !== null && status.changedFiles > status.changedPaths.length) {
+        lines.push(`              … and ${String(status.changedFiles - status.changedPaths.length)} more`);
+      }
+      lines.push('');
+      lines.push(
+        'The graph can still be queried, but symbols, relationships and line numbers in or near the changed files may be outdated. ' +
+          'Read those files with get_source (it always reads the current file), or call index_project to re-index.',
+      );
       break;
     }
 

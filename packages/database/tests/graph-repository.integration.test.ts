@@ -892,4 +892,114 @@ suite('GraphRepository against PostgreSQL', () => {
       expect(plans.every((plan) => plan.rows.length > 0)).toBe(true);
     });
   });
+
+  describe('complete relationship sections', () => {
+    let hubProject: string;
+    const id = (name: string): string => `${hubProject}-${name}`;
+
+    /**
+     * A hub with 40 callers and 3 references. Under the old single cap across
+     * all sections (limit × relationship types), a page of 2 filled with
+     * CALLS rows before REFERENCES was reached and returned no references at
+     * all. Each section must now keep its own page.
+     */
+    beforeAll(async () => {
+      const project = await projects.create({ name: `paging-${randomUUID().slice(0, 8)}`, description: null });
+      hubProject = project.id;
+      const node = (name: string, type: CodeNode['type'], filePath: string): CodeNode => ({
+        id: id(name),
+        projectId: hubProject,
+        type,
+        name,
+        filePath,
+        startLine: 1,
+      });
+      const edge = (source: string, relationship: CodeEdge['relationship'], target: string): CodeEdge => ({
+        id: `${hubProject}-${source}-${relationship}-${target}`,
+        projectId: hubProject,
+        sourceNodeId: id(source),
+        targetNodeId: id(target),
+        relationship,
+      });
+      const callers = Array.from({ length: 40 }, (_, index) => `caller${String(index).padStart(2, '0')}`);
+      const refs = ['ref0', 'ref1', 'ref2'];
+      const subs = ['sub0', 'sub1', 'sub2'];
+
+      await graph.replaceProjectGraph(hubProject, {
+        nodes: [
+          node('hub', 'class', 'src/hub.ts'),
+          node('contract', 'interface', 'src/contract.ts'),
+          ...callers.map((name) => node(name, 'method', `src/callers/${name}.ts`)),
+          ...refs.map((name) => node(name, 'function', 'src/refs.ts')),
+          ...subs.map((name) => node(name, 'class', 'src/subs.ts')),
+        ],
+        edges: [
+          ...callers.map((name) => edge(name, 'CALLS', 'hub')),
+          ...refs.map((name) => edge(name, 'REFERENCES', 'hub')),
+          ...subs.map((name) => edge(name, 'EXTENDS', 'hub')),
+          edge('hub', 'IMPLEMENTS', 'contract'),
+          edge('hub', 'REFERENCES', 'ref0'),
+        ],
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      if (hubProject) await db.query('DELETE FROM projects WHERE id = $1', [hubProject]);
+    });
+
+    it('caps each section on its own, so a crowded one cannot starve the rest', async () => {
+      const relations = await graph.nodeRelations(hubProject, id('hub'), 2);
+      expect(relations.callers).toHaveLength(2);
+      expect(relations.references.map((node) => node.name)).toEqual(['ref0', 'ref1']);
+    });
+
+    it('returns the same first page as before when nothing is starved', async () => {
+      const relations = await graph.nodeRelations(hubProject, id('hub'), 100);
+      expect(relations.callers).toHaveLength(40);
+      expect(relations.callers.map((node) => node.name)).toEqual(
+        [...relations.callers.map((node) => node.name)].sort(),
+      );
+    });
+
+    it('reports exact totals per section, ignoring edges no section shows', async () => {
+      expect(await graph.relationshipTotals(hubProject, id('hub'))).toMatchObject({
+        callers: 40,
+        callees: 0,
+        references: 3,
+        implementations: 4,
+        children: 0,
+      });
+    });
+
+    it('pages callers with an offset, and the pages rebuild the section exactly', async () => {
+      const pages: string[] = [];
+      for (let offset = 0; offset < 40; offset += 15) {
+        pages.push(...(await graph.callers(hubProject, id('hub'), 15, offset)).map((node) => node.name));
+      }
+      const whole = (await graph.callers(hubProject, id('hub'), 100)).map((node) => node.name);
+      expect(pages).toEqual(whole);
+      expect(new Set(pages).size).toBe(40);
+      expect(await graph.countSection(hubProject, id('hub'), 'callers')).toBe(40);
+    });
+
+    it('counts and pages implementations by direction', async () => {
+      expect(await graph.countSection(hubProject, id('hub'), 'implementations', 'incoming')).toBe(3);
+      expect(await graph.countSection(hubProject, id('hub'), 'implementations', 'outgoing')).toBe(1);
+      const second = await graph.implementations(hubProject, id('hub'), 2, 2, 'incoming');
+      expect(second.map((node) => node.name)).toEqual(['sub2']);
+    });
+
+    it('applies a search path prefix before paging, and counts only what it keeps', async () => {
+      const result = await graph.searchNodes(hubProject, 'caller', {
+        filePrefix: 'src/callers/caller39',
+        limit: 5,
+        offset: 0,
+      });
+      expect(result.nodes.map((node) => node.name)).toEqual(['caller39']);
+      expect(result.total).toBe(1);
+
+      const wildcard = await graph.searchNodes(hubProject, 'caller', { filePrefix: 'src/%', limit: 5, offset: 0 });
+      expect(wildcard.total).toBe(0);
+    });
+  });
 });

@@ -11,6 +11,7 @@ import { loadMcpConfig, type McpConfig } from './config.js';
 import { registerGetIndexStatus } from './tools/get-index-status.js';
 import { registerGetNode } from './tools/get-node.js';
 import { registerGetSource } from './tools/get-source.js';
+import { registerIndexProject } from './tools/index-project.js';
 import { registerResolveProject } from './tools/resolve-project.js';
 import { registerSearchCode } from './tools/search-code.js';
 import { registerSearchGraph } from './tools/search-graph.js';
@@ -39,7 +40,11 @@ export function createMcpServer(config: McpConfig): McpServer {
       instructions:
         'Query a repository knowledge graph: code symbols, the calls and references between them, ' +
         'and the APIs, services, data stores and documentation around them. ' +
-        'Start with resolve_project to turn a working directory into a project id, then get_index_status to check that project can answer before trusting what it says, then search_graph to find nodes in it, then get_node to inspect one and trace_path to see how two of them are connected. search_code searches the source text itself, for anything the graph does not record, and get_source reads the code at any location the others report. Every call after the first carries the same projectId; there is no implicit project.',
+        'Start with resolve_project to turn a working directory into a project id, then get_index_status before relying on graph results. ' +
+        'If nothing is indexed, or the state is never_indexed, call index_project with the repository root and poll get_index_status until ready. ' +
+        'If the state is stale, files changed after indexing: graph relationships and line numbers near the changed files may be outdated — say so when it matters, read those files with get_source, and re-index with index_project when appropriate. ' +
+        'Use search_graph to find symbols, routes, tables and other structure; get_node for one symbol’s details and relationships; trace_path for how two nodes connect through calls or dependencies; search_code for literal text in the source; get_source to read the code at any location the others report. ' +
+        'Every call after the first carries the same projectId; there is no implicit project.',
     },
   );
 
@@ -49,9 +54,11 @@ export function createMcpServer(config: McpConfig): McpServer {
   });
 
   // Registered in the order an agent uses them: which project, whether that
-  // project can answer anything, then asking it something.
+  // project can answer anything, making it able to if not, then asking it
+  // something.
   registerResolveProject(server, api);
   registerGetIndexStatus(server, api);
+  registerIndexProject(server, api);
   registerSearchGraph(server, api);
   registerGetNode(server, api);
   registerTracePath(server, api);

@@ -8,6 +8,9 @@ existing HTTP API on the other:
 
 ```
 MCP client ──stdio──▶ apps/mcp ──HTTP──▶ apps/api ──▶ services ──▶ PostgreSQL
+                                                                      ▲
+                                  apps/worker ── claims queued runs ──┘
+                                  (SCIP → graph → persisted)
 ```
 
 A tool is a schema, a request and a rendering. No tool queries the database, and
@@ -16,44 +19,76 @@ the app has no database credentials to query it with — `apps/mcp` depends on
 structural rather than a convention: if a question cannot be answered through
 the HTTP API, the answer is a new API route, not a second path into the data.
 
-## Running it
+## Quick start
 
-The API must be running; the MCP server reads the graph through it.
+### Required services
+
+| Service | What for | Started by |
+| --- | --- | --- |
+| PostgreSQL | Stores projects, runs and graphs | `docker compose` (or your own server at `DATABASE_URL`) |
+| API (`apps/api`) | Every MCP tool calls it | `pnpm --filter @ckg/api dev` |
+| Worker (`apps/worker`) | Runs the indexing that `index_project` queues | `pnpm --filter @ckg/worker dev` |
+| MCP server (`apps/mcp`) | The tools | Your MCP client launches it — never started by hand |
+
+### One command
 
 ```bash
-pnpm dev:api          # the MCP server has nothing to talk to without this
+pnpm dev:all             # PostgreSQL + build + migrations + API + worker + web UI
+pnpm dev:all --no-web    # the same without the web UI
 ```
 
-An MCP client launches the server process itself. Point it at the entry file:
+In order, it: uses PostgreSQL if something already listens at `DATABASE_URL`,
+otherwise runs `docker compose up -d --wait postgres`; runs `pnpm build:packages`
+and `pnpm db:migrate`; starts each service through its package's own `dev`
+script with `[api]` / `[worker]` / `[web]` prefixed output; waits for
+`/health`; then prints what is running. Any failing step stops it with the
+reason, and so does a port already taken by another running copy. A service that exits takes the others down and says which one it was.
+Ctrl+C stops the services; PostgreSQL keeps running
+(`docker compose stop postgres` stops it).
 
-```json
-{
-  "mcpServers": {
-    "code-graph": {
-      "command": "npx",
-      "args": ["tsx", "apps/mcp/src/server.ts"],
-      "cwd": "/absolute/path/to/code-graph"
-    }
-  }
-}
-```
+The existing `pnpm dev`, `pnpm dev:api` and `pnpm dev:worker` are unchanged.
 
-Or, after `pnpm build`:
+### Connect Claude Code
+
+**In this repository**, nothing to configure: [`.mcp.json`](../.mcp.json)
+declares the server, and Claude Code asks once to approve it.
 
 ```json
 {
   "mcpServers": {
     "code-graph": {
       "command": "node",
-      "args": ["/absolute/path/to/code-graph/apps/mcp/dist/server.js"]
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/apps/mcp/dist/server.js"]
     }
   }
 }
 ```
 
-`pnpm dev:mcp` runs it in watch mode against your terminal's stdin, which is
-useful for seeing it start and little else — the protocol expects a client on
-the other end.
+It runs the built server (`pnpm dev:all` builds it). It has no `env` block: the
+server reads the workspace `.env` itself, so no secrets live in the file.
+
+**From any other repository** — the usual case, since that is the code you want
+analysed — register it once at user scope with the absolute path:
+
+```bash
+claude mcp add --scope user code-graph -- node /absolute/path/to/code-graph/apps/mcp/dist/server.js
+```
+
+### Verify it
+
+1. **Start dependencies and CodeRAG:** `pnpm dev:all`. Wait for `CodeRAG is running`.
+2. **Connect:** open Claude Code in the repository (approve `code-graph` when asked),
+   or run `claude mcp get code-graph`. `Pending approval` means run `claude` and
+   approve it. `claude mcp reset-project-choices` re-asks.
+3. **Tools visible:** `/mcp` in a session lists `code-graph` with eight tools.
+4. **Smoke test:** ask Claude to *"resolve_project for this directory, then
+   get_index_status"*. If nothing is indexed, *"index_project this directory"*
+   and poll `get_index_status` until `ready`. Then *"search_graph for
+   AnalysisService"*.
+
+`pnpm dev:mcp` runs the server in watch mode against your terminal's stdin,
+which is useful for seeing it start and little else — the protocol expects a
+client on the other end.
 
 ## Configuration
 
@@ -92,12 +127,14 @@ that the startup line arrived on stderr instead.
 
 ## The workflow
 
-Three tools, and they are meant to be used in this order:
+The tools are meant to be used in this order:
 
 ```
 resolve_project(path)             a working directory  →  a projectId
         ↓
-get_index_status(projectId)       can that project answer anything?
+get_index_status(projectId)       can that project answer anything, and is it current?
+        ↓   never_indexed / stale / no match:
+        ↓   index_project(repositoryRoot) → poll get_index_status until ready
         ↓
 search_graph(projectId, query)    find candidate nodes  →  a nodeId
         ↓
@@ -128,8 +165,10 @@ down is not in the source. Neither absence implies the other.
 In full, the way an agent works through it:
 
 1. Resolve the user’s project path.
-2. Take the project id from the match that fits.
-3. Verify the index status before trusting anything the graph says.
+2. Take the project id from the match that fits — or, with no match, call
+   `index_project` on the repository root and take the id it returns.
+3. Verify the index status before trusting anything the graph says. `never_indexed`
+   or `stale` → `index_project`, then poll `get_index_status` until `ready`.
 4. Search for nodes relevant to the question.
 5. Pick a node id from the results.
 6. Retrieve that node’s detail.
@@ -143,8 +182,12 @@ Each step exists because the next one cannot be trusted without it:
   Everything else in the graph API is addressed by a project id, and an agent
   starts life holding a directory instead.
 - **`get_index_status`** says whether that project’s graph is usable — ready,
-  still indexing, failed, or never indexed. Skipping it is how an empty search
-  result gets misread as "this code does not exist".
+  stale, still indexing, failed, or never indexed. Skipping it is how an empty
+  search result gets misread as "this code does not exist", and how a graph an
+  agent's own edits have outdated gets trusted anyway.
+- **`index_project`** fixes `never_indexed` and `stale`: it registers the
+  directory if needed and queues a run through the existing pipeline, never a
+  duplicate.
 - **`search_graph`** searches that one project by name, and returns node ids.
 - **`get_node`** inspects one of those nodes: what it is, where it is defined,
   and what it is connected to, with the evidence behind each connection.
@@ -160,6 +203,49 @@ There is no implicit project, no "current" project and no server-side memory of
 the last one selected: a tool that needs a project takes it as a required
 argument, every time. Two projects in one conversation is an ordinary thing, and
 nothing here makes it ambiguous which one an answer came from.
+
+### Index status
+
+`get_index_status` returns one `state`. The docs' names for them are in the
+second column:
+
+| `state` | Status | Means | Do |
+| --- | --- | --- | --- |
+| `ready` | CURRENT | Indexed; the graph matches the files (or freshness could not be determined — then `stale` is `null` and `freshnessReason` says why) | Ask away |
+| `stale` | STALE | Indexed, but files changed after the graph was built | See below |
+| `indexing` | INDEXING | A run is queued or in progress (`indexingJobId`) | Poll; an earlier graph may still be queryable (`indexed`) |
+| `never_indexed` | NOT_INDEXED | No run has ever happened | `index_project` |
+| `failed` | ERROR | The latest run failed (`error`) | Fix the cause; an earlier graph may survive (`lastSuccessfulRun`) |
+
+### What STALE means
+
+The latest completed graph was built from files that have since changed. It is
+still stored and still answers, but symbols, relationships and line numbers in
+or near the changed files may be wrong. `changedFiles` and `changedPaths` say
+which files.
+
+What an agent should do: say so when an answer depends on those files, read them
+with `get_source` (it always reads the file as it is now), and call
+`index_project` when a fresh graph matters. That is usually after a batch of
+edits, not after every one.
+
+How it is decided (`GET /api/projects/:projectId/freshness`):
+
+- **Git working tree.** When a run starts, the worker records HEAD plus a content
+  hash of every file that differs from it — staged, unstaged, deleted or
+  untracked (`.gitignore` honoured). A check diffs the working tree against that
+  same commit and compares. So uncommitted edits count, and committing exactly
+  what was indexed stays current. A project inside a larger repository sees
+  only its own subdirectory. `indexedCommit` / `currentCommit` report HEAD then
+  and now.
+- **Not a git repository.** No commit is recorded or invented. Any file or
+  directory modified after the run started means stale. Directory times are
+  what catch deletions.
+- **Unknown** (`stale: null`): a project indexed from a git URL (no working tree
+  left), a run recorded before this was added (re-index once), or local
+  filesystem access switched off.
+- Paths the scanner ignores (`node_modules`, `dist`, lockfiles, …) never make a
+  graph stale.
 
 ## Tools
 
@@ -222,9 +308,11 @@ protocol errors, so the model sees them and can act:
 
 ### `get_index_status`
 
-Reports whether a project’s graph is in a state to answer questions. It calls
+Reports whether a project’s graph is in a state to answer questions, and
+whether it still matches the files. It calls
 `GET /api/projects/:projectId/analysis` — the existing endpoint that lists a
-project’s runs newest first — and adds no state of its own.
+project’s runs newest first — and, when a graph is stored,
+`GET /api/projects/:projectId/freshness`. It adds no state of its own.
 
 Call it after `resolve_project` and before trusting anything the graph says.
 Without it an agent has two ways to be confidently wrong: querying a project
@@ -237,15 +325,8 @@ one mid-re-index and reading a half-written graph as the whole truth.
 | --- | --- | --- |
 | `projectId` | uuid, required | As returned by `resolve_project`. A malformed id is rejected here, without troubling the API. |
 
-**Output** — `state` is the headline, and there are four because there are four
-different things to do next:
-
-| `state` | Means | Do |
-| --- | --- | --- |
-| `ready` | The most recent run completed | Ask away |
-| `indexing` | A run is in flight | Wait and retry; `progress` says how far |
-| `failed` | The most recent run failed | Do not trust the graph; `error` says why |
-| `never_indexed` | There has never been a run | Nothing to query — read files, or index first |
+**Output** — `state` is the headline, one of five: see
+[Index status](#index-status).
 
 `usable` is the other half of the answer, and it is not the same question. The
 pipeline replaces a project’s graph in one step at the end of a run, so a
@@ -264,11 +345,76 @@ in the graph should not be read as an absence in the code.
 
 `progress` is present only while a run is in flight, and its percentage comes
 from `analysisProgressFraction` in `@ckg/shared` — the same weighting the web
-UI’s progress bar uses, rather than a second opinion about the same run.
+UI’s progress bar uses, rather than a second opinion about the same run. A run
+still `QUEUED` 30 seconds after it was created says the worker may not be
+running.
+
+Freshness fields, added without changing any of the above:
+
+| Field | Meaning |
+| --- | --- |
+| `indexed` / `indexing` | A graph is stored / a run is queued or in progress |
+| `indexingJobId` | The in-flight run, or null |
+| `lastIndexedAt` | When the stored graph was completed |
+| `stale` | `true` / `false`, or `null` when undeterminable or no graph |
+| `freshness`, `freshnessReason` | `current` / `stale` / `unknown`, and why |
+| `indexedCommit`, `currentCommit` | Git HEAD then and now; null outside git |
+| `changedFiles`, `changedPaths` | How many files differ, and the first 20 |
+
+If the freshness call fails — an older API without the route, say — the tool
+still answers from the run list with `freshness: unknown`.
 
 **Failures** come back as `isError: true`. `PROJECT_NOT_FOUND` gets its own
 wording, because it has one obvious cause and one obvious fix: an id that did
 not come from `resolve_project`, or one whose project has since been deleted.
+
+### `index_project`
+
+Makes sure a local directory has a current graph. It calls
+`POST /api/projects/index`, which composes the existing services: validate the
+path as the web intake validates a chosen folder, find the project registered
+at exactly that root or create one (`POST /projects` + repository attach), and
+queue a run with `AnalysisService.enqueue`, the call the UI makes. The worker
+indexes it like any other run. There is no second pipeline.
+
+```
+index_project({ "path": "/absolute/path/to/repo" })
+  → Registered … as a new project and queued its first indexing run.
+       project:   repo — projectId: 0b9784ed-…
+       run:       2d6d7e3e-… (QUEUED)
+```
+
+**Input**
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `path` | string, required | Absolute path to the repository root on the API's machine. Git URLs and relative paths are refused. |
+| `force` | boolean, optional | Re-index even if the graph is current. Never duplicates an active run. |
+
+**Outcomes** (`action`)
+
+| Situation | `action` | `jobCreated` |
+| --- | --- | --- |
+| Directory not registered | `started` (`projectCreated: true`) | true |
+| Registered, never indexed / last run failed / stale / freshness unknown | `started` | true |
+| A run is already queued or running | `already_indexing` — that run is returned | false |
+| Graph matches the files | `up_to_date` (unless `force`) | false |
+
+Two concurrent calls cannot both queue a run: the loser of the race gets the
+winner's run back. If registration succeeds but queuing fails, the new project
+is removed again, so a retry starts clean.
+
+It returns as soon as the run is queued. Poll `get_index_status` until
+`ready`. If the run stays `QUEUED`, the worker is not running.
+
+Pass the repository root. If `resolve_project` already found an enclosing
+project, pass its `repositoryRoot`; a subdirectory becomes a separate project.
+
+**Failures** (`isError: true`), each worded for its fix: `INVALID_PROJECT_PATH`
+(relative, a URL, or a file), `DIRECTORY_NOT_FOUND`, `DIRECTORY_NOT_READABLE`,
+`FILESYSTEM_ACCESS_DISABLED` (`LOCAL_FILESYSTEM_ENABLED=false`), the API's own
+code for anything else, and "could not be reached — start it with
+`pnpm dev:all`" when the API is down.
 
 ### `search_graph`
 
@@ -290,11 +436,31 @@ that.
 | --- | --- | --- |
 | `projectId` | uuid, required | From `resolve_project`. No default, and no cross-project search. |
 | `query` | string, required | 1–200 characters. A literal substring. |
+| `nodeTypes` | string[], optional | Exact node types: `class`, `interface`, `function`, `method`, `variable`, `type`, `enum`, `property`, `file`, `module`, `api`, `table`, `service`, … An unknown type is rejected. |
+| `file` | string, optional | Repository-relative **path prefix**: a directory (`src/services`) or a file (`src/services/album.service.ts`). Case-insensitive; not a bare file name. |
 | `limit` | integer, optional | 1–50, default 20. |
+| `offset` | integer, optional | Skip this many matches, from a previous `nextOffset`. |
 
 `limit` is capped below the API’s own ceiling of 100. These results go into a
 model’s context, and fifty nodes is already more than anyone reads before
 narrowing the question.
+
+**Filters are the API’s, passed through.** `nodeTypes` and `file` are applied by
+the query itself, before paging, so `total` counts what the filters keep and no
+match can be hidden behind the first page. Ranking is unchanged; filters only
+remove candidates.
+
+**When to filter.** A broad term matches every field, parameter and test helper
+that contains it. On Immich, `SharedLink` matches 168 nodes and the service,
+controller and repository rank #33–#40. `nodeTypes: ["class"]` returns 12, with
+all three in the list. Other common narrowings:
+
+| Question | Call |
+| --- | --- |
+| "Which modules handle X?" | `query: "X", nodeTypes: ["class"]` |
+| "Which routes exist for albums?" | `query: "/albums", nodeTypes: ["api"]` |
+| "What is defined in this file?" | `query: "Album", file: "src/services/album.service.ts"` (the query is still required; use a term the names share) |
+| "Which tables mention asset?" | `query: "asset", nodeTypes: ["table"]` |
 
 **Output**
 
@@ -304,7 +470,10 @@ narrowing the question.
   "query": "UserService",
   "total": 9,
   "returned": 5,
+  "offset": 0,
   "truncated": true,
+  "nextOffset": 5,
+  "filters": { "nodeTypes": null, "file": null },
   "results": [
     {
       "id": "…",
@@ -320,8 +489,9 @@ narrowing the question.
 ```
 
 `total` is the full match count rather than the page’s, so a caller always knows
-what it did not see; `truncated` says the same thing as a boolean, and the text
-block names how many more there are.
+what it did not see. `truncated` says the same thing as a boolean, `nextOffset`
+continues, and the text block names how many more there are and the offset to
+read on from.
 
 The text block is two lines per node — what it is, and where it lives — because
 that is what an agent picks from. A node with no file (a table, an event) says so
@@ -358,8 +528,11 @@ This is where an agent stops matching strings and starts reading structure.
 | --- | --- | --- |
 | `projectId` | uuid, required | From `resolve_project`. |
 | `nodeId` | string, required | From `search_graph`, in `results[].id`. |
+| `relationship` | enum, optional | Switch to **page mode** for one section: `callers`, `callees`, `references`, `implementations`, `subtypes`, `supertypes`, `dependencies`, `dependents`, `children`, `apis`, `databases`, `documentation`, `contracts`. |
+| `limit` | integer, optional | Page size in page mode, 1–100, default 50. |
+| `offset` | integer, optional | First entry in page mode, from a previous `nextOffset`. Default 0. |
 
-Both are required. Node ids happen to be globally unique, but the project stays
+`projectId` and `nodeId` are required. Node ids happen to be globally unique, but the project stays
 explicit: the contract never has an implicit project, and a lookup that carried
 one would be a lookup whose scope depended on what happened earlier in the
 conversation.
@@ -380,8 +553,8 @@ conversation.
     "documentation": ["Persistence for users. …"]
   },
   "relationships": {
-    "callers":  { "returned": 1, "hasMore": false, "items": [ … ] },
-    "databases": { "returned": 3, "hasMore": false, "items": [
+    "callers":  { "returned": 20, "total": 67, "hasMore": true, "nextOffset": 20, "items": [ … ] },
+    "databases": { "returned": 3, "total": 3, "hasMore": false, "nextOffset": null, "items": [
       { "id": "…", "name": "users", "qualifiedName": "postgresql.users",
         "relationship": "WRITES_TO", "direction": "outgoing",
         "evidence": { "source": "database-analyzer", "confidence": "medium",
@@ -400,22 +573,45 @@ conversation.
 API’s flattened `symbol` block does not carry — they are the two things worth
 reading before opening the file.
 
-**Bounding.** The API applies a `limit` per relationship section and defaults to
-100, which is right for a panel someone scrolls and wrong for a model’s context:
-a hub node would arrive as a thousand neighbours across eleven sections. The
-tool asks for **21 per section and keeps 20**.
+**Sections, totals and paging.** Every section carries four facts:
 
-That extra one is the point. The node-detail endpoint reports **no totals**, so
-asking for exactly twenty would make a section of twenty indistinguishable from
-a section of two hundred. Asking for one more makes `hasMore` a fact:
+| Field | Meaning |
+| --- | --- |
+| `total` | The exact size of the section in the graph. `null` only against an API too old to report it; then `returned` is a floor and the text shows `20+`. |
+| `returned` | Entries in `items`: at most 20 in the overview. |
+| `hasMore` | `total > returned`: the list is **incomplete**. |
+| `nextOffset` | Where page mode continues, or `null` when nothing remains. |
+
+The overview's text lists up to 10 entries per section — callers, callees,
+references, implementations and inheritance (`← EXTENDS` / `→ IMPLEMENTS`),
+members, and the architectural links with their evidence — and, whenever a list
+is cut, says so with the exact remainder and the call that reads it:
 
 ```
-callers: 20+   references: 5   databases: 3
-(a "+" means more than 20 exist; the number shown is a floor)
+callers: 67   references: 8   implementations: 52
+(exact totals)
+…
+  … showing 10 of 52; 42 more — get_node with relationship "implementations", offset 10
 ```
 
-So `returned` is never mistakable for a total. Every section is present even
-when empty, so a consumer need not branch on absence.
+**Page mode** reads one section from its own route (`/graph/nodes/:id/<section>`,
+which reports `meta.total`) and returns `page: { relationship, total, offset,
+limit, returned, hasMore, nextOffset, items }`. Its text ends with either
+`Incomplete: N more. Next page: …, offset K.` or `Complete: this is the end of …`.
+`subtypes` is what implements or extends the node; `supertypes` is what it
+implements or extends; `implementations` is both.
+
+**When to page.** The overview is enough to understand a node and pick what to
+open next. Page when the question needs the whole set:
+
+| Question | Call |
+| --- | --- |
+| "Every class that extends `BaseService`" | `relationship: "subtypes", limit: 100` (51 on Immich, one call) |
+| "Everything that calls `getById` before I change it" | `relationship: "callers"` until `nextOffset` is null |
+| "All code that reads or writes table X" | `get_node` on the table, then `relationship: "databases"` |
+
+Every section is present even when empty, so a consumer need not branch on
+absence.
 
 **Evidence is preserved whole** — `source`, `confidence`, `method`, `file`,
 `line`, `column`, `matched` — not reduced to a relationship name. "A `WRITES_TO`
@@ -684,6 +880,22 @@ code rather than retrying or guessing at a different path. Each failure keeps
 its own meaning: a refused path is a mistake in the request, an unreadable
 source is a property of the project, a missing file is neither, and none of them
 is "the file is empty".
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `claude mcp get code-graph` says *Pending approval* | Run `claude` in the repository and approve it; `claude mcp reset-project-choices` re-asks |
+| Server fails to connect; `Cannot find module …/apps/mcp/dist/server.js` | Not built: `pnpm dev:all` or `pnpm build:packages` |
+| Server fails with `does not provide an export named …` | Stale build after pulling: `pnpm build:packages` |
+| Every tool: *could not be reached* | API not running, or on another port: `pnpm dev:all`, or set `MCP_API_BASE_URL` |
+| Run stays `QUEUED`; status says the worker may not be running | Start the worker: `pnpm dev:all` (or `pnpm dev:worker`) |
+| `dev:all`: *port … is already in use* | Another `pnpm dev` / `dev:api` / `dev:web` is running. Stop it, or set `PORT`. `dev:all` refuses rather than start beside it. `tsx watch` would otherwise hide the crashed duplicate |
+| `dev:all`: *Is Docker running?* | Start Docker Desktop, or run PostgreSQL yourself and point `DATABASE_URL` at it |
+| `dev:all`: POSTGRES_PORT and DATABASE_URL disagree | Make the compose port and the URL's port the same in `.env` |
+| `stale: null`, reason mentions *before source revisions were recorded* | Graph predates freshness tracking: `index_project` with `force: true` once |
+| `index_project`: `FILESYSTEM_ACCESS_DISABLED` | The API has `LOCAL_FILESYSTEM_ENABLED=false`; local indexing needs it on |
+| `search_graph` finds nothing for code you just wrote | Graph is stale or the file is new: check `get_index_status`, use `search_code`, or re-index |
 
 ## Adding a tool
 

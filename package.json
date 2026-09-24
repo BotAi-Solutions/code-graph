@@ -12,6 +12,7 @@
     "typecheck": "tsc -b tsconfig.json && pnpm --filter @ckg/web typecheck",
     "clean": "tsc -b tsconfig.json --clean && node -e \"for (const p of ['apps/web/dist','apps/web/node_modules/.vite']) require('node:fs').rmSync(p,{recursive:true,force:true})\"",
     "dev": "pnpm build:packages && pnpm --parallel --filter @ckg/api --filter @ckg/worker --filter @ckg/web dev",
+    "dev:all": "tsx scripts/dev-all.ts",
     "dev:api": "pnpm build:packages && pnpm --filter @ckg/api dev",
     "dev:worker": "pnpm build:packages && pnpm --filter @ckg/worker dev",
     "dev:web": "pnpm --filter @ckg/web dev",

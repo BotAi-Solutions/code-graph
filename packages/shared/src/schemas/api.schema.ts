@@ -278,6 +278,100 @@ export const analysisJobSchema = z.object({
   updatedAt: z.string(),
 });
 
+// --- Index freshness ------------------------------------------------------
+
+/**
+ * What a run saw on disk when it started, so a later check can say whether the
+ * stored graph still describes the files.
+ *
+ * Recorded by the worker, stored beside the job, and deliberately *not* part of
+ * `analysisJobSchema`: `changes` can hold thousands of entries, and the run
+ * listing is read on every dashboard poll. Only the freshness check reads it.
+ *
+ * `git`: `commit` is HEAD, and `changes` maps every path that differed from it
+ * — modified, staged, deleted or untracked — to the SHA-256 of its content, or
+ * null when the file was absent. `digest` hashes the same entries, so two
+ * snapshots can still be compared when `changes` was too large to keep.
+ *
+ * `none`: not a git working tree. There is no commit to record and none is
+ * invented; freshness falls back to modification times against `capturedAt`.
+ */
+export const sourceRevisionSchema = z.object({
+  vcs: z.enum(['git', 'none']),
+  commit: z.string().nullable(),
+  changes: z.record(z.string(), z.string().nullable()).nullable(),
+  changeCount: z.number().int(),
+  digest: z.string().nullable(),
+  capturedAt: z.string(),
+});
+
+export const INDEX_FRESHNESS_STATES = ['current', 'stale', 'unknown', 'not_indexed'] as const;
+
+/**
+ * Whether the stored graph still matches the files it was built from.
+ *
+ * Compares the latest *completed* run — the graph a query actually reads —
+ * against the working tree now. `unknown` is an honest answer, not a failure:
+ * a git-URL source has no working tree to compare, a run recorded before
+ * revisions were captured has nothing to compare against, and a server with
+ * local filesystem access switched off may not look.
+ */
+export const indexFreshnessSchema = z.object({
+  projectId: z.uuid(),
+  state: z.enum(INDEX_FRESHNESS_STATES),
+  /** The completed run whose graph was compared, or null when there is none. */
+  analysisId: z.uuid().nullable(),
+  vcs: z.enum(['git', 'none']).nullable(),
+  indexedAt: z.string().nullable(),
+  indexedCommit: z.string().nullable(),
+  currentCommit: z.string().nullable(),
+  /** Files that differ from what was indexed. Null when it could not be counted. */
+  changedFiles: z.number().int().nullable(),
+  /** The first few of them, repository-relative, for a caller deciding whether they matter. */
+  changedPaths: z.array(z.string()),
+  /** Why the state is what it is, in one sentence. */
+  reason: z.string(),
+  checkedAt: z.string(),
+});
+
+// --- Index a local project ------------------------------------------------
+
+/**
+ * Register-if-needed and index, in one request.
+ *
+ * `path` must be absolute: a relative one would resolve against the API's own
+ * working directory, which is not a question worth guessing at from an agent.
+ */
+export const indexProjectBodySchema = z.object({
+  path: z
+    .string()
+    .trim()
+    .min(1)
+    .max(PROJECT_PATH_MAX_LENGTH)
+    .refine((value) => !value.includes('\u0000'), 'path must not contain a NUL byte'),
+  /** Re-index even when the stored graph is current. An active run is still never duplicated. */
+  force: z.boolean().default(false),
+});
+
+export const INDEX_PROJECT_ACTIONS = ['started', 'already_indexing', 'up_to_date'] as const;
+
+export const indexProjectResultSchema = z.object({
+  action: z.enum(INDEX_PROJECT_ACTIONS),
+  /** True when this request created the project. */
+  projectCreated: z.boolean(),
+  /** True when this request queued a run. Never true while another run is active. */
+  jobCreated: z.boolean(),
+  projectId: z.uuid(),
+  projectName: z.string(),
+  /** The directory that was registered, absolute and symlink-free. */
+  repositoryRoot: z.string(),
+  /** The queued or already-running run; null when the graph was already current. */
+  job: analysisJobSchema.nullable(),
+  /** The freshness check that decided `up_to_date` or a re-index; null for a new project. */
+  freshness: indexFreshnessSchema.nullable(),
+  reason: z.string(),
+});
+
 // --- Local project intake -------------------------------------------------
 
 /**
@@ -419,6 +513,25 @@ export const neighbourQuerySchema = z.object({
     .default(GRAPH_DEFAULT_NEIGHBOUR_LIMIT),
 });
 
+/**
+ * One page of one relationship section.
+ *
+ * Offset paging, the same convention as graph search: the order is total and
+ * stable (name, then id, or source order for children), so `offset` addresses
+ * the same entry on every request, and `meta.total` is the full count rather
+ * than the page — which is what lets a caller say "20 of 67".
+ */
+export const relationshipPageQuerySchema = neighbourQuerySchema.extend({
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+/** `incoming`: what implements or extends this node. `outgoing`: what it implements or extends. */
+export const IMPLEMENTATION_DIRECTIONS = ['both', 'incoming', 'outgoing'] as const;
+
+export const implementationsPageQuerySchema = relationshipPageQuerySchema.extend({
+  direction: z.enum(IMPLEMENTATION_DIRECTIONS).default('both'),
+});
+
 /** Sparse by design: a relationship absent from a project has no key. */
 export const relationshipCountsSchema = z.partialRecord(
   z.enum(CODE_RELATIONSHIPS),
@@ -538,6 +651,21 @@ export const symbolInfoSchema = z.object({
  * original three sections and keep their exact shape; the sections added since
  * carry the relationship alongside each neighbour.
  */
+/** Exact entry counts per node-detail section, before any `limit` applies. */
+export const nodeRelationshipTotalsSchema = z.object({
+  callers: z.number().int(),
+  callees: z.number().int(),
+  references: z.number().int(),
+  dependencies: z.number().int(),
+  dependents: z.number().int(),
+  apis: z.number().int(),
+  databases: z.number().int(),
+  documentation: z.number().int(),
+  contracts: z.number().int(),
+  implementations: z.number().int(),
+  children: z.number().int(),
+});
+
 export const nodeDetailSchema = z.object({
   node: codeNodeSchema,
   /** Named metadata, so the panel never parses the metadata bag itself. */
@@ -567,6 +695,15 @@ export const nodeDetailSchema = z.object({
   /** The node that CONTAINS this one — its class, its file, its directory. */
   parent: codeNodeSchema.nullable(),
   children: z.array(codeNodeSchema),
+  /**
+   * The exact size of every section above, whatever `limit` cut it to.
+   *
+   * The lists are capped per section; these are not. A section whose list is
+   * shorter than its total has more to read, one page at a time, from its own
+   * route. Optional only so a client talking to an API older than this field
+   * can tell "not reported" from zero.
+   */
+  totals: nodeRelationshipTotalsSchema.optional(),
 });
 
 // --- Path -----------------------------------------------------------------
@@ -778,6 +915,9 @@ export type GraphQuery = z.infer<typeof graphQuerySchema>;
 export type GraphSearchQuery = z.infer<typeof graphSearchQuerySchema>;
 export type WireEdgeEvidence = z.infer<typeof edgeEvidenceSchema>;
 export type NeighbourQuery = z.infer<typeof neighbourQuerySchema>;
+export type RelationshipPageQuery = z.infer<typeof relationshipPageQuerySchema>;
+export type ImplementationDirection = (typeof IMPLEMENTATION_DIRECTIONS)[number];
+export type NodeRelationshipTotals = z.infer<typeof nodeRelationshipTotalsSchema>;
 export type NodeDetail = z.infer<typeof nodeDetailSchema>;
 export type RelatedNode = z.infer<typeof relatedNodeSchema>;
 export type GraphSummary = z.infer<typeof graphSummarySchema>;
@@ -800,3 +940,9 @@ export const GRAPH_QUERY_DEFAULTS = {
   limit: GRAPH_DEFAULT_NODE_LIMIT,
   direction: GRAPH_DEFAULT_DIRECTION,
 } as const;
+export type SourceRevision = z.infer<typeof sourceRevisionSchema>;
+export type IndexFreshnessState = (typeof INDEX_FRESHNESS_STATES)[number];
+export type IndexFreshness = z.infer<typeof indexFreshnessSchema>;
+export type IndexProjectBody = z.infer<typeof indexProjectBodySchema>;
+export type IndexProjectAction = (typeof INDEX_PROJECT_ACTIONS)[number];
+export type IndexProjectResult = z.infer<typeof indexProjectResultSchema>;

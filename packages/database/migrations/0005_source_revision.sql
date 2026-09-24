@@ -1,0 +1,26 @@
+-- ---------------------------------------------------------------------------
+-- 0005 source revision
+--
+-- A completed run recorded what it built, but not what it built it *from*.
+-- For a local repository nothing said which commit, or which uncommitted
+-- edits, the stored graph describes — so nothing could say whether that graph
+-- still matches the files. An agent editing code would keep trusting a graph
+-- that its own edits had made wrong.
+--
+-- One additive, nullable column:
+--
+--   source_revision : what the worker saw on disk when the run started — the
+--                     HEAD commit and a content hash of every path that
+--                     differed from it, or, outside git, just the capture
+--                     time. Shape owned by @ckg/shared (`SourceRevision`).
+--
+-- JSONB for the same reason as 0003's columns: its shape is validated in
+-- @ckg/shared and read whole, one job at a time, by primary key. It is kept out
+-- of the job listing's column list because it can hold thousands of entries
+-- and only the freshness check needs it.
+--
+-- Null for every run recorded before this migration, which freshness reports
+-- as unknown rather than guessing.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE analysis_jobs ADD COLUMN IF NOT EXISTS source_revision JSONB;
