@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { AnalysisJob, IndexFreshness, IndexProjectResult } from '@ckg/shared';
 import { ERROR_CODES } from '@ckg/shared';
 import { AppError, isAppError } from '../../common/errors/index.js';
+import { KeyedLock } from '../../common/utils/keyed-lock.js';
 import type { AnalysisService } from '../analysis/analysis.service.js';
 import type { FilesystemService } from '../filesystem/filesystem.service.js';
 import type { ProjectService } from '../projects/projects.service.js';
@@ -30,9 +31,12 @@ import type { FreshnessService } from './freshness.service.js';
  * **No second pipeline.** The run is queued by `AnalysisService.enqueue`, the
  * call the UI makes, and executed by the worker like any other.
  *
- * **Never a duplicate run.** An active run is returned rather than joined by
- * another, and the check-then-queue race is closed by `enqueue`'s own refusal:
- * a concurrent request that loses the race gets the winner's run back.
+ * **Never a duplicate project or run.** Requests for the same directory are
+ * serialised, so two that arrive together cannot both find "nothing registered
+ * here" and both create a project, or both find "no active run" and both queue
+ * one — the second sees what the first did. An active run is returned rather
+ * than joined by another, and `enqueue`'s own refusal still covers a run queued
+ * by some other path (the UI) between the check and the queue.
  *
  * **Local paths only.** The path must be absolute and must be a readable
  * directory on this machine, validated by the same code as a folder chosen in
@@ -45,6 +49,8 @@ export interface ActiveJobLookup {
 }
 
 export class IndexingService {
+  private readonly perRoot = new KeyedLock();
+
   constructor(
     private readonly filesystem: FilesystemService,
     private readonly projects: ProjectService,
@@ -64,6 +70,10 @@ export class IndexingService {
     }
 
     const root = await this.filesystem.resolveProjectDirectory(input.path);
+    return this.perRoot.run(root, () => this.indexRoot(root, input.force ?? false));
+  }
+
+  private async indexRoot(root: string, force: boolean): Promise<IndexProjectResult> {
     const resolution = await this.projects.resolveByPath({ path: root });
     // Newest first among projects registered at the same root, matching the
     // order `resolve_project` reports them in.
@@ -83,7 +93,7 @@ export class IndexingService {
     if (active) return this.alreadyIndexing(identity, active);
 
     let freshness: IndexFreshness | null = null;
-    if (!input.force) {
+    if (!force) {
       freshness = await this.checkFreshness(projectId);
       if (freshness?.state === 'current') {
         return {
@@ -114,7 +124,7 @@ export class IndexingService {
       jobCreated: true,
       job,
       freshness,
-      reason: input.force
+      reason: force
         ? 'Re-index queued because it was forced.'
         : reasonToReindex(freshness),
     };

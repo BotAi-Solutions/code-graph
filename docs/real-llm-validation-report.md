@@ -897,6 +897,309 @@ What this does and does not show:
   finding 4). The new `CALLS` edges store one, but the MCP contract was left
   unchanged, so it is visible only through `trace_path` evidence.
 
+# Follow-up Validation — Arrow Function CALLS
+
+A second real-LLM run of all 12 questions, after
+[Arrow Function CALLS](#arrow-function-calls-follow-up) was implemented. Its only
+purpose was measurement: no production code, graph data, ranking or MCP
+contract changed for it.
+
+> **How to read the numbers.** This is an observational before/after
+> comparison with **one run per question** in each round. It is not a
+> controlled experiment. On an identical graph, the same question varied by up
+> to 31% in cost between two runs (Q7: $1.56 vs $1.08, see
+> [Run-to-run spread](#run-to-run-spread)). Deltas smaller than that are not
+> evidence of anything.
+
+## Executive Summary
+
+- **Score: 12 PASS · 0 PARTIAL · 0 FAIL**, the same as the baseline. No material
+  hallucination. Spot-checked claims held (Q4 "~111" `requireAccess` call sites
+  vs 109 actual; Q12's snapshot and constraint claims were verified in source).
+- **Graph completeness improved and was used.** Q7 received all 16
+  `uploadAsset` callees, including `onBeforeLink` and
+  `isAssetChecksumConstraint`, with `hasMore:false`. Q8 inspected the arrow
+  helpers `mapAlbum` and `withAlbumUsers` directly as graph nodes. Q4's first
+  `search_graph` now returned 23 function nodes, where the baseline's
+  function-filtered search returned 0.
+- **Aggregate cost and call count barely moved:** 266 → 263 calls, $8.87 → $8.52.
+  Both are within run-to-run noise.
+- **The dominant remaining inefficiency is the agent, not the graph.** It still
+  reads source before asking the graph, and it hunts for definitions with
+  `search_code "export const X"` (17 such lookups). 8 of those targeted arrow
+  helpers that are now `function` nodes one `search_graph` away.
+- **The only graph gap that still forces a whole question into text is
+  event/job wiring** (Q9, both rounds). It cost calls, not correctness.
+- **Recommendation: no graph/retrieval implementation change is justified yet.
+  Collect more real-LLM evidence** ([below](#recommended-next-task)).
+
+## Environment
+
+| Property | Value |
+| --- | --- |
+| Date | 2026-09-24 |
+| CodeRAG | `01dd706` plus the arrow-function working-tree changes (staged, uncommitted). Production code unchanged for this run |
+| Immich | `server/` at `a4af86282d13354bd21bbaf7a2ffb7fae15e8cf2`, working tree clean |
+| Index | Analysis `51634ba2…` (the arrow-function re-index), state `current`, 0 changed files. 9,395 nodes; 721 `function`, 1,890 `variable`, 420 carrying `metadata.functionValue`; 8,659 `CALLS`, 24,390 `REFERENCES` |
+| Pre-run graph checks (through MCP) | `uploadAsset` callees **16**, `hasMore:false`, `onBeforeLink` ✓, `isAssetChecksumConstraint` ✓. `onBeforeLink` callers **2** (`AssetMediaService.uploadAsset`, `AssetService.update`). `search_graph "access" nodeTypes:[function] file:src/utils/access.ts` → **7** |
+| Agent | Claude Code CLI `2.1.278`, model `claude-opus-5[1m]`, the same as the baseline |
+| Harness | Identical to the baseline: fresh headless session per question, the question text verbatim (same files), cwd = Immich `server/`, the existing `.mcp.json` with `CLAUDE_PROJECT_DIR` set, `--tools ""` (no Read/Grep/Bash), `--strict-mcp-config`, `--disable-slash-commands`, stream-json transcripts, 4-way parallel |
+| MCP | `code-graph` connected in 12/12 sessions; 0 tool errors |
+| Output consumed | JSON (`structuredContent`) for **263/263** results, as in the baseline (266/266) |
+
+Baseline checks before the run: `pnpm typecheck` exit 0; `pnpm test` 1,344
+passed / 73 skipped; `pnpm evaluate:retrieval --api http://localhost:3001`
+49/49.
+
+## Before/After Results
+
+"Previous" is the baseline run in §1–§10 of this report, on the pre-change graph.
+Every figure in both columns was computed by the same script from the raw
+transcripts. It reproduces the baseline's published totals exactly: 266 calls,
+821,562 result chars. The baseline's $8.86 was a truncation of $8.865.
+
+| Metric | Previous | Current | Delta |
+|---|---:|---:|---:|
+| Questions | 12 | 12 | 0 |
+| PASS | 12 | 12 | 0 |
+| PARTIAL | 0 | 0 | 0 |
+| FAIL | 0 | 0 | 0 |
+| MCP calls | 266 | 263 | −3 (−1%) |
+| Total cost | $8.87 | $8.52 | −$0.35 (−4%) |
+| Tool-result chars consumed | 821,562 | 789,912 | −31,650 (−4%) |
+| Final-answer chars | 61,826 | 57,969 | −3,857 |
+| Output tokens | 75,931 | 77,366 | +1,435 |
+| Turns | 278 | 275 | −3 |
+| Wall time (sum) | 1,083 s | 1,052 s | −31 s |
+| Average calls/question | 22.2 | 21.9 | −0.3 |
+| Graph calls (`search_graph`/`get_node`/`trace_path`) | 61 | 71 | +10 |
+| Text calls (`search_code`/`get_source`) | 181 | 168 | −13 |
+| `get_node` | 30 | 32 | +2 |
+| `search_code` | 66 | 62 | −4 |
+| `get_source` | 115 | 106 | −9 |
+| `trace_path` | 2 | 2 | 0 |
+| Definition lookups via `search_code` | 13 | 17 | +4 |
+| Q7 calls | 35 | 37 | +2 |
+| Q7 cost | $1.28 | $1.08 | −$0.20 |
+| Q4 calls | 47 | 37 | −10 |
+| Q4 cost | $1.93 | $1.40 | −$0.53 |
+| Graph-first questions (first investigative call was a graph tool) | 12 | 12 | 0 |
+| Text-first questions | 0 | 0 | 0 |
+| Dominant evidence GRAPH / MIXED / TEXT | 7 / 2 / 3 | 6 / 3 / 3 | Q11 GRAPH → MIXED |
+
+The single post-implementation re-run in
+[Arrow Function CALLS Follow-up](#real-llm-re-run-q3-q7-q8) measured Q7 at 41
+calls / $1.56. That run and this one used the same graph.
+
+### Run-to-run spread
+
+Q3, Q7 and Q8 have been run twice on the *same* new graph: the follow-up
+re-run, then this run.
+
+| | Follow-up re-run | This run | Spread |
+| --- | --- | --- | --- |
+| Q3 | 14 calls · $0.40 | 14 calls · $0.44 | +10% cost |
+| Q7 | 41 calls · $1.56 | 37 calls · $1.08 | −31% cost |
+| Q8 | 23 calls · $0.66 | 20 calls · $0.58 | −12% cost |
+
+Identical graph, identical prompt, same model: up to 31% apart. That bounds
+what any single-run delta in this report can mean.
+
+## Per-Question Comparison
+
+"Graph contribution" uses one of: *found directly* · *narrowed the search* ·
+*confirmed a text-derived answer* · *bypassed* · *misleading/incomplete* ·
+*sufficient but not used*.
+
+| ID | Previous | Current | Calls | Cost | Dominant | Graph contribution | Fallback behaviour | Notable |
+|----|----------|---------|------:|-----:|----------|--------------------|--------------------|---------|
+| Q1 | PASS | PASS | 19 → 19 | $0.49 → $0.48 | GRAPH | Found directly: route → `callees` → `WRITES_TO` ×3 | `search_code` ×3 for DTO schema and global prefix | Same chain and lines as before |
+| Q2 | PASS | PASS | 14 → 19 | $0.29 → $0.46 | GRAPH | Found directly: `databases` on each callee | `search_code` ×3 to follow `AlbumInvite` → job | Went further: found the async `notification` write via `NotificationRepository.create`'s `databases` section |
+| Q3 | PASS | PASS | 16 → 14 | $0.44 → $0.44 | GRAPH | Found directly: 3 callers, complete | `search_code "albumService.create"` to confirm; source to explain | Flagged a pre-existing false `IMPLEMENTS` edge (`AlbumService.create` → static `BaseService.create`) as a name collision |
+| Q4 | PASS | PASS | 47 → 37 | $1.93 → $1.40 | TEXT | Narrowed: first search returned guards and arrow helpers (`Authenticated`, `getAuthTokens`, `MaintenanceRoute`); then bypassed | 20 `get_source`, 12 `search_code` | Baseline's 0-result dead end did not recur. Still the costliest question |
+| Q5 | PASS | PASS | 18 → 23 | $0.81 → $0.98 | GRAPH | Found directly: 51 `subtypes` in one page | `search_code` counts for the "in common" section | Used `search_graph` to count constructors |
+| Q6 | PASS | PASS | 14 → 10 | $0.23 → $0.20 | TEXT | Confirmed: 4 `Interceptor` classes, no subtypes | `search_code "NestInterceptor"` (8 hits = 4 imports + 4 implements) | States `NestInterceptor` is external and not a node; scopes completeness to `server/` |
+| Q7 | PASS | PASS | 35 → 37 | $1.28 → $1.08 | MIXED | Sufficient but not used first: 16/16 callees fetched at call #29 of 37 | 19 `get_source`, 7 `search_code` (4 were definition lookups) | See [Arrow Function Impact](#arrow-function-impact) |
+| Q8 | PASS | PASS | 19 → 20 | $0.53 → $0.58 | GRAPH | Found directly: 2-level callers, `WRITES_TO`, arrow helpers `mapAlbum` and `withAlbumUsers` | `search_code` ×4, mostly call-site lines | New: `withAlbumUsers` "shared with `getById`, `getByAssetId`, `getAll`, `update`", from its graph callers |
+| Q9 | PASS | PASS | 20 → 22 | $0.66 → $0.65 | TEXT | Narrowed (`search_graph "OnJob"`, enums); then bypassed | 8 `get_source`, 8 `search_code` | Correct chain; still silent about where the graph stopped helping |
+| Q10 | PASS | PASS | 19 → 15 | $0.73 → $0.61 | MIXED | Narrowed: `shared_link` table node (19 `databases` edges) | 6 whole-file reads | `SharedLink` ranking unchanged (#33/#38/#40), absorbed by `limit:50` |
+| Q11 | PASS | PASS | 22 → 30 | $0.85 → $1.13 | MIXED | Narrowed/confirmed: class-level `get_node` ×2, `trace_path` controller → `album` | 13 `get_source`, 9 `search_code` (5 hunting `requireAccess`/`mapAlbum` definitions) | Graph-available definitions searched as text |
+| Q12 | PASS | PASS | 23 → 17 | $0.62 → $0.50 | GRAPH | Found directly: `trace_path`, `WRITES_TO`, callers | 1 `search_code` | Verified in source: CTE inserts without column lists; snapshot inserts only `albumName` |
+
+## Arrow Function Impact
+
+**Did graph completeness improve?** Yes, measurably. It was checked before the
+run and seen in the transcripts. Q7's `get_node uploadAsset` returned 16/16
+callees with the two helpers, each carrying `filePath` and `startLine`.
+`search_graph "onBeforeLink"` returned a `function` node. Q8's callee lists
+surfaced `withAlbumUsers` and `mapAlbum`.
+
+**Did agent behaviour improve?** In places, not overall.
+
+- *Where it changed:*
+  - Q8 opened `mapAlbum` and `withAlbumUsers` as graph nodes and used
+    `withAlbumUsers`'s callers for its "shared helper" risk.
+  - Q4's first search was `nodeTypes: ["class","interface","function"]` and
+    returned the arrow helpers, so the baseline's zero-result dead end did not
+    recur.
+  - Q7 located `onBeforeLink` with `search_graph`, not `search_code`.
+- *Where it did not:* the dominant strategy is unchanged. The agent reads the
+  method body, then locates each helper's definition, often with
+  `search_code "export const X"`. Definition lookups via `search_code` went
+  13 → 17, and 8 of the 17 targeted helpers that are now `function` nodes.
+
+**Q7 specifically:**
+
+| Question | Answer |
+| --- | --- |
+| Retrieved `uploadAsset`? | Yes: `get_node` overview at call #29 (of 37) |
+| Complete 16 callees? | Yes: 16/16, `hasMore:false`, helpers with `filePath`/`startLine` |
+| Recognised the arrow helpers? | Yes: `onBeforeLink`, `isAssetChecksumConstraint`, plus `requireUploadAccess` and `mapToUploadFile` on neighbouring methods |
+| Used the graph evidence? | Partly. The callee list arrived after the helpers had been found from the source body, so it confirmed rather than discovered |
+| Still searched for helper definitions? | Yes: `search_graph "onBeforeLink"` (#11), `search_code` for `isAssetChecksumConstraint` (#24), `mapToUploadFile` (#25, #27), `requireUploadAccess` (#34) |
+| Why? | **C — model preference / tool selection**, with **D — source verification** (it read every helper's body to describe it, which it needed anyway). Not **A**: the graph held the data. Not **B**: callee entries carry each definition's `filePath` and `startLine`. The searches before #29 happened before it asked. The ones after (#34) targeted callees of `canUploadFile`/`getFiles`, whose `get_node` it never requested |
+
+**Q8 specifically:** it used `withAlbumUsers` (as a callee, then its callers) and
+`mapAlbum` (as a node; the answer names it as the return-shape consumer).
+Unlike the follow-up re-run, it did not enumerate `mapAlbum`'s 7 callers this
+time. That is a single-run difference in what it chose to mention.
+
+**Did tool-call count improve?** 266 → 263 (−1%). Not distinguishable from noise.
+
+**Did cost improve?** $8.87 → $8.52 (−4%). Not distinguishable from noise: the
+same-graph Q7 spread is 31%.
+
+**Did source-search fallback decrease?** Slightly. Text calls went 181 → 168,
+graph calls 61 → 71, `get_source` 115 → 106, `search_code` 66 → 62. The direction
+is consistent with the change, but the size is within noise.
+
+**Did new false positives appear?** None observed. Decorator factories
+(`GenerateSql`, `Authenticated`, `Endpoint`, `OnEvent`) appeared in callee lists
+in 4 sessions (Q1, Q2, Q8, Q12). No answer presented one as a runtime call. Q8
+and Q12 described `@GenerateSql` correctly as the SQL-snapshot generator.
+
+### Job/event gap (Q9)
+
+| Question | Answer |
+| --- | --- |
+| Still mostly text? | Yes: 16 of 22 calls were `get_source`/`search_code`; 0 `get_node` |
+| Understood the limitation? | Not stated. It fell back silently, as in the baseline |
+| Correct? | Yes: `@OnJob` → `QueueService.onBootstrap` → `JobRepository.setup` → `startWorkers` (Worker emits `JobRun`) → `JobService.onJobRun` → `JobRepository.run` → `handlers[name].handler(data)` → e.g. `MediaService.handleGenerateThumbnails` |
+| Extra calls | 22 vs 20 in the baseline. About 8 `search_code` calls follow wiring the graph does not model (`jobRepository.setup`, `startWorkers`, `setServices`, `MetadataKey.EventConfig`, a specific `@OnJob`) |
+| Graph useful anywhere? | Narrowing only: `search_graph "OnJob"` found the decorator, and the enum searches found `QueueName`/`JobName`. `OnJob` now has its 66 handlers as callers (a side effect of the change), but the question asks about the dispatch path and the agent did not look |
+
+Event hops were also followed by text in Q2 (`'AlbumInvite'` → `NotifyAlbumInvite`,
+3 `search_code`) and Q7 (`'AssetCreate'`, `JobName.AssetExtractMetadata`, 2
+`search_code`). None of these affected correctness.
+
+### External dependency gap (Q6)
+
+Correct (4 of 4), with a clear local/external distinction. There was no
+unsupported completeness claim: it scoped the answer to the indexed `server`
+project and said it did not search sibling workspaces. It took 10 calls and
+$0.20, cheaper than the baseline. **Kept as a documented limitation.** No
+change is justified.
+
+### Call-site evidence (Q3, Q7, Q8)
+
+The new `CALLS` edges store call-site locations, but `get_node` lists do not
+expose them. Calls whose aim was a call-site line:
+
+| Question | Calls | Note |
+| --- | ---: | --- |
+| Q3 | 1 | `search_code "albumService.create"`, also used as a completeness check |
+| Q7 | 0 | Call sites came from the service body it read anyway |
+| Q8 | 3–4 | `search_code` for `AlbumRepository.create`, `albumRepository.create`, `albumService.create`, plus one `get_source` window around `MediumTestContext.newAlbum` |
+
+About 5 calls across three questions, each returning ~400 chars. They are real
+but small, and they double as completeness verification, which the agent does
+regardless.
+
+## MCP Presentation Analysis
+
+| # | Issue | Status | Evidence in this run | Materially affected performance? |
+|---|---|---|---|---|
+| 1 | Bulky JSON instead of compact text | OBSERVED | 263/263 results were JSON; 789,912 chars | UNCERTAIN. It is a cost factor, but no answer was affected, and its share of cost was not isolated |
+| 2 | Text-form paging hints not exposed | NOT OBSERVED as a problem | 0 uses of `offset` in either round. 9 `search_graph` and 2 `get_node` results had more pages; the agent used totals or narrowed. No first page was treated as the whole set | No |
+| 3 | Caller/callee entries lack call-site lines | OBSERVED | ~5 lookups in Q3/Q8 (above) | Minor |
+| 4 | `references` direction confusing | NOT OBSERVED | The `references` section was never requested in either round | No |
+| 5 | `SharedLink` classes below default top 20 | OBSERVED | Same ranks (#33/#38/#40); the agent asked for `limit:50` on its first call, as before | No: absorbed both times |
+| 6 | `get_node` lists expose no call-site evidence | OBSERVED | Same as #3 | Minor |
+
+## Remaining Bottlenecks
+
+Evidence-backed only, in order of observed cost:
+
+1. **The agent under-uses graph data it already has (tool selection).**
+   - 17 definition lookups via `search_code`, 8 of them for arrow helpers that
+     are graph `function` nodes.
+   - Q7 fetched the complete callee list at call #29 of 37.
+   - Q11 spent 5 calls hunting `requireAccess`/`mapAlbum` definitions.
+   - `trace_path` was used in only 2/12 sessions in both rounds.
+
+   This is agent behaviour, not a graph gap, and it did not cost correctness.
+2. **Event/job wiring is not in the graph.** Q9 was text-led in both rounds,
+   and event hops cost text searches in Q2 and Q7. The cost is roughly 10
+   calls across the run; the correctness cost is none.
+3. **Payload size.** Every result is JSON; 789,912 chars in total. Its effect
+   on cost was not separated from everything else.
+4. **Newly observed, pre-existing graph imprecision.** There are 15
+   `IMPLEMENTS` edges from subclasses' instance `create` methods to the
+   *static* `BaseService.create`, unchanged by the arrow-function work. Q3's
+   agent noticed one and dismissed it correctly. No answer was harmed.
+
+## Candidate assessment
+
+| | Candidate | Evidence from this run | Impact | Confidence | Implementation risk |
+|---|---|---|---|---|---|
+| A | Event/job relationship extraction | Q9 text-led both rounds (16/22 text calls); event hops by `search_code` in Q2, Q7 | ~10 calls/run, 0 correctness | Medium: the gap is certain, the benefit to *this* agent is not | Medium–high: string-keyed names through enums/constants |
+| B | MCP call-site evidence | ~5 small lookups in Q3/Q8 that double as verification | Low | Medium | Low–medium (contract change) |
+| C | JSON payload reduction | 789,912 chars, all JSON; no answer affected | Unknown | Low: not isolated | Medium (output-shape change) |
+| D | MCP description improvements | 17 text definition lookups (8 graph-available); late `get_node` in Q7; `trace_path` 2/12 | Unknown: targets the largest pattern, but only indirectly | Low–medium | Low |
+| E | Ranking for broad names | Same ranks; absorbed by `limit:50` twice | None observed | High (that it doesn't matter for this agent) | Medium |
+| F | External dependency metadata | Q6 correct, cheaper, well-caveated | None | High | High (node_modules scope) |
+| G | Declared-function CALLS semantics | No answer touched it | None observed | High | Medium (changes existing edges) |
+| H | Dynamic dispatch | Only `handlers[name].handler` in Q9 (part of A) | Subsumed by A | Medium | High |
+| I | Nothing yet | 24/24 answers PASS across two rounds; aggregate deltas inside the measured 31% spread; no remaining gap caused a wrong answer | — | — | — |
+
+## Recommended Next Task
+
+**No graph/retrieval implementation change is justified yet; collect more real-LLM evidence.**
+
+Why: across two full rounds (24 answers), every answer passed. None of the
+remaining gaps produced a wrong or materially incomplete answer. The one
+measurable cost of each gap is a few tool calls, which is smaller than the
+31% cost spread between identical runs. Choosing among A–H on this data would
+mean ranking by intuition.
+
+The evidence that would settle it (measurement, not implementation):
+
+1. **Repeat each question ≥3 times** per condition, so a delta can be told apart
+   from noise.
+2. **Add questions that depend on the remaining gaps**, e.g. "what runs when
+   `AssetCreate` is emitted?", "which handlers process the thumbnail queue?",
+   "what breaks if `JobRepository.run` changes?". The current set was written
+   before those gaps were known and touches them only in Q9.
+3. **Run a smaller model** (and one session with built-in Read/Grep enabled).
+   Tool-selection weaknesses that Opus absorbs by reading more source may become
+   failures there. That is where B/C/D would show value if they have any.
+
+If (2) shows event/job questions failing or costing substantially more across
+repetitions, **A is the first candidate**: it is the only remaining graph gap
+that forced the same question into text in both rounds.
+
+## Verification
+
+| Check | Before the run | After the run |
+| --- | --- | --- |
+| `pnpm typecheck` | exit 0 | exit 0 |
+| `pnpm test` | 1,344 passed, 73 skipped | 1,344 passed, 73 skipped |
+| `pnpm evaluate:retrieval --api http://localhost:3001` | 49/49 | 49/49 |
+
+Production code unchanged. The only file changed by this run is this report.
+Raw transcripts are in the session scratchpad (`…/scratchpad/v2/runs/Q01–Q12.jsonl`),
+and every tool call is in [Appendix B](#appendix-b--follow-up-tool-call-sequences).
+
 ## Appendix A — Tool-call sequences
 
 Every tool call from every run, in order. `projectId` is omitted (always
@@ -1248,3 +1551,329 @@ were captured in the session scratchpad
 #12 get_source {"file": "src/services/notification.service.ts", "startLine": 230, "endLine": 275}  → 2934 chars
 ```
 
+## Appendix B — Follow-up tool-call sequences
+
+The follow-up validation run, in the same format as Appendix A.
+
+### Q01 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "albums", "nodeTypes": ["api"], "limit": 30}  → 2650 chars
+#4 search_graph {"query": "album", "nodeTypes": ["class"], "limit": 30}  → 5495 chars
+#5 get_node {"nodeId": "a4e0a278b2e81f27b6ca24e57becfd5f"}  → 2232 chars
+#6 get_source {"file": "src/controllers/album.controller.ts", "startLine": 1, "endLine": 60}  → 3764 chars
+#7 search_graph {"query": "create", "nodeTypes": ["method"], "file": "src/services/album.service.ts"}  → 410 chars
+#8 get_source {"file": "src/services/album.service.ts", "startLine": 1, "endLine": 40}  → 2519 chars
+#9 get_source {"file": "src/services/album.service.ts", "startLine": 101, "endLine": 140}  → 2469 chars
+#10 get_node {"nodeId": "c5f19208ef8178ee1567da5ad21c8e08", "relationship": "callees"}  → 2103 chars
+#11 get_source {"file": "src/repositories/album.repository.ts", "startLine": 296, "endLine": 360}  → 3680 chars
+#12 get_node {"nodeId": "ab1bf2941962012558f50870f6814d5b"}  → 3409 chars
+#13 get_source {"file": "src/schema/tables/album.table.ts"}  → 2569 chars
+#14 search_code {"query": "export class CreateAlbumDto"}  → 412 chars
+#15 search_code {"query": "CreateAlbumSchema"}  → 542 chars
+#16 get_source {"file": "src/repositories/album.repository.ts", "startLine": 80, "endLine": 95}  → 1177 chars
+#17 get_source {"file": "src/dtos/album.dto.ts", "startLine": 20, "endLine": 60}  → 2293 chars
+#18 search_code {"query": "setGlobalPrefix"}  → 369 chars
+#19 get_source {"file": "src/repositories/album.repository.ts", "startLine": 20, "endLine": 60}  → 2426 chars
+```
+
+### Q02 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "AlbumService", "nodeTypes": ["class", "method"]}  → 3058 chars
+#4 get_node {"nodeId": "c5f19208ef8178ee1567da5ad21c8e08"}  → 3902 chars
+#5 get_source {"file": "src/services/album.service.ts", "startLine": 101, "endLine": 138}  → 2332 chars
+#6 get_node {"nodeId": "ab1bf2941962012558f50870f6814d5b"}  → 3409 chars
+#7 get_source {"file": "src/repositories/album.repository.ts", "startLine": 295, "endLine": 365}  → 4003 chars
+#8 get_node {"nodeId": "a91b6aefaccf309120d248cb72498c68", "relationship": "databases"}  → 571 chars
+#9 get_node {"nodeId": "14c77e2d479e817a882d55b2f9122670", "relationship": "databases"}  → 598 chars
+#10 get_node {"nodeId": "a67e940158a93f8c9f41e51f64053263", "relationship": "databases"}  → 222 chars
+#11 search_code {"query": "'AlbumInvite'"}  → 1978 chars
+#12 get_source {"file": "src/services/notification.service.ts", "startLine": 234, "endLine": 285}  → 3305 chars
+#13 search_code {"query": "JobName.NotifyAlbumInvite }"}  → 210 chars
+#14 search_code {"query": "JobName.NotifyAlbumInvite"}  → 1320 chars
+#15 search_graph {"query": "handleAlbumInvite", "nodeTypes": ["method"]}  → 430 chars
+#16 get_node {"nodeId": "248b338033b459c9fb6d33d9aca912a0", "relationship": "databases"}  → 222 chars
+#17 get_source {"file": "src/services/notification.service.ts", "startLine": 325, "endLine": 373}  → 2933 chars
+#18 search_graph {"query": "NotificationRepository.create", "nodeTypes": ["method"]}  → 428 chars
+#19 get_node {"nodeId": "2b1f9541a85b5033f7d644429414716f", "relationship": "databases"}  → 602 chars
+```
+
+### Q03 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "AlbumService", "nodeTypes": ["class"]}  → 375 chars
+#4 search_graph {"query": "AlbumService.create"}  → 390 chars
+#5 get_node {"nodeId": "c5f19208ef8178ee1567da5ad21c8e08"}  → 3902 chars
+#6 get_source {"file": "src/services/album.service.ts", "startLine": 95, "endLine": 140}  → 2678 chars
+#7 get_source {"file": "src/controllers/album.controller.ts", "startLine": 30, "endLine": 50}  → 1477 chars
+#8 get_source {"file": "src/services/workflow-execution.service.ts", "startLine": 1, "endLine": 120}  → 7239 chars
+#9 get_source {"file": "src/services/workflow-execution.service.ts", "startLine": 117, "endLine": 180}  → 3878 chars
+#10 search_code {"query": "sut.create(", "limit": 50}  → 11070 chars
+#11 get_source {"file": "src/services/album.service.spec.ts", "startLine": 205, "endLine": 375}  → 10438 chars
+#12 get_source {"file": "src/services/workflow-execution.service.ts", "startLine": 180, "endLine": 225}  → 2679 chars
+#13 search_code {"query": "albumService.create"}  → 467 chars
+#14 get_source {"file": "src/services/base.service.ts", "startLine": 196, "endLine": 210}  → 940 chars
+```
+
+### Q04 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "auth", "nodeTypes": ["class", "interface", "function"], "limit": 50}  → 9157 chars
+#4 search_graph {"query": "guard", "limit": 30}  → 5801 chars
+#5 get_source {"file": "src/middleware/auth.guard.ts"}  → 7082 chars
+#6 get_source {"file": "src/maintenance/maintenance-auth.guard.ts"}  → 2589 chars
+#7 get_source {"file": "src/services/auth.service.ts", "startLine": 1, "endLine": 120}  → 7087 chars
+#8 search_code {"query": "  async authenticate("}  → 662 chars
+#9 get_source {"file": "src/services/auth.service.ts", "startLine": 215, "endLine": 300}  → 5045 chars
+#10 search_code {"query": "private async validate"}  → 1114 chars
+#11 get_source {"file": "src/services/auth.service.ts", "startLine": 480, "endLine": 620}  → 7933 chars
+#12 get_source {"file": "src/dtos/auth.dto.ts", "startLine": 1, "endLine": 60}  → 3418 chars
+#13 search_code {"query": "APP_GUARD"}  → 1119 chars
+#14 get_node {"nodeId": "fbd1d7db020f3233434f835d82c73b20"}  → 3208 chars
+#15 get_source {"file": "src/app.module.ts", "startLine": 30, "endLine": 140}  → 6489 chars
+#16 search_code {"query": "enum ImmichHeader"}  → 337 chars
+#17 get_source {"file": "src/enum.ts", "startLine": 1, "endLine": 75}  → 3744 chars
+#18 search_code {"query": "export const isGranted"}  → 399 chars
+#19 get_source {"file": "src/utils/access.ts", "startLine": 1, "endLine": 70}  → 3955 chars
+#20 search_code {"query": "hasElevatedPermission"}  → 4500 chars
+#21 search_code {"query": "requireAccess(", "limit": 5}  → 1305 chars
+#22 get_source {"file": "src/maintenance/maintenance-worker.service.ts", "startLine": 230, "endLine": 285}  → 3010 chars
+#23 get_source {"file": "src/controllers/auth.controller.ts"}  → 10584 chars
+#24 search_code {"query": "export const respondWithCookie"}  → 450 chars
+#25 search_code {"query": "getAuthenticatedOptions"}  → 1075 chars
+#26 get_source {"file": "src/controllers/oauth.controller.ts", "startLine": 1, "endLine": 133}  → 7645 chars
+#27 get_source {"file": "src/controllers/index.spec.ts", "startLine": 60, "endLine": 140}  → 4669 chars
+#28 get_source {"file": "src/services/auth.service.ts", "startLine": 613, "endLine": 679}  → 3784 chars
+#29 search_code {"query": "requireSetupAvailable"}  → 2379 chars
+#30 search_code {"query": "  protected requireAccess"}  → 208 chars
+#31 get_source {"file": "src/services/base.service.ts", "startLine": 270, "endLine": 340}  → 3603 chars
+#32 get_source {"file": "src/controllers/shared-link.controller.ts", "startLine": 25, "endLine": 80}  → 3301 chars
+#33 get_source {"file": "src/services/auth-admin.service.ts"}  → 714 chars
+#34 search_code {"query": "export enum Permission {"}  → 350 chars
+#35 get_source {"file": "src/enum.ts", "startLine": 112, "endLine": 140}  → 1645 chars
+#36 get_source {"file": "src/database.ts", "startLine": 180, "endLine": 215}  → 1745 chars
+#37 get_source {"file": "src/services/auth.service.ts", "startLine": 465, "endLine": 483}  → 1084 chars
+```
+
+### Q05 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "BaseService", "nodeTypes": ["class"]}  → 551 chars
+#4 get_node {"nodeId": "6b130b75db8258d219624819ca7e343e", "relationship": "subtypes", "limit": 100}  → 17022 chars
+#5 get_source {"file": "src/services/base.service.ts"}  → 20712 chars
+#6 get_source {"file": "src/services/activity.service.ts", "startLine": 1, "endLine": 60}  → 3483 chars
+#7 search_code {"query": "  constructor(", "limit": 50}  → 8814 chars
+#8 search_code {"query": "extends BaseService", "limit": 50}  → 9470 chars
+#9 search_code {"query": "Service extends BaseService {", "limit": 10}  → 2157 chars
+#10 get_source {"file": "src/services/index.ts"}  → 7065 chars
+#11 search_code {"query": "> extends BaseService", "limit": 15}  → 204 chars
+#12 get_source {"file": "src/services/api.service.ts", "startLine": 1, "endLine": 40}  → 2574 chars
+#13 get_source {"file": "src/services/database-backup.service.ts", "startLine": 1, "endLine": 40}  → 3177 chars
+#14 search_code {"query": "extends BaseService implements", "limit": 15}  → 213 chars
+#15 search_graph {"query": "BaseService"}  → 4048 chars
+#16 search_code {"query": "T extends BaseService", "limit": 15}  → 1238 chars
+#17 get_source {"file": "test/utils.ts", "startLine": 290, "endLine": 330}  → 2929 chars
+#18 search_code {"query": "@Injectable()", "limit": 50}  → 7625 chars
+#19 get_source {"file": "src/services/view.service.ts"}  → 1188 chars
+#20 search_code {"query": "  @OnJob({", "limit": 50}  → 10461 chars
+#21 get_node {"nodeId": "e747edfe56609be0854659fd522a0d45", "relationship": "callers", "limit": 30}  → 770 chars
+#22 search_code {"query": "super(", "limit": 30}  → 3482 chars
+#23 search_graph {"query": "constructor", "file": "src/services/", "limit": 30}  → 814 chars
+```
+
+### Q06 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "NestInterceptor"}  → 202 chars
+#4 search_code {"query": "NestInterceptor", "limit": 50}  → 1862 chars
+#5 search_graph {"query": "Interceptor", "nodeTypes": ["class"], "limit": 50}  → 955 chars
+#6 get_source {"file": "src/middleware/asset-upload.interceptor.ts", "startLine": 1, "endLine": 30}  → 1935 chars
+#7 get_node {"nodeId": "5089fef2fdbeb4a6db4bd5d2edf2f7e5", "relationship": "subtypes"}  → 221 chars
+#8 get_source {"file": "src/middleware/error.interceptor.ts", "startLine": 1, "endLine": 39}  → 2220 chars
+#9 get_source {"file": "src/middleware/logging.interceptor.ts", "startLine": 19, "endLine": 47}  → 1715 chars
+#10 get_source {"file": "src/middleware/file-upload.interceptor.ts", "startLine": 36, "endLine": 80}  → 2712 chars
+```
+
+### Q07 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "asset", "nodeTypes": ["api"], "limit": 50}  → 7893 chars
+#4 search_graph {"query": "asset-media", "limit": 30}  → 6288 chars
+#5 get_source {"file": "src/controllers/asset-media.controller.ts", "startLine": 1, "endLine": 95}  → 5401 chars
+#6 get_source {"file": "src/services/asset-media.service.ts", "startLine": 1, "endLine": 240}  → 13309 chars
+#7 search_graph {"query": "create", "file": "src/repositories/asset.repository.ts", "limit": 20}  → 859 chars
+#8 get_source {"file": "src/middleware/file-upload.interceptor.ts"}  → 9258 chars
+#9 get_source {"file": "src/repositories/asset.repository.ts", "startLine": 430, "endLine": 470}  → 2610 chars
+#10 get_source {"file": "src/middleware/asset-upload.interceptor.ts"}  → 1935 chars
+#11 search_graph {"query": "onBeforeLink", "limit": 10}  → 368 chars
+#12 search_graph {"query": "upsertExif", "limit": 10}  → 1682 chars
+#13 search_graph {"query": "requireQuota", "limit": 10}  → 406 chars
+#14 search_graph {"query": "getUploadAssetIdByChecksum", "limit": 10}  → 681 chars
+#15 get_source {"file": "src/utils/asset.util.ts", "startLine": 100, "endLine": 175}  → 4115 chars
+#16 get_source {"file": "src/services/asset-media.service.ts", "startLine": 340, "endLine": 373}  → 1899 chars
+#17 get_source {"file": "src/repositories/asset.repository.ts", "startLine": 675, "endLine": 700}  → 1608 chars
+#18 search_code {"query": "'AssetCreate'", "limit": 30}  → 1824 chars
+#19 search_code {"query": "JobName.AssetExtractMetadata", "limit": 30}  → 4579 chars
+#20 get_source {"file": "src/services/user.service.ts", "startLine": 238, "endLine": 255}  → 1130 chars
+#21 get_source {"file": "src/services/workflow-execution.service.ts", "startLine": 303, "endLine": 320}  → 1296 chars
+#22 get_source {"file": "src/services/metadata.service.ts", "startLine": 228, "endLine": 250}  → 1602 chars
+#23 get_node {"nodeId": "09abf440bbfa943dcd4265eb7f43e366"}  → 2488 chars
+#24 search_code {"query": "export const isAssetChecksumConstraint", "limit": 5}  → 423 chars
+#25 search_code {"query": "export const mapToUploadFile", "limit": 5}  → 210 chars
+#26 get_source {"file": "src/utils/database.ts", "startLine": 95, "endLine": 115}  → 1375 chars
+#27 search_code {"query": "mapToUploadFile", "limit": 10}  → 956 chars
+#28 get_source {"file": "src/repositories/asset.repository.ts", "startLine": 181, "endLine": 230}  → 3231 chars
+#29 get_node {"nodeId": "9c1232ebcc9f8d9e17381ce8f2725e70"}  → 5316 chars
+#30 get_source {"file": "src/utils/asset.util.ts", "startLine": 188, "endLine": 215}  → 1641 chars
+#31 get_source {"file": "src/repositories/asset.repository.ts", "startLine": 252, "endLine": 310}  → 3857 chars
+#32 get_source {"file": "src/repositories/asset.repository.ts", "startLine": 386, "endLine": 412}  → 1552 chars
+#33 get_source {"file": "src/repositories/asset.repository.ts", "startLine": 1016, "endLine": 1040}  → 1441 chars
+#34 search_code {"query": "export const requireUploadAccess", "limit": 5}  → 419 chars
+#35 search_code {"query": "static getNestedFolder", "limit": 5}  → 427 chars
+#36 get_source {"file": "src/utils/access.ts", "startLine": 28, "endLine": 45}  → 1205 chars
+#37 get_source {"file": "src/cores/storage.core.ts", "startLine": 348, "endLine": 368}  → 1342 chars
+```
+
+### Q08 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "AlbumRepository"}  → 4458 chars
+#4 search_graph {"query": "create", "file": "src/repositories/album.repository.ts"}  → 421 chars
+#5 get_node {"nodeId": "ab1bf2941962012558f50870f6814d5b"}  → 3409 chars
+#6 get_source {"file": "src/repositories/album.repository.ts", "startLine": 300, "endLine": 360}  → 3407 chars
+#7 get_node {"nodeId": "c5f19208ef8178ee1567da5ad21c8e08"}  → 3902 chars
+#8 get_node {"nodeId": "210cde94d07a58393be91930d3d65f6d"}  → 2902 chars
+#9 get_node {"nodeId": "1b09eb37cfaa750644680d5d9788a652"}  → 4338 chars
+#10 get_node {"nodeId": "e147728194473070d6c2417bc136cc08"}  → 5735 chars
+#11 get_source {"file": "src/services/album.service.ts", "startLine": 101, "endLine": 138}  → 2332 chars
+#12 search_code {"query": "AlbumRepository.create", "limit": 30}  → 368 chars
+#13 get_source {"file": "test/medium.factory.ts", "startLine": 230, "endLine": 270}  → 2847 chars
+#14 get_node {"nodeId": "fb83bf24abf186751270c822bb65ee96"}  → 3648 chars
+#15 get_node {"nodeId": "72a532ed546799e267db57b4e71108f9"}  → 3285 chars
+#16 get_node {"nodeId": "a4e0a278b2e81f27b6ca24e57becfd5f"}  → 2232 chars
+#17 search_code {"query": "albumRepository.create", "limit": 30}  → 393 chars
+#18 get_source {"file": "src/queries/album.repository.sql", "startLine": 320, "endLine": 340}  → 1002 chars
+#19 search_code {"query": "albumService.create", "limit": 10}  → 467 chars
+#20 search_code {"query": "mocks.album.create", "limit": 20}  → 1962 chars
+```
+
+### Q09 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "job", "nodeTypes": ["file"], "limit": 40}  → 3267 chars
+#4 search_graph {"query": "OnJob"}  → 3862 chars
+#5 get_source {"file": "src/decorators.ts", "startLine": 100, "endLine": 200}  → 5260 chars
+#6 get_source {"file": "src/services/job.service.ts", "startLine": 1, "endLine": 130}  → 7302 chars
+#7 get_source {"file": "src/repositories/job.repository.ts"}  → 16168 chars
+#8 search_code {"query": "jobRepository.setup"}  → 377 chars
+#9 search_code {"query": "startWorkers"}  → 673 chars
+#10 get_source {"file": "src/services/queue.service.ts", "startLine": 55, "endLine": 130}  → 4242 chars
+#11 search_code {"query": "setServices"}  → 537 chars
+#12 search_code {"query": "MetadataKey.EventConfig"}  → 652 chars
+#13 get_source {"file": "src/repositories/event.repository.ts", "startLine": 160, "endLine": 260}  → 4408 chars
+#14 get_source {"file": "src/app.module.ts", "startLine": 55, "endLine": 120}  → 3572 chars
+#15 search_code {"query": "@OnJob({ name: JobName.AssetGenerateThumbnails"}  → 733 chars
+#16 search_code {"query": "queues: Object.values(QueueName)"}  → 433 chars
+#17 get_source {"file": "src/services/media.service.ts", "startLine": 60, "endLine": 100}  → 2742 chars
+#18 get_source {"file": "src/services/media.service.ts", "startLine": 190, "endLine": 215}  → 2043 chars
+#19 search_code {"query": "export const getMethodNames"}  → 387 chars
+#20 search_graph {"query": "QueueName", "nodeTypes": ["enum"]}  → 350 chars
+#21 search_graph {"query": "JobName", "nodeTypes": ["enum", "type"]}  → 670 chars
+#22 search_code {"query": "export type JobOf"}  → 360 chars
+```
+
+### Q10 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "SharedLink", "limit": 50}  → 9565 chars
+#4 search_graph {"query": "shared_link", "nodeTypes": ["table", "api", "file"], "limit": 50}  → 6007 chars
+#5 get_source {"file": "src/controllers/shared-link.controller.ts"}  → 10261 chars
+#6 get_source {"file": "src/repositories/shared-link.repository.ts"}  → 15263 chars
+#7 get_source {"file": "src/services/shared-link.service.ts"}  → 13817 chars
+#8 get_source {"file": "src/schema/tables/shared-link.table.ts"}  → 2798 chars
+#9 get_source {"file": "src/schema/tables/shared-link-asset.table.ts"}  → 958 chars
+#10 get_source {"file": "src/repositories/shared-link-asset.repository.ts"}  → 2113 chars
+#11 get_source {"file": "src/database.ts", "startLine": 170, "endLine": 196}  → 1400 chars
+#12 search_code {"query": "sharedLinkRepository: SharedLinkRepository"}  → 437 chars
+#13 search_code {"query": "shared_link_slug_uq", "limit": 10}  → 941 chars
+#14 get_node {"nodeId": "c46a5eb6613613120c9335f97bf5d066"}  → 9672 chars
+#15 search_code {"query": "sharedLinkRepository.get", "limit": 20}  → 855 chars
+```
+
+### Q11 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "album", "nodeTypes": ["class"], "limit": 30}  → 5495 chars
+#4 search_graph {"query": "album", "nodeTypes": ["table"], "limit": 30}  → 2274 chars
+#5 search_graph {"query": "album", "nodeTypes": ["api"], "limit": 40}  → 2649 chars
+#6 get_source {"file": "src/controllers/album.controller.ts"}  → 11811 chars
+#7 get_node {"nodeId": "6232d5e7b6925ee2fd36ddef711f2180"}  → 8048 chars
+#8 get_source {"file": "src/services/album.service.ts", "startLine": 1, "endLine": 200}  → 12143 chars
+#9 get_node {"nodeId": "4a31b1685051dc944235f999732fd272"}  → 13928 chars
+#10 get_source {"file": "src/repositories/album.repository.ts", "startLine": 1, "endLine": 130}  → 7562 chars
+#11 get_source {"file": "src/schema/tables/album.table.ts"}  → 2569 chars
+#12 get_source {"file": "src/repositories/album.repository.ts", "startLine": 300, "endLine": 400}  → 5641 chars
+#13 get_source {"file": "src/services/base.service.ts", "startLine": 120, "endLine": 200}  → 5446 chars
+#14 get_source {"file": "src/services/album.service.ts", "startLine": 261, "endLine": 358}  → 5914 chars
+#15 get_source {"file": "src/repositories/album-user.repository.ts"}  → 2549 chars
+#16 get_source {"file": "src/schema/tables/album-user.table.ts"}  → 3718 chars
+#17 get_source {"file": "src/schema/tables/album-asset.table.ts"}  → 2127 chars
+#18 get_source {"file": "src/repositories/access.repository.ts", "startLine": 60, "endLine": 145}  → 5066 chars
+#19 search_code {"query": "album: AlbumTable"}  → 340 chars
+#20 get_source {"file": "src/schema/index.ts", "startLine": 196, "endLine": 220}  → 1311 chars
+#21 search_code {"query": "controllers,", "limit": 10}  → 195 chars
+#22 search_code {"query": "controllers:", "limit": 10}  → 680 chars
+#23 search_code {"query": "AlbumController", "limit": 10}  → 1316 chars
+#24 get_source {"file": "src/app.module.ts", "startLine": 85, "endLine": 118}  → 1874 chars
+#25 trace_path {"fromNodeId": "cf79913e3d8129b5e73d6cf58449d1ff", "toNodeId": "5895149169315df7c5dbad5e5d9a9392"}  → 1889 chars
+#26 search_code {"query": "  protected async requireAccess"}  → 214 chars
+#27 search_code {"query": "export const mapAlbum"}  → 415 chars
+#28 search_code {"query": "requireAccess(", "limit": 5}  → 1305 chars
+#29 search_code {"query": "requireAccess = ", "limit": 5}  → 407 chars
+#30 search_code {"query": "requireAccess(this.accessRepository", "limit": 5}  → 422 chars
+```
+
+### Q12 (follow-up)
+
+```text
+#1 resolve_project {"path": "<immich>/server"}  → 463 chars
+#2 get_index_status {}  → 709 chars
+#3 search_graph {"query": "/albums", "nodeTypes": ["api"]}  → 2651 chars
+#4 search_graph {"query": "AlbumRepository", "nodeTypes": ["class"]}  → 388 chars
+#5 search_graph {"query": "create", "nodeTypes": ["method"], "file": "src/repositories/album.repository.ts"}  → 427 chars
+#6 get_node {"nodeId": "a4e0a278b2e81f27b6ca24e57becfd5f"}  → 2232 chars
+#7 trace_path {"fromNodeId": "210cde94d07a58393be91930d3d65f6d", "toNodeId": "ab1bf2941962012558f50870f6814d5b"}  → 1402 chars
+#8 get_node {"nodeId": "ab1bf2941962012558f50870f6814d5b"}  → 3409 chars
+#9 get_source {"file": "src/repositories/album.repository.ts", "startLine": 296, "endLine": 362}  → 3817 chars
+#10 get_source {"file": "src/services/album.service.ts", "startLine": 101, "endLine": 140}  → 2469 chars
+#11 search_code {"query": "AlbumRepository.create", "limit": 20}  → 368 chars
+#12 get_node {"nodeId": "5895149169315df7c5dbad5e5d9a9392"}  → 9894 chars
+#13 get_source {"file": "src/queries/album.repository.sql", "startLine": 325, "endLine": 375}  → 2317 chars
+#14 get_source {"file": "src/schema/tables/album.table.ts"}  → 2569 chars
+#15 search_graph {"query": "album", "nodeTypes": ["file"]}  → 4656 chars
+#16 get_node {"nodeId": "c5f19208ef8178ee1567da5ad21c8e08", "relationship": "callers"}  → 1006 chars
+#17 get_source {"file": "src/services/workflow-execution.service.ts", "startLine": 60, "endLine": 95}  → 2492 chars
+```

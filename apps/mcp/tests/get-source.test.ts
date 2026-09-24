@@ -40,12 +40,13 @@ const read = async (
   });
 
 describe('registration', () => {
-  it('exposes exactly the eight tools, in the order an agent uses them', async () => {
+  it('exposes exactly the nine tools, in the order an agent uses them', async () => {
     harness = await createMcpHarness();
 
     const { tools } = await harness.client.listTools();
 
     expect(tools.map((tool) => tool.name)).toEqual([
+      'ensure_project',
       'resolve_project',
       'get_index_status',
       'index_project',

@@ -37,13 +37,16 @@ interface Session {
  * `tools/list` must not require the API to be running, because a client may
  * launch this process long before anyone asks it anything.
  */
-async function handshake(frames: unknown[]): Promise<Session> {
+async function handshake(frames: unknown[], env: Record<string, string> = {}): Promise<Session> {
+  // Whatever project the runner itself was launched in is not this test's.
+  const { CLAUDE_PROJECT_DIR: _claude, CODERAG_PROJECT_DIR: _coderag, ...inherited } = process.env;
   const child = spawn(TSX, [SERVER], {
     cwd: WORKSPACE_ROOT,
     env: {
-      ...process.env,
+      ...inherited,
       MCP_API_BASE_URL: 'http://127.0.0.1:1',
       LOG_LEVEL: 'info',
+      ...env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -106,6 +109,7 @@ describe('the server over stdio', () => {
       | { tools: { name: string }[] }
       | undefined;
     expect(tools?.tools.map((tool) => tool.name)).toEqual([
+      'ensure_project',
       'resolve_project',
       'get_index_status',
       'index_project',
@@ -130,5 +134,18 @@ describe('the server over stdio', () => {
 
     expect(session.stderr).not.toMatch(/Invalid environment configuration/);
     expect(session.stdout).toContain('resolve_project');
+  }, 20_000);
+
+  it('checks the current project on startup without holding up the handshake or touching stdout', async () => {
+    // The API is not running, which is exactly when the check must stay out
+    // of the way: the session still comes up, and the failure is a line on
+    // stderr rather than a crash or a frame on stdout.
+    const session = await handshake([INITIALIZE, INITIALIZED, LIST_TOOLS], {
+      CLAUDE_PROJECT_DIR: WORKSPACE_ROOT,
+    });
+
+    expect(session.stdout).toContain('ensure_project');
+    expect(session.stderr).toContain('could not check the current project on startup');
+    expect(session.stdout).not.toContain('could not check the current project');
   }, 20_000);
 });

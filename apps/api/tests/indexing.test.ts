@@ -60,6 +60,19 @@ async function freshnessOf(projectId: string) {
   return { status: response.statusCode, envelope: body<IndexFreshness>(response) };
 }
 
+/**
+ * Makes one store lookup take a while, so concurrent requests all make their
+ * check before any of them acts — the window a real database round trip opens.
+ */
+function slowDown<T extends object>(store: T, method: keyof T & string): void {
+  const original = (store[method] as (...args: unknown[]) => Promise<unknown>).bind(store);
+  (store as Record<string, unknown>)[method] = async (...args: unknown[]) => {
+    const result = await original(...args);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return result;
+  };
+}
+
 /** What the worker does at the end of a run: mark it completed and record what it saw. */
 async function completeWithRevision(jobId: string): Promise<void> {
   harness.analyses.revisions.set(jobId, await captureSourceRevision(repo));
@@ -186,6 +199,33 @@ describe('POST /api/projects/index', () => {
     const loser = await indexProject({ path: repo });
 
     expect(loser.envelope.data).toMatchObject({ action: 'already_indexing', jobCreated: false });
+    expect([...harness.analyses.jobs.values()].filter((job) => job.status === 'QUEUED')).toHaveLength(1);
+  });
+
+  it('registers once and queues once when first-time requests arrive together', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    slowDown(harness.repositories, 'listAll');
+
+    const results = await Promise.all([1, 2, 3, 4].map(() => indexProject({ path: repo })));
+
+    expect(harness.projects.projects.size).toBe(1);
+    expect([...harness.analyses.jobs.values()]).toHaveLength(1);
+    const data = results.map((result) => result.envelope.data);
+    expect(new Set(data.map((result) => result?.projectId)).size).toBe(1);
+    expect(data.filter((result) => result?.projectCreated)).toHaveLength(1);
+    expect(data.filter((result) => result?.action === 'already_indexing')).toHaveLength(3);
+  });
+
+  it('queues one re-index when stale requests arrive together', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    const first = await indexProject({ path: repo });
+    await completeWithRevision(first.envelope.data?.job?.id ?? '');
+    await write('src/app.ts', 'export const a = 2;\n');
+    slowDown(harness.analyses, 'findActiveByProject');
+
+    const results = await Promise.all([1, 2, 3].map(() => indexProject({ path: repo })));
+
+    expect(results.filter((result) => result.envelope.data?.jobCreated)).toHaveLength(1);
     expect([...harness.analyses.jobs.values()].filter((job) => job.status === 'QUEUED')).toHaveLength(1);
   });
 

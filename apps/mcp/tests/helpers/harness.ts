@@ -17,7 +17,8 @@ import type {
   RelatedNode,
   SourceWindow,
 } from '@ckg/shared';
-import { createMcpServer } from '../../src/server.js';
+import type { McpConfig, ProjectDirectoryHint } from '../../src/config.js';
+import { createMcpRuntime, type McpRuntime } from '../../src/server.js';
 
 /**
  * A real MCP client talking to the real server over a linked pair of in-memory
@@ -39,6 +40,9 @@ export interface StubbedRequest {
 
 export interface McpHarness {
   client: Client;
+  /** The server's own pieces, for the tests that drive the startup check directly. */
+  runtime: McpRuntime;
+  config: McpConfig;
   /** Every request the API stub received, in order. */
   requests: StubbedRequest[];
   /** Replaces what the API answers with next. */
@@ -402,6 +406,7 @@ export function apiFailure(code: string, message: string): ApiResponse<never> {
  */
 export async function createMcpHarness(
   initial: ApiStubHandler = () => ({ body: ok(resolution()) }),
+  options: { project?: ProjectDirectoryHint | null } = {},
 ): Promise<McpHarness> {
   const requests: StubbedRequest[] = [];
   let handler = initial;
@@ -431,14 +436,9 @@ export async function createMcpHarness(
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
   const { port } = http.address() as AddressInfo;
 
-  const server = createMcpServer({
-    runtime: { NODE_ENV: 'test', LOG_LEVEL: 'error' },
-    mcp: {
-      MCP_API_BASE_URL: `http://127.0.0.1:${String(port)}`,
-      MCP_REQUEST_TIMEOUT_MS: 2000,
-      apiBaseUrl: `http://127.0.0.1:${String(port)}`,
-    },
-  });
+  const config = testConfig(`http://127.0.0.1:${String(port)}`, options.project ?? null);
+  const runtime = createMcpRuntime(config);
+  const { server } = runtime;
 
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -457,6 +457,8 @@ export async function createMcpHarness(
 
   return {
     client,
+    runtime,
+    config,
     requests,
     reply(next: ApiStubHandler) {
       handler = next;
@@ -467,6 +469,23 @@ export async function createMcpHarness(
       await server.close();
       await stopApi();
     },
+  };
+}
+
+/**
+ * The configuration a test server runs with: never the developer's `.env`,
+ * and never the project the test runner itself was launched in.
+ */
+export function testConfig(apiBaseUrl: string, project: ProjectDirectoryHint | null = null): McpConfig {
+  return {
+    runtime: { NODE_ENV: 'test', LOG_LEVEL: 'error' },
+    mcp: {
+      MCP_API_BASE_URL: apiBaseUrl,
+      MCP_REQUEST_TIMEOUT_MS: 2000,
+      MCP_AUTO_ENSURE_PROJECT: true,
+      apiBaseUrl,
+    },
+    project,
   };
 }
 

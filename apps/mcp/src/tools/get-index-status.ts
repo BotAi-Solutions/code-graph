@@ -45,8 +45,8 @@ const TOOL_NAME = 'get_index_status';
  * see `stale`), `stale` is STALE, `indexing` is INDEXING, `never_indexed` is
  * NOT_INDEXED and `failed` is ERROR.
  */
-const READINESS_STATES = ['ready', 'stale', 'indexing', 'failed', 'never_indexed'] as const;
-type Readiness = (typeof READINESS_STATES)[number];
+export const READINESS_STATES = ['ready', 'stale', 'indexing', 'failed', 'never_indexed'] as const;
+export type Readiness = (typeof READINESS_STATES)[number];
 
 const runSchema = {
   analysisId: z.string(),
@@ -126,7 +126,7 @@ const outputSchema = {
  * `structuredContent` against `outputSchema` at runtime, so a hand-kept
  * interface that drifted from it would compile and then fail on every call.
  */
-type IndexStatus = z.infer<typeof indexStatusObject>;
+export type IndexStatus = z.infer<typeof indexStatusObject>;
 
 const indexStatusObject = z.object(outputSchema);
 
@@ -156,21 +156,12 @@ export function registerGetIndexStatus(server: McpServer, api: ApiClient): void 
       },
     },
     async ({ projectId }): Promise<CallToolResult> => {
-      let runs: AnalysisJob[];
+      let status: IndexStatus;
       try {
-        runs = await api.get<AnalysisJob[]>(
-          `/api/projects/${encodeURIComponent(projectId)}/analysis`,
-        );
+        status = await readIndexStatus(api, projectId);
       } catch (error) {
         return failure(error, projectId);
       }
-
-      // Only a stored graph can be stale. Asking about freshness with no graph
-      // would be a second request to learn what the first already said.
-      const hasGraph = runs.some((run) => run.status === 'COMPLETED');
-      const freshness = hasGraph ? await readFreshness(api, projectId) : null;
-
-      const status = summarise(projectId, runs, freshness, Date.now());
 
       return {
         content: [{ type: 'text', text: render(status) }],
@@ -178,6 +169,25 @@ export function registerGetIndexStatus(server: McpServer, api: ApiClient): void 
       };
     },
   );
+}
+
+/**
+ * The status itself, for any tool that needs to know it.
+ *
+ * Exported so `ensure_project` decides from exactly the reading this tool
+ * reports, rather than from a second opinion about the same runs. Throws what
+ * the API client throws when the run list cannot be read; a freshness check
+ * that fails only makes freshness `unknown`.
+ */
+export async function readIndexStatus(api: ApiClient, projectId: string): Promise<IndexStatus> {
+  const runs = await api.get<AnalysisJob[]>(`/api/projects/${encodeURIComponent(projectId)}/analysis`);
+
+  // Only a stored graph can be stale. Asking about freshness with no graph
+  // would be a second request to learn what the first already said.
+  const hasGraph = runs.some((run) => run.status === 'COMPLETED');
+  const freshness = hasGraph ? await readFreshness(api, projectId) : null;
+
+  return summarise(projectId, runs, freshness, Date.now());
 }
 
 

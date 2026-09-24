@@ -74,17 +74,21 @@ analysed — register it once at user scope with the absolute path:
 claude mcp add --scope user code-graph -- node /absolute/path/to/code-graph/apps/mcp/dist/server.js
 ```
 
+That one registration serves every repository: see
+[Automatic project registration](#automatic-project-registration) for how the
+server learns which one is open.
+
 ### Verify it
 
 1. **Start dependencies and CodeRAG:** `pnpm dev:all`. Wait for `CodeRAG is running`.
 2. **Connect:** open Claude Code in the repository (approve `code-graph` when asked),
    or run `claude mcp get code-graph`. `Pending approval` means run `claude` and
    approve it. `claude mcp reset-project-choices` re-asks.
-3. **Tools visible:** `/mcp` in a session lists `code-graph` with eight tools.
-4. **Smoke test:** ask Claude to *"resolve_project for this directory, then
-   get_index_status"*. If nothing is indexed, *"index_project this directory"*
-   and poll `get_index_status` until `ready`. Then *"search_graph for
-   AnalysisService"*.
+3. **Tools visible:** `/mcp` in a session lists `code-graph` with nine tools.
+4. **Smoke test:** ask Claude to *"call ensure_project"*. A new repository
+   comes back `registered` with a run id; poll `get_index_status` until
+   `ready`. Then *"search_graph for AnalysisService"*. (The step-by-step form
+   still works: *"resolve_project for this directory, then get_index_status"*.)
 
 `pnpm dev:mcp` runs the server in watch mode against your terminal's stdin,
 which is useful for seeing it start and little else — the protocol expects a
@@ -92,13 +96,23 @@ client on the other end.
 
 ## Configuration
 
-Two variables, both optional, read from the workspace `.env` like everything
-else.
+Three variables, all optional, read from the workspace `.env` like everything
+else — the server finds that `.env` from its own location, so it is read
+whichever repository the client was opened in.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MCP_API_BASE_URL` | `http://localhost:${PORT}` | Where the API is |
 | `MCP_REQUEST_TIMEOUT_MS` | `15000` | Ceiling on one call to the API |
+| `MCP_AUTO_ENSURE_PROJECT` | `true` | Run `ensure_project` for the current project on startup |
+
+Two more are read from the client's environment, not from `.env`: they name the
+current project (see [Automatic project registration](#automatic-project-registration)).
+
+| Variable | Set by | Purpose |
+| --- | --- | --- |
+| `CLAUDE_PROJECT_DIR` | Claude Code, for every stdio server it launches | The repository the session is open in |
+| `CODERAG_PROJECT_DIR` | You, in another client's server config | The same, for clients that do not set `CLAUDE_PROJECT_DIR` |
 
 Left unset, `MCP_API_BASE_URL` follows the API's own `PORT` from the same file,
 so moving the API off a busy port needs no second edit — the web dev server's
@@ -111,6 +125,153 @@ API cannot be reached.
 
 There is no `DATABASE_URL`, and there is no way to add one that would do
 anything.
+
+## Automatic project registration
+
+Open any repository in Claude Code (terminal or VS Code) and the graph for it is
+there, or on its way, without registering or indexing anything by hand.
+
+### Three separate things
+
+```
+MCP registration      Claude Code knows how to launch code-graph        once per machine   (claude mcp add --scope user)
+project registration  CodeRAG has a project for this directory          once per repository (API: projects + repositories)
+graph indexing        a run has built that project's graph              whenever it is new or stale (worker)
+```
+
+They are independent: a registered MCP server can be open in a repository
+CodeRAG has never seen, and a registered project can have no graph yet.
+`ensure_project` is what connects them — it takes the directory the session is
+open in to a registered project with a graph (or a run on its way), using the
+same pieces the other tools use and adding no indexing or status logic of its own.
+
+### How the current repository reaches the server
+
+```
+VS Code / terminal opens /work/repo-a
+        ↓
+Claude Code launches the user-scoped server with CLAUDE_PROJECT_DIR=/work/repo-a
+        ↓
+config.ts reads it  →  project-root.ts validates it  →  ensure_project uses it
+```
+
+Claude Code sets `CLAUDE_PROJECT_DIR` in the environment of every stdio server
+it starts, and it is the directory the session was opened in — the VS Code
+workspace folder, or where `claude` was run. So the *same* registration sees
+`repo-a` in one window and `repo-b` in another. Nothing per repository: no
+`.mcp.json` to copy, no path to edit.
+
+The working directory is deliberately **not** used as a fallback: Claude Code
+starts a user-scoped server in its own configuration directory (`~/.claude`),
+not the project. For another MCP client, set `CODERAG_PROJECT_DIR` in its server
+configuration instead.
+
+The root is validated on this machine before anything is registered:
+
+| Check | Refused with |
+| --- | --- |
+| No `rootPath` and no `CLAUDE_PROJECT_DIR` / `CODERAG_PROJECT_DIR` (or a relative value) | `PROJECT_ROOT_UNDETERMINED` |
+| Does not exist | `PROJECT_ROOT_NOT_FOUND` |
+| Not a directory | `PROJECT_ROOT_NOT_DIRECTORY` |
+| No `.git`/`.hg`/`.svn` or project manifest (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, `pom.xml`, …) at the top, and not inside a git work tree | `PROJECT_ROOT_NOT_A_PROJECT` |
+| The filesystem root or the home directory | `PROJECT_ROOT_TOO_BROAD` |
+
+The path is made absolute, normalised and passed through `realpath`, as the API
+does, so a symlinked path and its target are one project.
+
+### Project identity
+
+A project is identified by its repository root's canonical path — never by the
+directory's name. `/projects/foo/my-app` and `/projects/bar/my-app` are two
+projects, both named `my-app`. A session opened in a subdirectory of an
+already-registered project (a package in a monorepo) uses that enclosing
+project rather than registering the subdirectory; `requestedPath` then differs
+from `rootPath`.
+
+### When indexing happens
+
+On startup the server runs `ensure_project` for the current project in the
+background — it never waits for it, and the session is usable at once. The
+model can call `ensure_project` too; a call made while the startup check is
+still running shares its result.
+
+| The project is… | `ensure_project` does | `action` |
+| --- | --- | --- |
+| Not registered | Registers it and queues its first run | `registered` |
+| Registered, never indexed | Queues a run | `started` |
+| Indexed but **stale** (files changed since, uncommitted edits included) | Queues a re-index | `started` |
+| Being indexed | Nothing — returns the active run's id | `already_indexing` |
+| Indexed and current | Nothing | `up_to_date` |
+| Indexed, freshness unknown | Nothing (see below) | `none` |
+| Last run **failed** | Nothing (see below) | `none` |
+
+So an indexed, current repository is never re-indexed on startup, and a stale
+one is re-indexed once: the next session finds the run already going, or the
+graph current.
+
+The two "nothing"s are deliberate. The check runs on every session start, so a
+state indexing would not reliably fix — a run that keeps failing, a graph whose
+freshness cannot be determined (recorded before revisions were tracked) — must
+not queue a run each time a window opens. `reason` says which, and
+`index_project` (with `force: true` for the unknown case) is the explicit retry.
+
+Stale is decided by the existing freshness check (`GET /projects/:id/freshness`,
+see [What STALE means](#what-stale-means)); nothing here has its own idea of it.
+
+### No duplicate registration or runs
+
+- **Across processes** (two windows on one repository, or the startup check in
+  each): `POST /api/projects/index` serialises requests for the same directory
+  inside the API, so the second request sees the first's project and its active
+  run and returns them (`already_indexing`). That serialisation is in-process,
+  which matches how the API runs — one process against its database.
+- **Within one server**: concurrent `ensure_project` calls for the same root
+  share one in-flight check and make one set of API calls.
+- The API never queues a second active run for a project, whichever path asks.
+
+### Turning it off, triggering, inspecting
+
+| To… | Do |
+| --- | --- |
+| Stop the startup check | `MCP_AUTO_ENSURE_PROJECT=false` in the workspace `.env` (`ensure_project` still works when called) |
+| Index or re-index by hand | `index_project` with the repository root; `force: true` re-indexes a current graph |
+| Retry a failed run | `index_project` with the repository root |
+| See the state | `get_index_status` with the `projectId` from `ensure_project` |
+| See what the startup check did | The server's stderr (Claude Code's MCP server log): `current project checked` (with `action`, `status`, `indexingJobId`) or `could not check the current project on startup` with the reason |
+
+If the API is not running when the session starts, the startup check logs that
+and gives up; calling `ensure_project` once CodeRAG is up does the same work.
+
+### Global Claude Code configuration
+
+Once per machine, with the absolute path to this checkout (build it first:
+`pnpm build:packages`, or `pnpm dev:all`):
+
+```bash
+claude mcp add --scope user code-graph -- node /absolute/path/to/code-graph/apps/mcp/dist/server.js
+```
+
+That writes this to `~/.claude.json`, which can also be edited directly or
+passed to `claude mcp add-json --scope user code-graph '<json>'`:
+
+```json
+{
+  "mcpServers": {
+    "code-graph": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/code-graph/apps/mcp/dist/server.js"]
+    }
+  }
+}
+```
+
+No `env` block is needed — not for the API address (the server reads this
+checkout's `.env`) and not for the project (Claude Code supplies
+`CLAUDE_PROJECT_DIR`). `claude mcp get code-graph` shows it; `/mcp` in any
+session lists it. Inside this repository the project-scoped
+[`.mcp.json`](../.mcp.json) declares the same server name and takes precedence,
+which is harmless — it runs the same server.
 
 ## stdout belongs to the protocol
 
@@ -130,6 +291,8 @@ that the startup line arrived on stderr instead.
 The tools are meant to be used in this order:
 
 ```
+ensure_project()                  the open repository  →  a projectId, registered and indexing if needed
+        ↓   (or, step by step:)
 resolve_project(path)             a working directory  →  a projectId
         ↓
 get_index_status(projectId)       can that project answer anything, and is it current?
@@ -175,6 +338,10 @@ In full, the way an agent works through it:
 7. Use its relationships and their evidence to decide what to inspect next —
    another `get_node` on a neighbour, or a `trace_path` between two nodes that
    both matter to the question.
+
+`ensure_project` does steps 1–3 in one call for the repository the session is
+open in, and the server already runs it on startup. Call it once when it is
+unclear whether the repository is ready — not before every query.
 
 Each step exists because the next one cannot be trusted without it:
 
@@ -248,6 +415,48 @@ How it is decided (`GET /api/projects/:projectId/freshness`):
   graph stale.
 
 ## Tools
+
+### `ensure_project`
+
+The current repository, registered and indexed if it needs to be, and its
+project id — see [Automatic project registration](#automatic-project-registration)
+for the whole lifecycle. It composes existing pieces: `GET /api/projects/resolve`
+(as `resolve_project`), the status reading `get_index_status` reports, and
+`POST /api/projects/index` (as `index_project`) only when a run is needed.
+
+```
+ensure_project({})
+  → Registered /work/repo-a with CodeRAG and queued its first indexing run.
+       project:   repo-a — projectId: 0b9784ed-…
+       status:    indexing
+       run:       2d6d7e3e-…
+```
+
+**Input**
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `rootPath` | string, optional | A repository to ensure instead of the current one. Absolute, or relative to the current project directory. |
+
+**Output** (`structuredContent`)
+
+| Field | Meaning |
+| --- | --- |
+| `projectId`, `projectName` | The project; pass `projectId` to every other tool |
+| `rootPath` | The project's repository root |
+| `requestedPath`, `rootSource` | The directory asked about, and where it came from (`argument`, `CLAUDE_PROJECT_DIR`, `CODERAG_PROJECT_DIR`) |
+| `action` | `registered` / `started` / `already_indexing` / `up_to_date` / `none` — what this call did |
+| `status` | `get_index_status`'s `state` after the call: `ready`, `stale`, `indexing`, `failed`, `never_indexed` |
+| `registered`, `projectCreated` | The project is registered; this call created it |
+| `indexed`, `indexing`, `indexingJobId`, `indexingStarted` | A graph is stored; a run is active, and which; this call queued it |
+| `stale`, `indexedCommit`, `currentCommit`, `changedFiles`, `changedPaths` | Freshness, as `get_index_status` reports it |
+| `error`, `reason` | Why the last run failed, when it did; why this call did what it did |
+
+Returns as soon as any run is queued; poll `get_index_status` until `ready`.
+
+**Failures** (`isError: true`): the `PROJECT_ROOT_*` codes above, "could not be
+reached — start it with `pnpm dev:all`" when the API is down,
+`FILESYSTEM_ACCESS_DISABLED`, and the API's own code for anything else.
 
 ### `resolve_project`
 
@@ -400,8 +609,9 @@ index_project({ "path": "/absolute/path/to/repo" })
 | A run is already queued or running | `already_indexing` — that run is returned | false |
 | Graph matches the files | `up_to_date` (unless `force`) | false |
 
-Two concurrent calls cannot both queue a run: the loser of the race gets the
-winner's run back. If registration succeeds but queuing fails, the new project
+Two concurrent calls cannot both register the directory or both queue a run:
+requests for the same directory are serialised inside the API, so the second
+sees the first's project and run and gets them back. If registration succeeds but queuing fails, the new project
 is removed again, so a retry starts clean.
 
 It returns as soon as the run is queued. Poll `get_index_status` until
@@ -895,6 +1105,9 @@ is "the file is empty".
 | `dev:all`: POSTGRES_PORT and DATABASE_URL disagree | Make the compose port and the URL's port the same in `.env` |
 | `stale: null`, reason mentions *before source revisions were recorded* | Graph predates freshness tracking: `index_project` with `force: true` once |
 | `index_project`: `FILESYSTEM_ACCESS_DISABLED` | The API has `LOCAL_FILESYSTEM_ENABLED=false`; local indexing needs it on |
+| `ensure_project`: `PROJECT_ROOT_UNDETERMINED` | The client did not set `CLAUDE_PROJECT_DIR` (a non-Claude client, or an old Claude Code): pass `rootPath`, or set `CODERAG_PROJECT_DIR` in the server's config |
+| `ensure_project`: `PROJECT_ROOT_NOT_A_PROJECT` | The session was opened in a folder with no `.git` or manifest: open the repository root, or pass `rootPath` |
+| `ensure_project` returns `none` with a failed run | Not retried automatically: fix the cause (see `error`), then `index_project` |
 | `search_graph` finds nothing for code you just wrote | Graph is stale or the file is new: check `get_index_status`, use `search_code`, or re-index |
 
 ## Adding a tool
@@ -903,3 +1116,10 @@ One file under `src/tools/`, registered in `createMcpServer`. It should be a
 schema, a call through `ApiClient`, and a rendering. If you find yourself
 wanting to join two API calls or filter a result set, that logic belongs behind
 a route in `apps/api` where the UI and the benchmark can reach it too.
+
+`ensure_project` is the one deliberate exception: it sequences three existing
+calls because the readiness vocabulary it decides from (`ready`, `stale`, …) is
+computed by `get_index_status` in this app, and a second copy of that behind a
+route would be a second status implementation. Its only decision of its own is
+whether to call `POST /api/projects/index`; registration, deduplication and
+freshness stay in the API.

@@ -66,6 +66,13 @@ export const mcpEnvSchema = z.object({
    * that never arrives.
    */
   MCP_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  /**
+   * Whether the server checks the current project on startup — registering it
+   * and queuing an indexing run only when one is needed. On by default, since
+   * it does nothing for a project whose graph is current; off leaves it to an
+   * explicit `ensure_project` call.
+   */
+  MCP_AUTO_ENSURE_PROJECT: booleanish.default(true),
 });
 
 export const scipEnvSchema = z.object({
