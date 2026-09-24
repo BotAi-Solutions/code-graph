@@ -33,6 +33,13 @@ import { NodeAccumulator } from './node-accumulator.js';
  * confidence, because they come from the compiler, and the container-level
  * aggregates it derives at `medium`, because those are a summary rather than
  * something the compiler said.
+ *
+ * Function-valued variables (`const f = () => {}`, recognised by a language
+ * refiner) are `function` nodes, with one difference from a declared function:
+ * only a reference the refiner marked as a call is `CALLS`. Using `f` as a
+ * value — `register(f)`, `const g = f` — stays `REFERENCES`. A call edge of
+ * this kind records where the first call is, because the call site is exactly
+ * what the syntax showed.
  */
 
 /**
@@ -73,6 +80,12 @@ interface SymbolRecord {
   /** Node id of the nearest class/interface/type ancestor, or the node itself. */
   containerNodeId: string | null;
   documentPath: string;
+  /**
+   * A function-valued variable: a reference is a call only where the syntax
+   * shows one. Declared functions and methods keep their existing rule, under
+   * which every reference to them is a call.
+   */
+  callsNeedCallSite: boolean;
 }
 
 export class ScipGraphBuilder {
@@ -136,6 +149,7 @@ export class ScipGraphBuilder {
           nodeType: definition.nodeType,
           containerNodeId: resolveContainer(node.id, definition.nodeType, ownerRecord),
           documentPath: document.relativePath,
+          callsNeedCallSite: definition.symbol.functionValue !== undefined,
         });
       }
 
@@ -147,6 +161,7 @@ export class ScipGraphBuilder {
           nodeType: 'file',
           containerNodeId: null,
           documentPath: document.relativePath,
+          callsNeedCallSite: false,
         });
       }
     }
@@ -189,11 +204,13 @@ export class ScipGraphBuilder {
         // a second REFERENCES edge would only duplicate it.
         if (target.nodeType === 'file') continue;
 
-        const relationship: CodeRelationship = isCallableNodeType(target.nodeType)
-          ? 'CALLS'
-          : 'REFERENCES';
+        const relationship = relationshipOf(target, reference.isCall);
+        const evidence =
+          relationship === 'CALLS' && target.callsNeedCallSite
+            ? callSiteEvidence(document.relativePath, reference.line, reference.character)
+            : SCIP_EVIDENCE;
 
-        edges.add(sourceNodeId, relationship, target.nodeId, { evidence: SCIP_EVIDENCE });
+        edges.add(sourceNodeId, relationship, target.nodeId, { evidence });
 
         if (this.deriveContainerEdges) {
           this.addDerivedContainerEdge(edges, source, target, relationship);
@@ -293,8 +310,13 @@ export class ScipGraphBuilder {
       metadata.documentation = definition.symbol.documentation;
     }
 
+    if (definition.symbol.functionValue) metadata.functionValue = definition.symbol.functionValue;
+
     return nodes.add({
       type: definition.nodeType,
+      // Hashed as the variable it was classified as before function values
+      // were recognised, so its id does not change (see `model/identity.ts`).
+      identityType: definition.symbol.functionValue ? 'variable' : undefined,
       name: definition.symbol.name,
       symbolKey: definition.symbol.id,
       qualifiedName: qualifiedNameOf(definition.symbol.identity, document.relativePath),
@@ -338,6 +360,28 @@ export class ScipGraphBuilder {
       metadata: { derived: true },
     });
   }
+}
+
+/**
+ * CALLS or REFERENCES for a reference to `target`. A declared function or a
+ * method is called by any reference to it, as before. A function-valued
+ * variable is called only where the reference is the callee of a call.
+ */
+function relationshipOf(target: SymbolRecord, isCall: boolean): CodeRelationship {
+  if (target.callsNeedCallSite) return isCall ? 'CALLS' : 'REFERENCES';
+  return isCallableNodeType(target.nodeType) ? 'CALLS' : 'REFERENCES';
+}
+
+/** A compiler-resolved call whose location is the call expression itself. */
+function callSiteEvidence(file: string, line: number, character: number): EdgeEvidence {
+  return evidenceOf({
+    source: 'scip',
+    basis: 'scipSymbol',
+    method: 'scip',
+    file,
+    line: line + 1,
+    column: character,
+  });
 }
 
 /**

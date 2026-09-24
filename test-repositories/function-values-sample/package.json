@@ -1,0 +1,8 @@
+{
+  "name": "function-values-sample",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Function-valued variables (arrow functions, function expressions) and the ways they are called or passed around.",
+  "main": "src/callers.ts"
+}

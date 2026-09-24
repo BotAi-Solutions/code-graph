@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { SupportedLanguage } from '@ckg/shared';
 import type { ScipDocument, ScipIndex, ScipSymbol, ScipSymbolKind } from '../types/index.js';
 import type { RefineContext, ScipSymbolRefiner } from './symbol-refiner.js';
+import { positionKey, scanFunctionValues, type FunctionValueScan } from './typescript-function-values.js';
 
 /**
  * Recovers TypeScript/JavaScript declaration kinds that SCIP does not carry.
@@ -13,8 +14,13 @@ import type { RefineContext, ScipSymbolRefiner } from './symbol-refiner.js';
  * "class" into interface / enum / type-alias, which in turn is what makes
  * IMPLEMENTS and EXTENDS distinguishable downstream.
  *
- * Only the declaring keyword is inspected. No source text is retained, logged
- * or written to the graph.
+ * It also parses each file once to recover what the keyword cannot show: a
+ * `const` whose value is a function becomes a `function` (see
+ * `typescript-function-values.ts`), and each occurrence that is the callee of
+ * a call is marked `isCall`. Without that, a call to `const f = () => {}`
+ * could not be told apart from passing `f` as a value.
+ *
+ * No source text is retained, logged or written to the graph.
  */
 
 const KEYWORD_TO_KIND: ReadonlyMap<string, ScipSymbolKind> = new Map<string, ScipSymbolKind>([
@@ -65,8 +71,10 @@ export class TypeScriptSymbolRefiner implements ScipSymbolRefiner {
     document: ScipDocument,
     context: RefineContext,
   ): Promise<ScipDocument> {
-    const lines = await this.readLines(path.join(context.repositoryPath, document.relativePath));
-    if (!lines) return document;
+    const text = await this.readText(path.join(context.repositoryPath, document.relativePath));
+    if (text === null) return document;
+    const lines = text.split('\n');
+    const scan = scanFunctionValues(document.relativePath, text);
 
     // Definition occurrence per symbol, so we know where to look.
     const definitionLine = new Map<string, { line: number; character: number }>();
@@ -87,22 +95,27 @@ export class TypeScriptSymbolRefiner implements ScipSymbolRefiner {
       if (line === undefined) return symbol;
 
       const keyword = declaringKeyword(line, position.character);
-      if (!keyword) return symbol;
+      const refined = keyword ? KEYWORD_TO_KIND.get(keyword) : undefined;
+      const byKeyword = refined ? applyKind(symbol, refined) : symbol;
 
-      const refined = KEYWORD_TO_KIND.get(keyword);
-      if (!refined) return symbol;
-
-      return applyKind(symbol, refined);
+      return applyFunctionValue(byKeyword, scan, position);
     });
 
-    return { ...document, symbols };
+    const occurrences = document.occurrences.map((occurrence) =>
+      !occurrence.isDefinition &&
+      scan.callees.has(positionKey(occurrence.startLine, occurrence.startCharacter))
+        ? { ...occurrence, isCall: true }
+        : occurrence,
+    );
+
+    return { ...document, symbols, occurrences };
   }
 
-  private async readLines(filePath: string): Promise<string[] | null> {
+  private async readText(filePath: string): Promise<string | null> {
     try {
       const contents = await readFile(filePath, 'utf8');
       if (contents.length > MAX_FILE_BYTES) return null;
-      return contents.split('\n');
+      return contents;
     } catch {
       // File moved or unreadable since indexing: leave kinds as parsed.
       return null;
@@ -152,4 +165,28 @@ function applyKind(symbol: ScipSymbol, refined: ScipSymbolKind): ScipSymbol {
 
   // A top-level `function` already inferred as a function needs no change.
   return symbol;
+}
+
+/**
+ * A variable declared with a function as its value is a function. Only kinds
+ * that describe a variable are changed: a method, property or class keeps the
+ * kind it has, whatever the scan says about the position.
+ */
+const VARIABLE_KINDS: ReadonlySet<ScipSymbolKind> = new Set<ScipSymbolKind>([
+  'variable',
+  'constant',
+  'unknown',
+]);
+
+function applyFunctionValue(
+  symbol: ScipSymbol,
+  scan: FunctionValueScan,
+  position: { line: number; character: number },
+): ScipSymbol {
+  if (!VARIABLE_KINDS.has(symbol.kind)) return symbol;
+
+  const functionValue = scan.declarations.get(positionKey(position.line, position.character));
+  if (!functionValue) return symbol;
+
+  return { ...symbol, kind: 'function', functionValue };
 }

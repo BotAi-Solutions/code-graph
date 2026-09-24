@@ -31,6 +31,14 @@ export interface NormalizedReference {
    */
   enclosingSymbolId: string | null;
   isWriteAccess: boolean;
+  /**
+   * The reference is the callee of a call expression. False when a refiner
+   * read the syntax and found no call, and also when no refiner looked.
+   */
+  isCall: boolean;
+  /** Where the reference is, zero-based, as SCIP records it. */
+  line: number;
+  character: number;
 }
 
 export interface NormalizedDocument {
@@ -114,6 +122,9 @@ export function normalizeDocument(
       targetSymbolId: occurrence.symbolId,
       enclosingSymbolId: scope?.symbol.id ?? fileSymbolId,
       isWriteAccess: occurrence.isWriteAccess,
+      isCall: occurrence.isCall === true,
+      line: occurrence.startLine,
+      character: occurrence.startCharacter,
     });
   }
 

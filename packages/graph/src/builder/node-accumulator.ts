@@ -3,6 +3,12 @@ import { createNodeId, type GraphIdentityContext } from '../model/identity.js';
 
 export interface AddNodeInput {
   type: CodeNodeType;
+  /**
+   * The type the identity is hashed with, when it differs from `type`. A
+   * variable later recognised as a function keeps the id it had as a
+   * variable, so that reclassifying it never renames the node.
+   */
+  identityType?: CodeNodeType | undefined;
   name: string;
   symbolKey: string;
   qualifiedName?: string | undefined;
@@ -27,9 +33,9 @@ export class NodeAccumulator {
   constructor(private readonly context: GraphIdentityContext) {}
 
   /** The identity `add` would give this input, without creating anything. */
-  idFor(input: Pick<AddNodeInput, 'type' | 'filePath' | 'symbolKey'>): string {
+  idFor(input: Pick<AddNodeInput, 'type' | 'identityType' | 'filePath' | 'symbolKey'>): string {
     return createNodeId(this.context, {
-      type: input.type,
+      type: input.identityType ?? input.type,
       filePath: input.filePath,
       symbolKey: input.symbolKey,
     });

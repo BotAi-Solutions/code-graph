@@ -40,9 +40,9 @@ What a compiler knows about. SCIP-derived.
 | `module` | A namespace or module scope that is not a file — including an external package, marked `metadata.external`. |
 | `class` | A class, struct or equivalent. |
 | `interface` | An interface, protocol or trait. |
-| `function` | A free function — one not owned by a type. |
+| `function` | A free function — one not owned by a type. Includes a `const` whose value is an arrow function or function expression, marked `metadata.functionValue` (see [Function-valued variables](#function-valued-variables)). |
 | `method` | A member function, constructor or accessor. |
-| `variable` | A module-level variable or constant. |
+| `variable` | A module-level variable or constant that is not declared as a function. |
 | `property` | A class field, property or enum member. |
 | `type` | A type alias or other named type. |
 | `enum` | An enum. |
@@ -181,8 +181,8 @@ interface CodeEdge {
 | `CONTAINS` | Lexical containment | Repository → directory → file → symbol → member, from the SCIP descriptor chain |
 | `IMPORTS` | File-level dependency | An import statement, or a cross-file reference |
 | `EXPORTS` | What a file offers | An `export` declaration, including re-exports |
-| `CALLS` | Invocation | A reference whose target is a function or method, attributed to the definition it sits inside |
-| `REFERENCES` | Non-call usage | Same, where the target is a class, interface, type or variable |
+| `CALLS` | Invocation | A reference whose target is a function or method, attributed to the definition it sits inside. For a function-valued variable, only a reference in callee position |
+| `REFERENCES` | Non-call usage | Same, where the target is a class, interface, type or variable, or a function-valued variable used as a value |
 | `IMPLEMENTS` | Satisfies an abstraction | A SCIP implementation relationship whose target is an interface or a member |
 | `EXTENDS` | Inherits from a class | A SCIP implementation relationship whose target is a class |
 | `INSTANTIATES` | Constructs | `new Foo()`, with `Foo` resolved through the file's imports |
@@ -316,6 +316,82 @@ call graph's clothes. The analyzers attribute their findings the same way — a
 SQL statement belongs to the method it sits inside — using the ranges the
 builder already recorded.
 
+### Function-valued variables
+
+`export const f = (x) => …` is how much TypeScript declares its helpers, and
+scip-typescript reports it as a plain variable. Left there, the helper is not a
+`function`, and a call to it is a `REFERENCES` edge that no callers or callees
+list shows. Real-repository validation found this hiding helpers from a
+method's callees while the list claimed to be complete.
+
+The TypeScript refiner (`packages/scip/src/adapters/typescript-function-values.ts`)
+parses each file once, syntax only, and recovers two facts:
+
+**Which variables are functions.** A declaration counts when all of these hold:
+
+- it is `const`: `let`, `var`, `using` and `await using` can be reassigned or
+  are not plain bindings, so they are left as variables
+- it binds a single name: destructuring is not a declaration of a function
+- its initializer is an arrow function or a function expression, optionally in
+  parentheses: `() => …`, `async (x) => …`, `<T>(v: T) => v`,
+  `function () {}`, `async function () {}`, `(() => …)`
+
+Anything else stays a `variable`, however it is used later: `{}`, `[]`, `123`,
+`'foo'`, `makeHandler()`, `g as Handler`, and an object whose members are
+functions (`const mimeTypes = { isAsset: … }`). Callability is never inferred
+from a call site.
+
+Such a symbol becomes a `function` node with `metadata.functionValue` set to
+`arrow-function` or `function-expression`. It is one node: the declaration is
+reclassified in place, never duplicated. Its id is unchanged (see
+[Identity](#identity)).
+
+**Which references are calls.** An occurrence is a call when it is the callee
+of a call expression:
+
+| Syntax | Call of `f`? |
+| --- | --- |
+| `f()`, `await f()`, `return f()`, `f?.()`, `f<T>()`, `(f)()` | yes |
+| `ns.f()` (namespace import, or any member access named `f`) | yes, of `f`, never of `ns` |
+| `@f(…)` on a class member | yes, attributed to the member |
+| `register(f)`, `const g = f`, `return f`, `{ key: f }`, `[f]` | no — a value use |
+| `f.bind(…)`, `f.call(…)`, `f.apply(…)` | no — `bind`/`call`/`apply` is called, not `f` |
+| `new f()`, `` f`…` ``, `<F />`, `typeof f` | no |
+
+A reference to a function-valued variable is `CALLS` only in the first three
+rows. Everywhere else it stays `REFERENCES`, so `register(helper)` does not
+claim that the caller runs the helper. When code both calls a helper and passes
+it around, it has both edges.
+
+That rule applies to function-valued variables only. For a declared `function`
+or a method, every reference is still `CALLS`, as it always was. Passing a
+declared function as a callback remains a `CALLS` edge. Changing that is a
+separate decision, with its own blast radius.
+
+A `CALLS` edge to a function-valued variable is also the one SCIP-derived call
+edge that carries a location: `file`, `line` and `column` of the first call
+expression, at `high` confidence. The call site is exactly what the syntax
+showed, so recording it invents nothing.
+
+Limits, all deliberate:
+
+- **No type checker.** `const f: Handler = makeHandler()` is callable, but
+  nothing in its syntax says so, and it stays a `variable`.
+- **No dynamic dispatch.** `handlers[name]()`, `obj[key]()`, a function read out
+  of a map, or a callback invoked by its receiver is not traced to the function
+  it ends up calling.
+- **Object members are not nodes.** `mimeTypes.isAsset()` is a `REFERENCES`
+  edge to `mimeTypes`: scip-typescript emits no graph symbol for an object
+  literal's members, so there is no function to point a call at.
+- **Class properties initialised with arrows** (`handle = () => {}`) are
+  properties, as before.
+- **Decorators are calls.** `@OnJob({…})` invokes `OnJob` when the class is
+  defined, and the call is attributed to the decorated member, as calls inside
+  decorator arguments already were. `OnJob`'s callers are therefore its
+  handlers.
+- **TypeScript and JavaScript only.** Other languages have no refiner doing
+  this, and their references are unchanged.
+
 ### Derived container edges
 
 A call between two methods is also a fact about the classes that own them. For
@@ -340,6 +416,13 @@ edgeId = sha256(projectId:repositoryId ⌷ "edge" ⌷ sourceId ⌷ relationship 
 ```
 
 (`⌷` is a NUL separator, which cannot occur in a path or a SCIP symbol.)
+
+One exception: a [function-valued variable](#function-valued-variables) has
+`type: function` but is hashed with `nodeType = variable`, the type it had
+before such variables were recognised. Reclassifying it therefore renamed no
+node and needed no migration, and there is still one node per declaration: its
+symbol key is unique. Nothing may recompute a code symbol's id from its `type`.
+The builder's `NodeAccumulator` is the only place ids are made.
 
 `symbolKey` is the SCIP symbol string for a code symbol, the path itself for
 files and directories, and a stable natural key for an architectural node:

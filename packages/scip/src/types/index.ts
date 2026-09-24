@@ -67,7 +67,18 @@ export interface ScipSymbol {
   enclosingSymbolId?: string;
   relationships: ScipRelationship[];
   identity: ScipSymbolIdentity;
+  /**
+   * Set when a variable is declared with a function as its value
+   * (`const f = () => {}`, `const f = function () {}`), which a language
+   * refiner recovers from syntax. Such a symbol has kind `function`. Only the
+   * occurrences marked `isCall` invoke it. Every other occurrence is the
+   * function being used as a value.
+   */
+  functionValue?: ScipFunctionValue;
 }
+
+/** How a function-valued variable was declared. */
+export type ScipFunctionValue = 'arrow-function' | 'function-expression';
 
 export interface ScipRange {
   startLine: number;
@@ -88,6 +99,12 @@ export interface ScipOccurrence extends ScipRange {
    * the function it appears inside.
    */
   enclosingRange?: ScipRange;
+  /**
+   * True when the occurrence is the callee of a call expression: `f()`,
+   * `await f()`, `ns.f()`. SCIP has no such role, so this is set only by a
+   * language refiner that read the syntax. Absent means unknown, not "no call".
+   */
+  isCall?: boolean;
 }
 
 export interface ScipDocument {

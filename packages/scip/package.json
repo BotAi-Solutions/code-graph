@@ -10,7 +10,8 @@
   "scripts": { "build": "tsc -b" },
   "dependencies": {
     "@ckg/language-detection": "workspace:*",
-    "@ckg/shared": "workspace:*"
+    "@ckg/shared": "workspace:*",
+    "typescript": "~5.9.3"
   },
   "devDependencies": {
     "@sourcegraph/scip-typescript": "^0.4.0"

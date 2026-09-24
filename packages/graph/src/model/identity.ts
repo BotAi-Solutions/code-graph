@@ -10,6 +10,11 @@ import type { CodeNodeType, CodeRelationship } from '@ckg/shared';
  *
  * The hashed tuple is (scope, node type, file path, symbol key) — exactly the
  * things that identify a piece of code, and nothing that varies between runs.
+ *
+ * One exception keeps ids stable across a change of classification: a variable
+ * whose value is a function (`const f = () => {}`) has node type `function` but
+ * is hashed as `variable`, the type it had before such variables were
+ * recognised. It is still exactly one node, since its symbol key is unique.
  */
 
 const ID_LENGTH = 32;
