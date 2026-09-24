@@ -115,8 +115,14 @@ const outputSchema = {
     .number()
     .int()
     .nullable()
-    .describe('Files that differ from what was indexed, including uncommitted edits. Null when not countable.'),
-  changedPaths: z.array(z.string()).describe('The first few changed files, repository-relative.'),
+    .describe(
+      'How many indexed source files differ from what was indexed (added + modified + deleted), including uncommitted and untracked files. A count, not a list. Null when not countable.',
+    ),
+  changedPaths: z.array(z.string()).describe('The first few changed files, sorted and repository-relative.'),
+  changes: z
+    .object({ added: z.array(z.string()), modified: z.array(z.string()), deleted: z.array(z.string()) })
+    .nullable()
+    .describe('The same differences by kind, each list capped. Null when they could not be told apart.'),
 };
 
 /**
@@ -266,6 +272,7 @@ function summarise(
       currentCommit: null,
       changedFiles: null,
       changedPaths: [],
+      changes: null,
     };
   }
 
@@ -315,7 +322,17 @@ function summarise(
     currentCommit: report?.currentCommit ?? null,
     changedFiles: report?.changedFiles ?? null,
     changedPaths: report?.changedPaths ?? [],
+    changes: report?.changes ?? null,
   };
+}
+
+/** `modified: ` and so on, when the report says which kind of change a path is. */
+function changeKindOf(status: IndexStatus, changed: string): string {
+  if (!status.changes) return '';
+  if (status.changes.added.includes(changed)) return 'added:    ';
+  if (status.changes.deleted.includes(changed)) return 'deleted:  ';
+  if (status.changes.modified.includes(changed)) return 'modified: ';
+  return '';
 }
 
 function readinessOf(run: AnalysisJob): Readiness {
@@ -404,7 +421,9 @@ function render(status: IndexStatus): string {
         lines.push(`   commit:    ${status.indexedCommit ?? 'unknown'} indexed, ${status.currentCommit ?? 'unknown'} now`);
       }
       lines.push(`   changed:   ${status.freshnessReason ?? 'files differ from what was indexed'}`);
-      for (const changed of status.changedPaths) lines.push(`              ${changed}`);
+      for (const changed of status.changedPaths) {
+        lines.push(`              ${changeKindOf(status, changed)}${changed}`);
+      }
       if (status.changedFiles !== null && status.changedFiles > status.changedPaths.length) {
         lines.push(`              … and ${String(status.changedFiles - status.changedPaths.length)} more`);
       }

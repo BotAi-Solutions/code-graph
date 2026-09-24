@@ -397,10 +397,11 @@ directories, and everything when `LOCAL_FILESYSTEM_ENABLED=false`.
 
 Whether the latest completed graph still matches the files: `state` is
 `current`, `stale`, `unknown` (with `reason`) or `not_indexed`, with
-`indexedCommit`, `currentCommit`, `changedFiles` and up to 20 `changedPaths`.
-Git working trees are compared by content against the commit recorded when the
-run started (uncommitted edits included); other directories by modification
-time. See [mcp.md — What STALE means](mcp.md#what-stale-means).
+`indexedCommit`, `currentCommit`, `changedFiles` (a count), up to 20
+`changedPaths`, and `changes` (`added` / `modified` / `deleted`). Every file the
+indexer reads is compared by content hash against the manifest recorded when the
+run started (uncommitted and untracked files included); a moved HEAD is stale
+too. See [mcp.md — What STALE means](mcp.md#what-stale-means).
 
 ### `GET /api/projects/:projectId/analysis` → `200`
 

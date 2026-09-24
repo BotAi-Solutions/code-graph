@@ -1,6 +1,11 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { scanRepository, type RepositoryScan } from '@ckg/language-detection';
+import {
+  holdsSecrets,
+  isIndexedSourceFile,
+  scanRepository,
+  type RepositoryScan,
+} from '@ckg/language-detection';
 import type { IndexingError } from '@ckg/shared';
 import { InMemorySourceFileSet } from './source-file-set.js';
 
@@ -15,53 +20,11 @@ import { InMemorySourceFileSet } from './source-file-set.js';
  */
 
 /**
- * Extensions that carry code, architecture or repository knowledge.
- *
- * Grown, not replaced: everything the code graph read is still read, and the
- * document formats were added when the graph stopped being only about code. A
- * category the pipeline has no analyzer for is still not read — adding an
- * extension here is what makes a format cost a file open.
+ * Which files count as source is decided in `@ckg/language-detection`, beside
+ * the source manifest that fingerprints the same files for freshness checks.
+ * Re-exported so existing importers keep working.
  */
-const SOURCE_SUFFIXES = [
-  '.ts',
-  '.tsx',
-  '.mts',
-  '.cts',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-  '.json',
-  '.jsonc',
-  '.prisma',
-  '.sql',
-  '.ddl',
-  '.psql',
-  '.yml',
-  '.yaml',
-  '.md',
-  '.mdx',
-] as const;
-
-/** Files worth reading whose name, not extension, identifies them. */
-const SOURCE_FILENAMES = ['dockerfile', 'procfile', 'makefile'] as const;
-
-/** Compiler output and vendored copies masquerading as source. */
-const EXCLUDED_SUFFIXES = ['.min.js', '.d.ts.map', '.js.map', '.tsbuildinfo'] as const;
-
-/**
- * Environment files whose contents are examples rather than real values. Any
- * other `.env` file holds live credentials, so its *path* is recorded — the
- * fact that the service is configured by environment is worth knowing — and its
- * contents are never read.
- */
-const EXAMPLE_ENV_SUFFIXES = ['.example', '.sample', '.template', '.defaults', '.dist'] as const;
-
-export function holdsSecrets(relativePath: string): boolean {
-  const fileName = relativePath.slice(relativePath.lastIndexOf('/') + 1).toLowerCase();
-  if (!fileName.startsWith('.env')) return false;
-  return !EXAMPLE_ENV_SUFFIXES.some((suffix) => fileName.endsWith(suffix));
-}
+export { holdsSecrets };
 
 export interface LoadSourceOptions {
   /** Hard cap on files read. Beyond it the set is marked truncated. */
@@ -99,7 +62,7 @@ export async function loadSourceFiles(
   const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
 
   const scan = options.scan ?? (await scanRepository(repositoryPath));
-  const candidates = scan.files.filter(isInteresting);
+  const candidates = scan.files.filter(isIndexedSourceFile);
 
   const selected = candidates.slice(0, maxFiles);
   const truncated = scan.truncated || candidates.length > selected.length;
@@ -147,15 +110,4 @@ export async function loadSourceFiles(
   }
 
   return new InMemorySourceFileSet(files, truncated, failures);
-}
-
-function isInteresting(relativePath: string): boolean {
-  const lower = relativePath.toLowerCase();
-  if (EXCLUDED_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return false;
-
-  const fileName = lower.slice(lower.lastIndexOf('/') + 1);
-  if (SOURCE_FILENAMES.includes(fileName as (typeof SOURCE_FILENAMES)[number])) return true;
-  if (fileName.startsWith('.env')) return true;
-
-  return SOURCE_SUFFIXES.some((suffix) => lower.endsWith(suffix));
 }

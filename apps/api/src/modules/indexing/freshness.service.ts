@@ -18,6 +18,12 @@ import type { SourceRoots } from '../source/source-root.js';
  * replaced it. The working tree is found through `SourceRoots`, the same policy
  * source retrieval and code search use, so this reads nothing they could not.
  *
+ * "Current" means the files the indexer reads are, byte for byte, the files it
+ * read — every one hashed at capture and again here — and HEAD has not moved.
+ * An uncommitted edit, an untracked file or a deletion inside the indexing
+ * scope is stale; a change under `node_modules` or `dist` is not. The check
+ * reads and hashes files but parses nothing and writes nothing.
+ *
  * Every way of not knowing is reported as `unknown` with its reason rather than
  * guessed at: a git-URL source has no working tree left to compare, a run from
  * before revisions were recorded has nothing to compare against, and a server
@@ -72,6 +78,7 @@ export class FreshnessService {
         currentCommit: null,
         changedFiles: null,
         changedPaths: [],
+        changes: null,
         reason: 'No indexing run has completed, so there is no graph to compare.',
         checkedAt,
       };
@@ -88,6 +95,7 @@ export class FreshnessService {
       currentCommit: null,
       changedFiles: null,
       changedPaths: [],
+      changes: null,
       checkedAt,
     };
 
@@ -126,6 +134,7 @@ export class FreshnessService {
       currentCommit: comparison.currentCommit,
       changedFiles: comparison.changedFiles,
       changedPaths: comparison.changedPaths,
+      changes: comparison.changes,
       reason: comparison.reason,
     };
   }

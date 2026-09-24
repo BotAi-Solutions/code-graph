@@ -167,6 +167,48 @@ describe('automatic project registration, end to end', () => {
     expect(api.analyses.jobs.size).toBe(2);
   });
 
+  it('M: an uncommitted edit at the same HEAD is stale, and concurrent ensures queue exactly one run', async () => {
+    const repo = await createRepository('app');
+    const mcp = await startMcp(repo);
+    const other = await startMcp(repo);
+    const first = await mcp.call('ensure_project');
+    const projectId = String(first.projectId);
+    await completeRun(repo, String(first.indexingJobId));
+    expect(await mcp.call('get_index_status', { projectId })).toMatchObject({ state: 'ready', freshness: 'current' });
+
+    await writeFile(path.join(repo, 'src/routes.tsx'), 'export const routes = [];\n');
+    await writeFile(path.join(repo, 'src/app.ts'), 'export const a = 2;\n');
+
+    // Status checks, however many and however concurrent, only look.
+    const statuses = await Promise.all([1, 2, 3, 4].map(() => mcp.call('get_index_status', { projectId })));
+    for (const status of statuses) {
+      expect(status).toMatchObject({
+        state: 'stale',
+        stale: true,
+        changedFiles: 2,
+        changedPaths: ['src/app.ts', 'src/routes.tsx'],
+        changes: { added: ['src/routes.tsx'], modified: ['src/app.ts'], deleted: [] },
+      });
+      expect(status.currentCommit).toBe(status.indexedCommit);
+    }
+    expect(api.analyses.jobs.size).toBe(1);
+
+    // Two sessions ensure at once: one run between them.
+    const [a, b] = await Promise.all([mcp.call('ensure_project'), other.call('ensure_project')]);
+    expect(api.analyses.jobs.size).toBe(2);
+    expect(a.indexingJobId).toBe(b.indexingJobId);
+    expect([a.action, b.action].sort()).toEqual(['already_indexing', 'started']);
+
+    await completeRun(repo, String(a.indexingJobId));
+    expect(await mcp.call('get_index_status', { projectId })).toMatchObject({
+      state: 'ready',
+      freshness: 'current',
+      changedFiles: 0,
+    });
+    expect(await mcp.call('ensure_project')).toMatchObject({ action: 'up_to_date' });
+    expect(api.analyses.jobs.size).toBe(2);
+  });
+
   it('E: sessions starting together register one project and queue one run', async () => {
     const repo = await createRepository('app');
     // Widen the window between "is anything registered here?" and acting on

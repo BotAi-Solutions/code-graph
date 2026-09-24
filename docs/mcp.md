@@ -398,21 +398,28 @@ edits, not after every one.
 
 How it is decided (`GET /api/projects/:projectId/freshness`):
 
-- **Git working tree.** When a run starts, the worker records HEAD plus a content
-  hash of every file that differs from it — staged, unstaged, deleted or
-  untracked (`.gitignore` honoured). A check diffs the working tree against that
-  same commit and compares. So uncommitted edits count, and committing exactly
-  what was indexed stays current. A project inside a larger repository sees
-  only its own subdirectory. `indexedCommit` / `currentCommit` report HEAD then
-  and now.
-- **Not a git repository.** No commit is recorded or invented. Any file or
-  directory modified after the run started means stale. Directory times are
-  what catch deletions.
+- **Source manifest.** When a run starts, the worker walks exactly the files the
+  indexer reads — the scanner's walk (`node_modules`, `dist`, lockfiles, … skipped)
+  filtered to the formats the source loader opens — and records a SHA-256 of
+  each file's content, keyed by repository-relative path. It is stored with the
+  run (`analysis_jobs.source_revision`). A check rebuilds the same map and diffs
+  it: **added**, **modified** and **deleted** files, committed or not, tracked
+  or untracked. `.gitignore` plays no part: a gitignored file the indexer reads
+  is watched, a file the indexer never reads (an image, a `.log`) is not. A live
+  `.env` is watched for presence only; its contents are never hashed.
+- **Commit.** For git working trees HEAD is recorded too. A HEAD that moved is
+  stale on its own, even when no indexed file changed (the reason says so).
+  `indexedCommit` / `currentCommit` report HEAD then and now.
+- `changedFiles` is a **count** of differing indexed files (added + modified +
+  deleted); `changedPaths` is the first 20 of them, sorted; `changes` splits the
+  same differences into `added` / `modified` / `deleted` lists.
+- The check reads and hashes files but parses nothing, writes nothing and never
+  queues a run. About 50 ms for a 750-file repository.
 - **Unknown** (`stale: null`): a project indexed from a git URL (no working tree
-  left), a run recorded before this was added (re-index once), or local
-  filesystem access switched off.
-- Paths the scanner ignores (`node_modules`, `dist`, lockfiles, …) never make a
-  graph stale.
+  left), local filesystem access switched off, or a run recorded before source
+  manifests existed. Such a run is still compared the old way (git delta, or
+  modification times outside git) and reported stale when that finds a change;
+  otherwise it is unknown, never current — re-index once.
 
 ## Tools
 

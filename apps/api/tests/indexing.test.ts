@@ -327,6 +327,83 @@ describe('GET /api/projects/:projectId/freshness', () => {
     expect(envelope.data).toMatchObject({ state: 'stale', changedFiles: 1, changedPaths: ['src/app.ts'] });
   });
 
+  it('reports stale for working-tree changes at the same commit, by kind', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    await write('src/gone.ts', 'export const g = 1;\n');
+    git('add', '-A');
+    git('commit', '--quiet', '-m', 'add gone');
+    const { projectId, jobId } = await registered();
+    await completeWithRevision(jobId);
+    const head = git('rev-parse', 'HEAD');
+
+    await write('src/app.ts', 'export const a = 2;\n');
+    await write('src/new-feature.ts', 'export const n = 1;\n');
+    await rm(path.join(repo, 'src/gone.ts'));
+    const { envelope } = await freshnessOf(projectId);
+
+    expect(envelope.data).toMatchObject({
+      state: 'stale',
+      indexedCommit: head,
+      currentCommit: head,
+      changedFiles: 3,
+      changedPaths: ['src/app.ts', 'src/gone.ts', 'src/new-feature.ts'],
+      changes: { added: ['src/new-feature.ts'], modified: ['src/app.ts'], deleted: ['src/gone.ts'] },
+    });
+  });
+
+  it('is current again after the working-tree change is reverted', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    const { projectId, jobId } = await registered();
+    await completeWithRevision(jobId);
+
+    await write('src/app.ts', 'export const a = 2;\n');
+    expect((await freshnessOf(projectId)).envelope.data?.state).toBe('stale');
+
+    git('checkout', '--', 'src/app.ts');
+    expect((await freshnessOf(projectId)).envelope.data).toMatchObject({ state: 'current', changedFiles: 0 });
+  });
+
+  it('stays current when only ignored or non-indexed files change', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    await write('.gitignore', 'scratch.log\n');
+    git('add', '-A');
+    git('commit', '--quiet', '-m', 'ignore');
+    const { projectId, jobId } = await registered();
+    await completeWithRevision(jobId);
+
+    await write('scratch.log', 'noise\n');
+    await write('node_modules/dep/index.js', 'module.exports = 1;\n');
+    await write('dist/app.js', 'var a = 1;\n');
+    await write('package-lock.json', '{}\n');
+
+    expect((await freshnessOf(projectId)).envelope.data).toMatchObject({ state: 'current', changedFiles: 0 });
+  });
+
+  it('is unknown, not current, for a run recorded before source manifests', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    const { projectId, jobId } = await registered();
+    const { manifest: _manifest, ...legacy } = await captureSourceRevision(repo);
+    harness.analyses.revisions.set(jobId, legacy);
+    harness.analyses.complete(jobId);
+
+    const { envelope } = await freshnessOf(projectId);
+
+    expect(envelope.data).toMatchObject({ state: 'unknown', analysisId: jobId });
+    expect(envelope.data?.reason).toMatch(/re-index once/);
+  });
+
+  it('never queues a run, however many status checks arrive together', async () => {
+    harness = await createHarness({ canonicalizePaths: true });
+    const { projectId, jobId } = await registered();
+    await completeWithRevision(jobId);
+    await write('src/app.ts', 'export const a = 2;\n');
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => freshnessOf(projectId)));
+
+    expect(results.every((result) => result.envelope.data?.state === 'stale')).toBe(true);
+    expect(harness.analyses.jobs.size).toBe(1);
+  });
+
   it('reports stale after a commit, with both commits', async () => {
     harness = await createHarness({ canonicalizePaths: true });
     const { projectId, jobId } = await registered();

@@ -2,8 +2,11 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
-import type { SourceRevision } from '@ckg/shared';
+import type { SourceManifest, SourceRevision } from '@ckg/shared';
 import { DEFAULT_IGNORE_RULES, type IgnoreRules } from './ignore.js';
+import { holdsSecrets, isIndexedSourceFile } from './indexed-files.js';
+import { resolveProjectRoot } from './project-scan.js';
+import { scanRepository } from './scan.js';
 
 /**
  * What a directory looked like when it was indexed, and whether it still does.
@@ -13,21 +16,27 @@ import { DEFAULT_IGNORE_RULES, type IgnoreRules } from './ignore.js';
  * directory against it later. A change to how one half fingerprints a tree
  * without the other would make every project read as stale, or none.
  *
- * **Git working trees** are fingerprinted by content, not by commit. The record
- * is HEAD plus every path that differed from it at capture time, each with the
- * hash of its content. A later check diffs the working tree against that same
- * commit and compares the two sets. So committing exactly what was indexed is
- * still current, while a one-line edit that was never committed is stale — the
- * graph describes files, not commits.
+ * **The source manifest** is the fingerprint. It is every file the indexing
+ * pipeline reads — the scanner's walk, filtered exactly as the source loader
+ * filters it — mapped to a SHA-256 of its content. A check rebuilds the same
+ * map and diffs the two: a file in one and not the other was added or deleted,
+ * a file in both with different hashes was modified. Content, not modification
+ * times, and not git: a gitignored file the scanner still reads is watched, and
+ * a file git reports that the scanner never reads is not.
  *
- * **Anything else** has no commit, and none is invented. Freshness falls back
- * to modification times: a file or directory changed after capture means the
- * graph may be out of date. Directory mtimes are what catch deletions and
- * additions, which leave no file behind to be newer.
+ * **The commit** is recorded beside it for git working trees, and a HEAD that
+ * moved is stale on its own — the graph was built at one commit and the
+ * repository is now at another — even when no indexed file changed. The reason
+ * says which of the two it was.
  *
  * Paths the scanner ignores — `node_modules`, build output, lockfiles — are
- * ignored here too. The indexer never read them, so a rebuild must not make a
- * graph look stale.
+ * ignored here too, because the manifest is built from the scanner's own walk.
+ *
+ * Revisions recorded before manifests existed hold only a delta against HEAD
+ * (for git) or a capture time (otherwise). Those are still compared the old way,
+ * but can only ever prove a graph *stale*: the old delta could not see files
+ * the scanner reads and git does not, so "no difference found" is reported as
+ * unknown rather than current until the project is re-indexed once.
  */
 
 /** Past this many changed paths, only the digest is kept: the record is read on every freshness check. */
@@ -40,6 +49,16 @@ export const FRESHNESS_MAX_CHANGED_PATHS = 20;
 const MTIME_WALK_MAX_ENTRIES = 50_000;
 
 const GIT_TIMEOUT_MS = 30_000;
+
+/** Files hashed at once when building a manifest: enough to keep the disk busy, few enough to spare descriptors. */
+const MANIFEST_HASH_CONCURRENCY = 32;
+
+/**
+ * Stands in for the content hash of a live `.env` file. The pipeline records
+ * that such a file exists and never reads it, so only its presence can change
+ * the graph — and a hash of credentials has no business in the database.
+ */
+const SECRET_FILE_MARKER = 'secret';
 
 /** Enough for `git diff --name-only` on any repository this system can index. */
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
@@ -59,7 +78,15 @@ export interface RevisionComparison {
   /** Null when the files could not be counted, even if staleness is known. */
   changedFiles: number | null;
   changedPaths: string[];
+  /** The differences by kind, each capped like `changedPaths`; null when they could not be told apart. */
+  changes: ChangesByKind | null;
   reason: string;
+}
+
+export interface ChangesByKind {
+  added: string[];
+  modified: string[];
+  deleted: string[];
 }
 
 /**
@@ -77,10 +104,13 @@ export async function captureSourceRevision(
   const ignore = options.ignore ?? DEFAULT_IGNORE_RULES;
 
   const head = await gitHead(directory);
-  const delta = head ? await workingTreeDelta(directory, head, ignore) : null;
+  const [delta, manifest] = await Promise.all([
+    head ? workingTreeDelta(directory, head, ignore) : Promise.resolve(null),
+    buildSourceManifest(directory, ignore),
+  ]);
 
   if (!head || !delta) {
-    return { vcs: 'none', commit: null, changes: null, changeCount: 0, digest: null, capturedAt };
+    return { vcs: 'none', commit: null, changes: null, changeCount: 0, digest: null, capturedAt, manifest };
   }
 
   return {
@@ -90,7 +120,55 @@ export async function captureSourceRevision(
     changeCount: delta.size,
     digest: digestOf(delta),
     capturedAt,
+    manifest,
   };
+}
+
+/**
+ * The content of every file an indexing run reads, keyed by
+ * repository-relative path. Deterministic: the same tree always produces the
+ * same entries in the same order, and so the same digest.
+ *
+ * Reads files but parses nothing. Throws `ProjectScanError` when the directory
+ * itself cannot be read; a file that vanishes mid-walk is simply absent.
+ */
+export async function buildSourceManifest(
+  directory: string,
+  ignore: IgnoreRules = DEFAULT_IGNORE_RULES,
+): Promise<SourceManifest> {
+  const root = await resolveProjectRoot(directory);
+  const scan = await scanRepository(root, { rules: ignore });
+  const paths = scan.files.filter(isIndexedSourceFile);
+
+  const files: Record<string, string> = {};
+  for (let index = 0; index < paths.length; index += MANIFEST_HASH_CONCURRENCY) {
+    const batch = paths.slice(index, index + MANIFEST_HASH_CONCURRENCY);
+    const hashes = await Promise.all(batch.map((relative) => manifestHash(root, relative)));
+    batch.forEach((relative, offset) => {
+      const hash = hashes[offset];
+      if (hash !== null && hash !== undefined) files[relative] = hash;
+    });
+  }
+
+  const hash = createHash('sha256');
+  for (const [relative, content] of Object.entries(files)) hash.update(`${relative}\u0000${content}\n`);
+
+  return {
+    version: 1,
+    files,
+    fileCount: Object.keys(files).length,
+    digest: hash.digest('hex'),
+    truncated: scan.truncated,
+  };
+}
+
+async function manifestHash(root: string, relative: string): Promise<string | null> {
+  if (holdsSecrets(relative)) return SECRET_FILE_MARKER;
+  try {
+    return sha256(await readFile(path.join(root, relative)));
+  } catch {
+    return null;
+  }
 }
 
 /** Compares a directory with the revision a run recorded. Never throws for an unreadable tree: it says so. */
@@ -101,11 +179,107 @@ export async function compareSourceRevision(
 ): Promise<RevisionComparison> {
   const ignore = options.ignore ?? DEFAULT_IGNORE_RULES;
 
-  if (recorded.vcs === 'git' && recorded.commit) {
-    return compareGit(directory, recorded, recorded.commit, ignore);
+  if (recorded.manifest) {
+    return compareManifest(directory, recorded, recorded.manifest, ignore);
   }
 
-  return compareModificationTimes(directory, recorded, ignore);
+  const legacy =
+    recorded.vcs === 'git' && recorded.commit
+      ? await compareGit(directory, recorded, recorded.commit, ignore)
+      : await compareModificationTimes(directory, recorded, ignore);
+
+  return legacy.stale === true ? legacy : { ...legacy, stale: null, reason: `${legacy.reason} ${LEGACY_CAVEAT}` };
+}
+
+const LEGACY_CAVEAT =
+  'This graph was indexed before per-file source manifests were recorded, so it cannot be confirmed current; re-index once to enable full freshness checks.';
+
+// --- manifest -------------------------------------------------------------
+
+async function compareManifest(
+  directory: string,
+  recorded: SourceRevision,
+  indexed: SourceManifest,
+  ignore: IgnoreRules,
+): Promise<RevisionComparison> {
+  let current: SourceManifest;
+  let head: string | null;
+  try {
+    [current, head] = await Promise.all([buildSourceManifest(directory, ignore), gitHead(directory)]);
+  } catch {
+    return {
+      vcs: 'none',
+      currentCommit: null,
+      stale: null,
+      changedFiles: null,
+      changedPaths: [],
+      changes: null,
+      reason: 'The project directory could not be read.',
+    };
+  }
+
+  const diff = diffManifests(indexed, current);
+  const changedFiles = diff.added.length + diff.modified.length + diff.deleted.length;
+  const changedPaths = [...diff.added, ...diff.modified, ...diff.deleted]
+    .sort()
+    .slice(0, FRESHNESS_MAX_CHANGED_PATHS);
+  const changes: ChangesByKind = {
+    added: diff.added.slice(0, FRESHNESS_MAX_CHANGED_PATHS),
+    modified: diff.modified.slice(0, FRESHNESS_MAX_CHANGED_PATHS),
+    deleted: diff.deleted.slice(0, FRESHNESS_MAX_CHANGED_PATHS),
+  };
+
+  const lostRepository = recorded.vcs === 'git' && head === null;
+  const moved = recorded.commit !== null && head !== null && head !== recorded.commit;
+
+  const clauses: string[] = [];
+  if (changedFiles > 0) clauses.push(describeDiff(diff));
+  if (moved && recorded.commit && head) clauses.push(`HEAD moved from ${short(recorded.commit)} to ${short(head)}.`);
+  if (lostRepository) clauses.push('The directory was a git working tree when it was indexed and is not one now.');
+
+  const stale = changedFiles > 0 || moved || lostRepository;
+  if (!stale) clauses.push('No indexed source file differs from what was indexed.');
+  else if (changedFiles === 0) clauses.push('No indexed source file differs in content.');
+
+  return {
+    vcs: head ? 'git' : 'none',
+    currentCommit: head,
+    stale,
+    changedFiles,
+    changedPaths,
+    changes,
+    reason: clauses.join(' '),
+  };
+}
+
+/** Sorted paths added, modified and deleted between two manifests. */
+export function diffManifests(before: SourceManifest, after: SourceManifest): {
+  added: string[];
+  modified: string[];
+  deleted: string[];
+} {
+  const added: string[] = [];
+  const modified: string[] = [];
+  const deleted: string[] = [];
+
+  for (const [relative, hash] of Object.entries(after.files)) {
+    const was = before.files[relative];
+    if (was === undefined) added.push(relative);
+    else if (was !== hash) modified.push(relative);
+  }
+  for (const relative of Object.keys(before.files)) {
+    if (after.files[relative] === undefined) deleted.push(relative);
+  }
+
+  return { added: added.sort(), modified: modified.sort(), deleted: deleted.sort() };
+}
+
+function describeDiff(diff: { added: string[]; modified: string[]; deleted: string[] }): string {
+  const parts: string[] = [];
+  if (diff.modified.length > 0) parts.push(`${String(diff.modified.length)} modified`);
+  if (diff.added.length > 0) parts.push(`${String(diff.added.length)} added`);
+  if (diff.deleted.length > 0) parts.push(`${String(diff.deleted.length)} deleted`);
+  return `Indexed source files differ from what was indexed: ${parts.join(', ')}.`;
 }
 
 // --- git ------------------------------------------------------------------
@@ -125,6 +299,7 @@ async function compareGit(
       stale: true,
       changedFiles: null,
       changedPaths: [],
+      changes: null,
       reason: 'The directory was a git working tree when it was indexed and is not one now.',
     };
   }
@@ -137,6 +312,7 @@ async function compareGit(
       stale: true,
       changedFiles: null,
       changedPaths: [],
+      changes: null,
       reason: `The indexed commit ${short(indexedCommit)} is no longer in the local repository (rebased or garbage-collected), so changes cannot be counted.`,
     };
   }
@@ -153,6 +329,7 @@ async function compareGit(
       stale,
       changedFiles: stale ? null : 0,
       changedPaths: [],
+      changes: null,
       reason: stale
         ? `The working tree differs from what was indexed; too many files changed to count.${moved}`
         : `No file differs from what was indexed.${moved}`,
@@ -167,6 +344,7 @@ async function compareGit(
     stale: changed.length > 0,
     changedFiles: changed.length,
     changedPaths: changed.slice(0, FRESHNESS_MAX_CHANGED_PATHS),
+    changes: null,
     reason:
       changed.length > 0
         ? `${String(changed.length)} file(s) differ from what was indexed.${moved}`
@@ -289,6 +467,7 @@ async function compareModificationTimes(
       stale: null,
       changedFiles: null,
       changedPaths: [],
+      changes: null,
       reason: 'The project directory could not be read.',
     };
   }
@@ -300,6 +479,7 @@ async function compareModificationTimes(
       stale: walk.files.length > 0 || walk.directories > 0 ? true : null,
       changedFiles: null,
       changedPaths: walk.files.slice(0, FRESHNESS_MAX_CHANGED_PATHS),
+      changes: null,
       reason: 'Not a git repository, and too large to check every file’s modification time.',
     };
   }
@@ -314,6 +494,7 @@ async function compareModificationTimes(
     // there is no file left behind to count.
     changedFiles: walk.files.length > 0 || !stale ? walk.files.length : null,
     changedPaths: walk.files.slice(0, FRESHNESS_MAX_CHANGED_PATHS),
+    changes: null,
     reason: stale
       ? walk.files.length > 0
         ? `Not a git repository: ${String(walk.files.length)} file(s) were modified after indexing began.`

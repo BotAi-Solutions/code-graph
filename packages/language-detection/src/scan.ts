@@ -19,6 +19,8 @@ export interface ScanOptions extends IgnoreOptions {
   progressInterval?: number;
   /** Aborts the walk. Whatever was found so far is returned, `truncated`. */
   signal?: AbortSignal;
+  /** An already-compiled policy; takes precedence over the list options above. */
+  rules?: IgnoreRules;
 }
 
 const DEFAULT_MAX_FILES = 25_000;
@@ -41,7 +43,7 @@ export async function scanRepository(
   const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const progressInterval = options.progressInterval ?? DEFAULT_PROGRESS_INTERVAL;
-  const ignore = new IgnoreRules(options);
+  const ignore = options.rules ?? new IgnoreRules(options);
 
   const files: string[] = [];
   const rootFiles = new Set<string>();

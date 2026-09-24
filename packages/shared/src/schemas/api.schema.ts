@@ -296,6 +296,25 @@ export const analysisJobSchema = z.object({
  * `none`: not a git working tree. There is no commit to record and none is
  * invented; freshness falls back to modification times against `capturedAt`.
  */
+/**
+ * Every file an indexing run read, by content.
+ *
+ * Covers exactly the files the pipeline opens — the scan's files, filtered the
+ * way the source loader filters them — mapped from repository-relative path to
+ * a SHA-256 of the bytes. A freshness check rebuilds the same map from the
+ * directory and diffs the two, which is what makes an uncommitted edit, an
+ * untracked file or a deletion visible whether or not git can see it.
+ */
+export const sourceManifestSchema = z.object({
+  version: z.literal(1),
+  files: z.record(z.string(), z.string()),
+  fileCount: z.number().int(),
+  /** SHA-256 over the sorted entries: two manifests are equal exactly when their digests are. */
+  digest: z.string(),
+  /** The walk hit the scanner's file limit, so the manifest covers what the run covered, not the whole tree. */
+  truncated: z.boolean(),
+});
+
 export const sourceRevisionSchema = z.object({
   vcs: z.enum(['git', 'none']),
   commit: z.string().nullable(),
@@ -303,6 +322,8 @@ export const sourceRevisionSchema = z.object({
   changeCount: z.number().int(),
   digest: z.string().nullable(),
   capturedAt: z.string(),
+  /** Absent on revisions recorded before manifests existed; their freshness can only be partly checked. */
+  manifest: sourceManifestSchema.nullable().optional(),
 });
 
 export const INDEX_FRESHNESS_STATES = ['current', 'stale', 'unknown', 'not_indexed'] as const;
@@ -325,10 +346,26 @@ export const indexFreshnessSchema = z.object({
   indexedAt: z.string().nullable(),
   indexedCommit: z.string().nullable(),
   currentCommit: z.string().nullable(),
-  /** Files that differ from what was indexed. Null when it could not be counted. */
+  /**
+   * How many indexed source files differ from what was indexed — added,
+   * modified and deleted together. A count, not a list. Null when it could not
+   * be counted.
+   */
   changedFiles: z.number().int().nullable(),
-  /** The first few of them, repository-relative, for a caller deciding whether they matter. */
+  /** The first few of them, sorted and repository-relative, for a caller deciding whether they matter. */
   changedPaths: z.array(z.string()),
+  /**
+   * The same differences by kind, each list capped like `changedPaths`. Absent
+   * or null when the comparison could not tell them apart.
+   */
+  changes: z
+    .object({
+      added: z.array(z.string()),
+      modified: z.array(z.string()),
+      deleted: z.array(z.string()),
+    })
+    .nullable()
+    .optional(),
   /** Why the state is what it is, in one sentence. */
   reason: z.string(),
   checkedAt: z.string(),
@@ -940,6 +977,7 @@ export const GRAPH_QUERY_DEFAULTS = {
   limit: GRAPH_DEFAULT_NODE_LIMIT,
   direction: GRAPH_DEFAULT_DIRECTION,
 } as const;
+export type SourceManifest = z.infer<typeof sourceManifestSchema>;
 export type SourceRevision = z.infer<typeof sourceRevisionSchema>;
 export type IndexFreshnessState = (typeof INDEX_FRESHNESS_STATES)[number];
 export type IndexFreshness = z.infer<typeof indexFreshnessSchema>;
