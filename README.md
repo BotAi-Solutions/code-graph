@@ -20,7 +20,7 @@ the code.**
 - [Overview](#overview)
 - [Highlights](#highlights)
 - [Screenshots](#screenshots)
-- [Run it](#run-it)
+- [Getting started](#getting-started) — install, connect your AI agent over MCP, verify
 - [How it works](#how-it-works)
 - [Retrieval evaluation report](#retrieval-evaluation-report)
 - [MCP server](#mcp-server)
@@ -164,23 +164,293 @@ service the same tab surfaces HTTP routes and the handlers they route to.
 
 ---
 
-## Run it
+## Getting started
 
-Requirements: **Node 20.11+**, **pnpm 9+**, **Docker** (for PostgreSQL).
+This takes about five minutes. By the end you will have the graph running
+locally, your AI coding agent connected to it over MCP, and the repository you
+work in indexed automatically.
 
-```bash
-cp .env.example .env  # first time only — DATABASE_URL has no default
-pnpm install          # first time only
-docker compose up -d  # PostgreSQL
-pnpm db:migrate       # create or update the schema
-pnpm dev              # API, worker and web, in watch mode
+```
+Your agent (Claude Code, Cursor, VS Code, …)
+   │  launches, over stdio
+   ▼
+MCP server ──HTTP──▶ API ──▶ PostgreSQL ◀── worker (indexes your repos)
+                      ▲
+            web UI ───┘  http://localhost:5173
 ```
 
-Then open **<http://localhost:5173>** and click **Select project**.
+You run the **API, worker and PostgreSQL** once, in a terminal. Your agent
+starts the **MCP server** by itself whenever it needs it, so you never run
+that by hand.
 
-After the first run, `pnpm dev` on its own is enough — as long as Docker is
-still up. Ports come from `.env`; the web dev server reads the API's `PORT` from
-there and proxies to it, so you only ever open 5173.
+### 1. Prerequisites
+
+| Tool | Version | Check |
+| --- | --- | --- |
+| Node.js | 20.11 or newer | `node --version` |
+| pnpm | 9 or newer | `pnpm --version` (install: `corepack enable`) |
+| Docker | Any recent version | `docker info` (it must be running) |
+| Git | Any | `git --version` |
+
+Docker is only used for PostgreSQL. If you already run PostgreSQL, you can
+skip Docker and point `DATABASE_URL` at your own server.
+
+At present only **TypeScript and JavaScript** repositories get full code
+analysis. Markdown, JSON/YAML, OpenAPI and SQL files are read in any
+repository.
+
+### 2. Clone, install, configure
+
+```bash
+git clone https://github.com/BotAi-Solutions/code-graph.git
+cd code-graph
+pnpm install
+cp .env.example .env
+pnpm setup:scip        # should print: ok  typescript  …/scip-typescript
+```
+
+The defaults in `.env` work as they are. Only change them if a port is already
+taken:
+
+- **3000 in use:** set `PORT=3001`. The web UI and the MCP server both follow it.
+- **5432 in use** (for example by a local PostgreSQL): set `POSTGRES_PORT=5433`
+  and change the port in `DATABASE_URL` to match.
+
+### 3. Start the backend
+
+```bash
+pnpm dev:all            # PostgreSQL + build + migrations + API + worker + web UI
+pnpm dev:all --no-web   # the same, without the web UI
+```
+
+Wait until it prints **`CodeRAG is running`**. Leave this terminal open: the
+MCP tools only work while the API and the worker are running. Press Ctrl+C to
+stop them. PostgreSQL keeps running, and so does your data;
+`docker compose stop postgres` stops it.
+
+`dev:all` also builds `apps/mcp/dist/server.js`, which is the file every MCP
+client below points to.
+
+### 4. Connect your AI agent
+
+Find the absolute path of the MCP server once. Every configuration below needs
+it:
+
+```bash
+echo "$(pwd)/apps/mcp/dist/server.js"
+# e.g. /Users/you/code/code-graph/apps/mcp/dist/server.js
+```
+
+Below, replace `/ABS/PATH/code-graph` with the folder that command printed,
+minus the `/apps/mcp/dist/server.js` part.
+
+The MCP server has to know **which repository to index**:
+
+- **Claude Code** tells it automatically, through the `CLAUDE_PROJECT_DIR`
+  variable, for whatever repository you open.
+- **Every other client** needs `CODERAG_PROJECT_DIR` set in its server
+  configuration. Without it, pass `rootPath` to `ensure_project` or
+  `index_project` when you call them.
+
+No API keys and no database credentials go in any of these files. The server
+reads the `.env` from its own checkout, so it finds the API wherever you launch
+it from.
+
+<details open>
+<summary><b>Claude Code</b> (CLI and the VS Code / JetBrains extensions)</summary>
+
+Register it once, at user scope, and it works in every repository you open:
+
+```bash
+claude mcp add --scope user code-graph -- node /ABS/PATH/code-graph/apps/mcp/dist/server.js
+```
+
+Check it:
+
+```bash
+claude mcp get code-graph     # should show: Status: ✓ Connected
+```
+
+Then open Claude Code in any repository and run `/mcp`. It should list
+`code-graph` with nine tools. When a session starts, the server registers the
+open repository and queues indexing if it is new or has changed, so you don't
+have to do anything else.
+
+To enable it for a single repository only, commit this as `.mcp.json` at that
+repository's root instead:
+
+```json
+{
+  "mcpServers": {
+    "code-graph": {
+      "command": "node",
+      "args": ["/ABS/PATH/code-graph/apps/mcp/dist/server.js"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+Add this to `~/.cursor/mcp.json` (all projects) or to `.cursor/mcp.json` in one
+project:
+
+```json
+{
+  "mcpServers": {
+    "code-graph": {
+      "command": "node",
+      "args": ["/ABS/PATH/code-graph/apps/mcp/dist/server.js"],
+      "env": { "CODERAG_PROJECT_DIR": "${workspaceFolder}" }
+    }
+  }
+}
+```
+
+If your Cursor version doesn't expand `${workspaceFolder}`, put the
+repository's absolute path there, or put the file in the project's
+`.cursor/mcp.json` with that project's path. Then enable **code-graph** under
+**Settings → MCP**.
+
+</details>
+
+<details>
+<summary><b>VS Code</b> (GitHub Copilot agent mode)</summary>
+
+Create `.vscode/mcp.json` in the repository you want analysed. VS Code uses
+`servers`, not `mcpServers`:
+
+```json
+{
+  "servers": {
+    "code-graph": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/ABS/PATH/code-graph/apps/mcp/dist/server.js"],
+      "env": { "CODERAG_PROJECT_DIR": "${workspaceFolder}" }
+    }
+  }
+}
+```
+
+Click **Start** above the server entry, then choose **Agent** mode in the chat
+view. The tools appear under the tools icon.
+
+</details>
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Edit `claude_desktop_config.json`:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "code-graph": {
+      "command": "node",
+      "args": ["/ABS/PATH/code-graph/apps/mcp/dist/server.js"],
+      "env": { "CODERAG_PROJECT_DIR": "/ABS/PATH/to/the/repo/you/want/analysed" }
+    }
+  }
+}
+```
+
+Claude Desktop has no notion of an open project, so either fix one repository
+here or leave `env` out and name the folder in chat ("index
+/Users/me/code/my-app"). Restart Claude Desktop after editing the file.
+
+</details>
+
+<details>
+<summary><b>Any other MCP client</b> (Windsurf, Codex, Zed, …)</summary>
+
+Every stdio-capable client needs the same three things:
+
+| Setting | Value |
+| --- | --- |
+| Command | `node` |
+| Arguments | `/ABS/PATH/code-graph/apps/mcp/dist/server.js` |
+| Environment | `CODERAG_PROJECT_DIR=<absolute path of the repository>` (optional, but without it you pass `rootPath` yourself) |
+
+Put these in whatever configuration format your client uses.
+
+</details>
+
+### 5. Verify it works
+
+In your agent, open the repository you want analysed and ask:
+
+1. **"Call ensure_project."** A new repository comes back `registered` with
+   an indexing run id. One already indexed comes back `ready`.
+2. **"Check get_index_status until it's ready."** Small repositories finish in
+   seconds. Large ones can take a few minutes.
+3. **"Use search_graph to find the main entry point."** You should get
+   symbols from your code, with file paths and line numbers.
+
+You can watch the same graph at **<http://localhost:5173>**: click **Select
+project** and pick the repository.
+
+### 6. Everyday use
+
+Once it's connected, just ask questions. The agent chooses the tools. Some
+prompts that work well:
+
+- *"Who calls `createOrder`, and what does it end up writing to the database?"*
+- *"Trace the path from the `POST /api/orders` route to the `orders` table."*
+- *"Which files implement what `docs/billing.md` describes?"*
+- *"What would break if I changed the signature of `UserService.update`?"*
+- *"Where is `STRIPE_SECRET` read, and which services depend on it?"*
+
+The graph keeps up with your edits. When files change after the last index, the
+status is reported as `stale`, and the next session start (or `ensure_project`)
+re-indexes. To force a rebuild, ask: *"index_project with force: true"*.
+
+Each day, the only step is to start the backend (`pnpm dev:all --no-web`)
+before you open your agent.
+
+### 7. Updating
+
+```bash
+git pull
+pnpm install
+pnpm dev:all     # rebuilds, applies new migrations and restarts everything
+```
+
+Restart your agent session afterwards so it starts the new MCP server build.
+
+### 8. If something goes wrong
+
+| Symptom | Fix |
+| --- | --- |
+| `/mcp` shows code-graph as failed; `Cannot find module …/dist/server.js` | Not built yet: run `pnpm dev:all` (or `pnpm build:packages`) |
+| Every tool says the API *could not be reached* | The backend isn't running: `pnpm dev:all`. If you changed `PORT`, it's picked up automatically |
+| Indexing stays `QUEUED` | The worker isn't running: use `pnpm dev:all`, not `pnpm dev:api` |
+| `dev:all` says *Is Docker running?* | Start Docker Desktop, or point `DATABASE_URL` at your own PostgreSQL |
+| `dev:all` says *port … is already in use* | Another copy is running. Stop it, or change `PORT` / `POSTGRES_PORT` in `.env` |
+| `PROJECT_ROOT_UNDETERMINED` | Your client didn't say which repository is open: set `CODERAG_PROJECT_DIR`, or pass `rootPath` |
+| `PROJECT_ROOT_NOT_A_PROJECT` | The folder has no `.git` or manifest: open the repository root instead |
+| `search_graph` doesn't find code you just wrote | The graph is stale: re-run `ensure_project`, or use `search_code` for literal text |
+
+For more (every tool's parameters, what *stale* means exactly, how project
+registration works), see [docs/mcp.md](docs/mcp.md).
+
+### Using only the web UI
+
+If you don't use an AI agent:
+
+```bash
+pnpm dev:all
+```
+
+Then open **<http://localhost:5173>**, click **Select project**, and choose a
+repository folder. After the first run, `pnpm dev` is enough as long as
+PostgreSQL is still up.
 
 ### Commands
 
@@ -397,14 +667,13 @@ credentials, and reaches the graph through the same HTTP API the web UI uses.
 | `search_code` | Literal search over the source text |
 | `get_source` | Read the code at any location the other tools report |
 
-The same project id is passed through every call; there is no implicit project.
-`pnpm dev:all` starts everything it needs, and the repository's `.mcp.json`
-connects Claude Code to it. Registered once at user scope
-(`claude mcp add --scope user code-graph -- node /abs/path/apps/mcp/dist/server.js`),
-it serves every repository you open: Claude Code passes the open repository as
-`CLAUDE_PROJECT_DIR`, and the server registers and indexes it on startup when it
-needs it. See [docs/mcp.md](docs/mcp.md) for setup, automatic project
-registration, verification and what *stale* means.
+Every call passes the same project id. The server never picks a project for
+you.
+
+Setting it up with Claude Code, Cursor, VS Code, Claude Desktop or any other
+client is covered step by step in [Getting started](#getting-started). See
+[docs/mcp.md](docs/mcp.md) for each tool's parameters, automatic project
+registration and what *stale* means.
 
 ---
 
