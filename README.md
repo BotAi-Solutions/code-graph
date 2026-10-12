@@ -23,6 +23,7 @@ the code.**
 - [Getting started](#getting-started) — install, connect your AI agent over MCP, verify
 - [How it works](#how-it-works)
 - [Retrieval evaluation report](#retrieval-evaluation-report)
+- [Benchmarking](#benchmarking) — accuracy and performance on pinned public repositories
 - [MCP server](#mcp-server)
 - [Using the web UI](#using-the-web-ui)
 - [Setup in detail](#setup-in-detail)
@@ -646,6 +647,228 @@ The three fixtures in `test-repositories/` must be indexed first. The CLI
 defaults to `http://localhost:${PORT ?? 3000}` from the process environment and
 does not read `.env`, so pass `--api` (or `RETRIEVAL_EVAL_API_URL`) if your API
 runs on another port.
+
+---
+
+## Benchmarking
+
+Two benchmarks: **accuracy** (is the graph right?) against hand-written ground
+truth, and **performance** (what does building and querying it cost?) on
+pinned public repositories, through the production indexing pipeline and the
+real HTTP API. The numbers below come from one run on one machine. They describe
+that machine, those revisions and that setup, not performance guarantees.
+A completed benchmark is not, on its own, a statement that the product is
+ready to release.
+
+Full methodology and limitations: **[docs/performance-benchmark.md](docs/performance-benchmark.md)**
+· accuracy benchmark: **[docs/benchmark.md](docs/benchmark.md)**
+
+### Environment and method
+
+- **Tool:** commit `10bd2ce`, clean working tree, run on 2026-10-12.
+- **Machine:** Apple M5 (10 cores), 16 GB, macOS (Darwin 25.6.0).
+- **Software:** Node 24.17.0, PostgreSQL 17.11 in Docker, scip-typescript 0.4.0.
+- **Databases:** a fresh, dedicated database per series, migrated to 0006.
+- **Indexing:**
+  - 5 *initial* indexes per repository: a new project each time, with the
+    graph tables vacuumed and analysed first.
+  - 5 *re-indexes* of the same project, each replacing the previous graph.
+  - Every run is a new process; the checkout is restored to its pin before each
+    one.
+- **Queries:** per repository, about 40 questions — search, node detail,
+  traversal from the five best-connected symbols at depths 1–5 (limit 500, both
+  directions), and paths between them.
+  - Each question is asked in 2 rounds, each round with a new API process.
+  - Each round has 2 warm-up passes (discarded) and 20 measured passes, so
+    there are 40 measured samples per question.
+  - Latency is the API's own `Server-Timing`.
+- **Caches:** the OS page cache and PostgreSQL buffers were **not** reset, so
+  nothing here is a cold-cache figure.
+- **Dependencies:**
+  - The *dependency-free* series indexes each checkout as it is, with nothing
+    installed, as production does.
+  - The *dependency-prepared* series (ky only) extracts one pinned,
+    integrity-checked package tarball (`@sindresorhus/tsconfig@8.1.0`) and runs
+    no package scripts.
+
+### Indexing
+
+Files and LOC count the git-tracked `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`,
+`.mjs` and `.cjs` files under the indexed directory. LOC counts physical lines,
+including blank lines, comments, tests and `.d.ts` files. Times are medians of
+5 runs, measured from job start to the graph committed.
+
+| Repository | Files | LOC | Initial index median | Re-index median | Re-index / initial | Status |
+|---|---:|---:|---:|---:|---:|---|
+| ky v2.2.0 (`3541888`) | 98 | 36,231 | — | — | — | **Failed** 0/10: dependency setup (see *Limitations*) |
+| ky v2.2.0, **dependency-prepared** | 98 | 36,231 | 0.81 s | 0.84 s | 1.03 | 10/10 |
+| express v5.3.0 (`cf6722b`) | 141 | 21,493 | 0.97 s | 0.95 s | 0.97 | 10/10 |
+| zod v4.6.6 (`284243f`) | 523 | 103,050 | 7.40 s | 8.45 s | 1.14 | 10/10 |
+| realworld-express (`30b68e1`) | 39 | 2,374 | 0.54 s | 0.55 s | 1.03 | 10/10 |
+| immich `server/` (`a4af862`) | 674 | 114,295 | 6.52 s | 6.87 s | 1.05 | 10/10 |
+
+| Repository | Nodes | Edges | Unresolved refs | Persist: initial → re-index | SCIP peak RSS (MiB) | Worker peak RSS (MiB) |
+|---|---:|---:|---:|---:|---:|---:|
+| ky (prepared) | 534 | 1,607 | 2,331 | 91 → 105 ms | 317 | 361 |
+| express | 797 | 1,490 | 1,063 | 88 → 108 ms | 339 | 390 |
+| zod | 7,782 | 38,439 | 32,628 | 1.73 → 2.32 s | 1,178 | 621 |
+| realworld-express | 275 | 556 | 275 | 48 → 57 ms | 279 | 250 |
+| immich `server/` | 9,395 | 48,629 | 38,212 | 2.16 → 2.63 s | 699 | 692 |
+
+The second table gives the median of the 5 initial runs for each peak. The
+highest single values were larger: zod's SCIP peak reached 1,200 MiB and
+immich's 870 MiB. The table also separates the persistence step from the
+total:
+- **Persistence alone:** 1.16–1.34× as long when re-indexing, because the
+  previous graph is replaced.
+- **Total time:** 0.97–1.14×, because every other phase (SCIP indexing,
+  decoding and refining, graph assembly) does the same work either way.
+
+Total ratios near 1, such as express's 0.97, are within noise.
+
+### Traversal latency
+
+Server time in ms, as the median (p95) of 200 measured samples per cell: 5
+traversals × 40 samples. "Truncated" means the traversal reached the 500-node
+limit.
+
+| Repository | Depth 1 | Depth 2 | Depth 3 | Depth 4 | Depth 5 | Truncated |
+|---|---:|---:|---:|---:|---:|---|
+| express | 2.3 (4.2) | 3.0 (4.7) | 4.9 (7.3) | 9.6 (13.0) | 10.7 (14.6) | depth 4: 4 of 5; depth 5: all |
+| zod | 5.5 (9.6) | 17.8 (20.6) | 18.2 (21.6) | 18.0 (21.1) | 18.0 (20.9) | depths 2–5: all |
+| realworld-express | 2.3 (4.3) | 3.3 (5.0) | 5.2 (7.1) | 6.4 (8.7) | 7.5 (10.0) | none |
+| immich `server/` | 7.0 (11.8) | 15.7 (21.7) | 15.9 (20.4) | 15.7 (21.1) | 15.7 (20.8) | depths 2–5: all |
+| ky (prepared) | 3.2 (5.3) | 6.1 (9.3) | 10.1 (13.9) | 12.7 (16.2) | 15.2 (19.6) | none |
+
+Traversal walks one level at a time and stops at the first level past the
+limit. Once every traversal is truncated (zod and immich from depth 2), the
+cost levels off rather than growing with depth. The table below compares it with a single recursive SQL statement
+returning the same result and metadata. It is a paired, alternating
+measurement:
+- repository-level, with no HTTP;
+- 3 warm-up pairs and then 21 measured pairs per traversal, median of the 5
+  traversals per cell;
+- the same traversal code as `10bd2ce`, but taken before that commit on an
+  earlier build of the same revisions.
+
+Cells show level walk / single statement, in ms:
+
+| Repository | Depth 1 | Depth 2 | Depth 3 | Depth 4 | Depth 5 |
+|---|---:|---:|---:|---:|---:|
+| express | 1.4 / 1.0 | 2.2 / 1.4 | 3.5 / 2.3 | 9.8 / 8.3 | 11.0 / 12.8 |
+| zod | 3.7 / 3.3 | 13.6 / 14.2 | 14.0 / 39.4 | 15.7 / 99.6 | 16.0 / 169.9 |
+| realworld-express | 1.6 / 1.1 | 2.6 / 1.7 | 4.5 / 2.9 | 6.2 / 4.4 | 7.6 / 6.0 |
+| immich `server/` | 5.6 / 5.1 | 14.0 / 14.8 | 13.9 / 52.5 | 14.3 / 150.8 | 14.4 / 289.9 |
+
+- **Truncated deep traversals (zod, immich, depths 3–5):** the walk is
+  2.8–20× faster.
+- **Where nothing is truncated:** the walk is slower, by about 0.4–1.8 ms.
+- **Other truncated cells:** the walk was 0.6–1.7 ms faster at zod and immich
+  depth 2 and at express depth 5. It was 1.5 ms slower at express depth 4,
+  where one of the 5 traversals is not truncated.
+- **Fast path for shallow depths:** using the single statement there was
+  measured and not adopted (see the
+  [methodology](docs/performance-benchmark.md#known-costs)).
+- **The earlier 17.7× figure:** it was measured against the query the walk
+  replaced, but its raw data was not kept, so it is not reported here.
+
+### Accuracy and correctness
+
+`pnpm benchmark -- --fail-on-regression` passes on all three fixtures. Each
+cell gives precision / recall for that relationship type (n/a = that
+fixture's ground truth has no edges of that type):
+
+| Relationship | typescript-sample | call-semantics-sample | repository-knowledge-sample |
+|---|---|---|---|
+| CALLS | 100% / 98.0% | 81.8% / 100% | 100% / 100% |
+| EXTENDS | 100% / 100% | 100% / 100% | n/a |
+| IMPLEMENTS | 100% / 100% | 100% / 85.7% | n/a |
+| IMPORTS | 100% / 100% | 100% / 100% | n/a |
+| REFERENCES | open set (recall 100%) | 100% / 66.7% | n/a |
+| Architecture: ROUTES_TO, READS_FROM, WRITES_TO, DEFINES, DOCUMENTS, LINKS_TO, IMPLEMENTED_BY, USES | n/a | n/a | 100% / 100% |
+| Nodes, F1 | 96.7% | 96.2% | 100% |
+| Expected paths found | 2/2 | 2/2 | 7/7 |
+
+- **Traversal equivalence:** 800 of 800 comparisons were identical. They
+  covered 100 traversals, each as-is and in 7 variants: outgoing only,
+  incoming only, CALLS only, class/method/function only, and limits 1, 50 and
+  2,000. The check ran alongside the paired measurement above, on that earlier
+  build with the same traversal code. Each comparison covered ordered node ids, ordered
+  edge ids, `truncated`, `reachableAtLeast`, `reachableExact` and `cutDepth`.
+  The test suite also checks the walk against the recursive query on a seeded
+  random graph.
+- **Tests:** 1,601 pass with `TEST_DATABASE_URL` set, both on a fresh database
+  and on an existing migrated one, with 2 expected failures. That includes the
+  migration tests (7), migration concurrency under the advisory lock (4), and
+  the graph repository and traversal tests (77).
+- **Expected failures:** the 2 `it.fails` tests record a known defect.
+  A declared function *used as a value* (passed as an argument, or assigned) is
+  recorded as a CALLS edge where it should be a REFERENCES edge. On
+  call-semantics-sample, that defect accounts for the CALLS precision gap and 2
+  of the 3 missing REFERENCES edges. The third is a reference to a constructor
+  parameter property (`private readonly side`); SCIP reports it as a parameter,
+  and the graph does not model parameters. The IMPLEMENTS gap is one interface that
+  extends two others; the graph does not record those two links.
+
+### Limitations
+
+- **ky, dependency-free:** all 10 runs fail, and this is a dependency-setup
+  failure. ky's `tsconfig.json` extends `@sindresorhus/tsconfig`, which is
+  absent without an install, so scip-typescript exits with TS6053 and indexes
+  nothing. Only 4 of the 5 repositories index in the dependency-free series.
+  The ky row marked *dependency-prepared* is a separate series with that one
+  package extracted.
+- **Machine load and noise:** the machine was not otherwise idle.
+  - A process check just before the run showed the editor and desktop active.
+  - The 1-minute load average was 1.96 at the start and 6.5–7.3 by the end,
+    rising while the benchmark itself ran.
+  - Within one invocation, the same question's median varied 0.75–1.18×
+    between rounds.
+  - Against an earlier invocation on the same revisions, individual medians
+    varied 0.61–1.44× (overall median 1.00×).
+  - zod's re-index / initial ratio was 1.03 in that earlier run and 1.14 here.
+    Most of the difference is a lower initial-index persistence time (median
+    2.19 s then, 1.73 s now). The re-index total also rose by about 0.3 s. The
+    cause is not established.
+  - Ratios and differences inside these ranges are not meaningful.
+- **Not measured:**
+  - cold-cache performance;
+  - concurrent load;
+  - incremental indexing: every index is a full rebuild;
+  - other machines or operating systems.
+- **Sample sizes:** indexing figures rest on 5 runs per phase, so no
+  percentiles are given for them. p95 is given only for query cells with 200
+  samples.
+- **Accuracy:** the fixtures are small, hand-written ground truth, not a
+  sample of real code. Parameters and type parameters are not modelled, and
+  references to them count as unresolved.
+
+### Reproduce it
+
+Use a database dedicated to benchmarks. The harness creates and deletes
+projects there. By default it refuses the `DATABASE_URL` database, or one with
+the default name `code_knowledge_graph`, unless `--allow-shared-database` is
+passed.
+
+```bash
+pnpm install && pnpm build
+pnpm benchmark -- --fail-on-regression                         # accuracy
+pnpm benchmark:perf -- --verify-only                           # check every pin; no indexing
+
+export BENCHMARK_DATABASE_URL='postgresql://<user>:<password>@<host>:<port>/ckg_benchmark'
+pnpm benchmark:perf -- --migrate                               # dependency-free series (all 5 repositories)
+pnpm benchmark:perf -- --migrate \
+  --manifest benchmarks/repositories.dependency-prepared.json  # dependency-prepared series (ky)
+```
+
+Results go to `.benchmarks/results/<timestamp>/` (`report.json`, `runs.csv` and
+`queries.csv`), which git ignores. Each report records:
+- the tool commit and whether the tree was clean;
+- the machine, runtimes and database;
+- every run, including failed ones.
+
+Checkouts are kept under `~/.cache/ckg-benchmark/checkouts`, outside any Node
+project.
 
 ---
 
