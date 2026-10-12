@@ -1,0 +1,944 @@
+{
+  "_comment": [
+    "Code relationships of typescript-sample, read from the source by hand.",
+    "CALLS, IMPORTS, EXTENDS and IMPLEMENTS are enumerated completely and closed.",
+    "REFERENCES is open: it holds roughly a hundred type and property uses, and",
+    "the entries below are a hand-picked sample scored for recall only. The",
+    "closed REFERENCES measurement lives in call-semantics-sample.",
+    "",
+    "The rules are the ones in call-semantics-sample/edges.json and",
+    "docs/benchmark.md. CALLS includes the class-level summaries the model",
+    "documents (medium confidence): one per pair of classes where a member of the",
+    "first calls a member of the second."
+  ],
+  "closedRelationships": [
+    "CALLS",
+    "IMPORTS",
+    "EXTENDS",
+    "IMPLEMENTS"
+  ],
+  "edges": [
+    {
+      "from": {
+        "type": "method",
+        "name": "BaseController.<constructor>"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "BaseController.failure"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.error"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.<constructor>"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.getUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.ok"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.getUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.getUser"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.getUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.failure"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.listUsers"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.ok"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.listUsers"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.listUsers"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.createUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.created"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.createUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.registerUser"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.listAdministrators"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.ok"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.listAdministrators"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.listAdministrators"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.deleteUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.deleteUser"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.deleteUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.ok"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.deleteUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.failure"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.<constructor>"
+      },
+      "confidence": "high",
+      "note": "Module-level `const logger = new Logger('main')`."
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserController.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserController.createUser"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.info"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserController.listUsers"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.<constructor>"
+      },
+      "confidence": "high",
+      "note": "Field initialiser `new Logger(...)`: attributed to the owning class."
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.findById"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.debug"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.save"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "createUser"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.save"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.info"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.remove"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.warn"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserService"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.getUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserRepository.findById"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.getUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.warn"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.getUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserNotFoundError.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.listUsers"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserRepository.findAll"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.registerUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserRepository.save"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.registerUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.info"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.listAdministrators"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserRepository.findAll"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.listAdministrators"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "isAdmin"
+      },
+      "confidence": "high",
+      "note": "Inside an inline arrow, which is not a declaration: attributed to the method."
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.deleteUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserService.getUser"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.deleteUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserRepository.remove"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.deleteUser"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "UserNotFoundError.<constructor>"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Logger.debug"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.write"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Logger.info"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.write"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Logger.warn"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.write"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Logger.error"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Logger.write"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserController.<constructor>"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseController.<constructor>"
+      },
+      "note": "super('UserController')",
+      "knownGap": "scip-typescript 0.4 records no occurrence for `super(...)`, so the call is invisible to the graph."
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "BaseController"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "Logger"
+      },
+      "confidence": "medium",
+      "note": "Class-level summary: a member of the first calls a member of the second."
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserController"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "UserService"
+      },
+      "confidence": "medium"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserController"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "BaseController"
+      },
+      "confidence": "medium"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "Logger"
+      },
+      "confidence": "medium"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserService"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "Logger"
+      },
+      "confidence": "medium"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserService"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "confidence": "medium"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserService"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "class",
+        "name": "UserNotFoundError"
+      },
+      "confidence": "medium"
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/controllers/user.controller.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/models/user.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/controllers/user.controller.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/services/user.service.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/controllers/user.controller.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/utils/logger.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/controllers/user.controller.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/services/user.service.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/repositories/user.repository.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/utils/logger.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/repositories/user.repository.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/models/user.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/repositories/user.repository.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/utils/logger.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/services/user.service.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/models/user.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/services/user.service.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/repositories/user.repository.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/services/user.service.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/utils/logger.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/models/user.ts"
+      },
+      "note": "No import statement: the object literals passed to createUser name UserDraft's properties. IMPORTS includes cross-file references by contract (docs/graph-model.md)."
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserController"
+      },
+      "relationship": "EXTENDS",
+      "to": {
+        "type": "class",
+        "name": "BaseController"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "UserStore"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.findById"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "UserStore.findById"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.findAll"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "UserStore.findAll"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.save"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "UserStore.save"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.remove"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "UserStore.remove"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "interface",
+        "name": "UserStore"
+      },
+      "note": "implements clause"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "UserController"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "class",
+        "name": "BaseController"
+      },
+      "note": "extends clause"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "note": "new UserRepository(): the class declares no constructor"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserService.<constructor>"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "class",
+        "name": "UserRepository"
+      },
+      "note": "parameter type and default value"
+    },
+    {
+      "from": {
+        "type": "interface",
+        "name": "User"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "type",
+        "name": "UserRole"
+      }
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "isAdmin"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "interface",
+        "name": "User"
+      }
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "createUser"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "interface",
+        "name": "UserDraft"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "UserRepository.findById"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "property",
+        "name": "UserRepository.users"
+      },
+      "note": "this.users"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "bootstrap"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "variable",
+        "name": "logger"
+      },
+      "note": "module-level logger"
+    }
+  ]
+}

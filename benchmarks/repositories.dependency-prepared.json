@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "_comment": [
+    "The dependency-prepared series. Kept apart from repositories.json (the dependency-free series):",
+    "the harness refuses a manifest that mixes the two, and reports the series in every result.",
+    "Preparation copies the pinned checkout and extracts ONE package tarball, pinned by exact version",
+    "and sha512 integrity, into node_modules/<package>. Nothing is installed and no package script runs.",
+    "Network is used only to fetch that tarball (once; it is cached beside the checkouts)."
+  ],
+  "repositories": [
+    {
+      "id": "ky",
+      "url": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "ref": "v2.2.0 (release tag, peeled)",
+      "tier": "S",
+      "purpose": "A small TypeScript library whose tsconfig extends a shared config package: the cost of a run once that one configuration package is present.",
+      "languages": ["typescript"],
+      "setup": {
+        "installDependencies": true,
+        "notes": "Profile tsconfig-only: only the package tsconfig.json extends. No @types, no dependencies of ky: '@type-challenges/utils' (imported by source/core/constants.ts) stays unresolved, as dependencies do in the dependency-free series."
+      },
+      "preparation": {
+        "profile": "tsconfig-only",
+        "kind": "tarball-extract",
+        "package": "@sindresorhus/tsconfig",
+        "version": "8.1.0",
+        "tarball": "https://registry.npmjs.org/@sindresorhus/tsconfig/-/tsconfig-8.1.0.tgz",
+        "integrity": "sha512-MggpguA4jNdtyoUy2Hs54nb4lP4rbhH34CsOiFId1q6fmFPnipqeo70ZRkjp5p4Z7wdyspALtSAcKaxL2/3waQ==",
+        "scripts": "never"
+      }
+    }
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "fixture": "call-semantics-sample",
+  "_comment": [
+    "Written by reading test-repositories/call-semantics-sample/src by hand,",
+    "before the fixture was ever run through the pipeline. Every declaration",
+    "in the fixture is listed, so every code type below is closed.",
+    "",
+    "`count` says how many distinct nodes share one address. `Square.area` is",
+    "two methods: the instance method and the static one.",
+    "",
+    "`knownGap` marks an expectation the pipeline is known not to meet. It still",
+    "counts against recall; it does not fail the run. When the gap is fixed the",
+    "run fails until the marker is removed, so a fix is never silent.",
+    "",
+    "`diagnostics`: a golden fixture must build without dropping an edge,",
+    "losing an analyzer, failing a read or hitting a size cap."
+  ],
+  "closedTypes": [
+    "class",
+    "interface",
+    "function",
+    "method",
+    "property",
+    "variable"
+  ],
+  "diagnostics": {
+    "droppedEdges": 0,
+    "failedAnalyzers": 0,
+    "readErrors": 0,
+    "truncated": false
+  },
+  "nodes": [
+    {
+      "type": "interface",
+      "name": "Shape",
+      "file": "src/contracts.ts"
+    },
+    {
+      "type": "interface",
+      "name": "Named",
+      "file": "src/contracts.ts"
+    },
+    {
+      "type": "interface",
+      "name": "NamedShape",
+      "file": "src/contracts.ts"
+    },
+    {
+      "type": "method",
+      "name": "Shape.area",
+      "file": "src/contracts.ts"
+    },
+    {
+      "type": "property",
+      "name": "Named.label",
+      "file": "src/contracts.ts"
+    },
+    {
+      "type": "function",
+      "name": "format",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "class",
+      "name": "BaseShape",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "property",
+      "name": "BaseShape.label",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "method",
+      "name": "BaseShape.area",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "method",
+      "name": "BaseShape.describe",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "class",
+      "name": "Square",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "property",
+      "name": "Square.label",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "method",
+      "name": "Square.<constructor>",
+      "file": "src/geometry.ts"
+    },
+    {
+      "type": "method",
+      "name": "Square.area",
+      "file": "src/geometry.ts",
+      "count": 2,
+      "note": "The instance method and the static method share a name; they are two declarations.",
+      "knownGap": "scip-typescript 0.4 gives the static and the instance method the same symbol (Square#area().), so they collapse into one node."
+    },
+    {
+      "type": "property",
+      "name": "Square.side",
+      "file": "src/geometry.ts",
+      "note": "`constructor(private readonly side: number)` declares a property.",
+      "knownGap": "Constructor parameter properties are SCIP parameters, which the graph does not model."
+    },
+    {
+      "type": "function",
+      "name": "register",
+      "file": "src/registry.ts"
+    },
+    {
+      "type": "function",
+      "name": "invokes",
+      "file": "src/registry.ts"
+    },
+    {
+      "type": "function",
+      "name": "callsThroughNamespace",
+      "file": "src/registry.ts"
+    },
+    {
+      "type": "function",
+      "name": "buildsSquare",
+      "file": "src/registry.ts"
+    },
+    {
+      "type": "function",
+      "name": "callsStatic",
+      "file": "src/registry.ts"
+    },
+    {
+      "type": "function",
+      "name": "passesAsValue",
+      "file": "src/registry.ts"
+    },
+    {
+      "type": "variable",
+      "name": "formatter",
+      "file": "src/index.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/contracts.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/geometry.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/registry.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/index.ts"
+    }
+  ]
+}

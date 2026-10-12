@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CodeEdge, CodeGraph, CodeNode } from '@ckg/shared';
-import { GraphRepository, ProjectRepository, createDatabase, migrate } from '@ckg/database';
+import { GraphRepository, ProjectRepository, migrate } from '@ckg/database';
 import type { Database } from '@ckg/database';
+import { connectTestDatabase } from './helpers/test-database.js';
 
 /**
  * The graph SQL against a real PostgreSQL.
@@ -15,41 +16,14 @@ import type { Database } from '@ckg/database';
  * rejects with "could not determine data type of parameter $3" and no fake
  * would ever notice.
  *
- * It skips itself when no database is reachable, so `pnpm test` still passes on
- * a machine with nothing running. Point `DATABASE_URL` at a server — or run
- * `docker compose up -d postgres` — to have it execute.
+ * It runs only against `TEST_DATABASE_URL` (see `helpers/test-database.ts`)
+ * and skips when that is unset, so `pnpm test` needs no database. It never
+ * falls back to a default connection or to `DATABASE_URL`.
  */
 
-const CONNECTION_STRING =
-  process.env.DATABASE_URL ?? 'postgresql://ckg:ckg@localhost:5432/code_knowledge_graph';
-
-async function reachable(): Promise<Database | null> {
-  const database = createDatabase({
-    connectionString: CONNECTION_STRING,
-    maxConnections: 2,
-    applicationName: 'ckg-integration-tests',
-  });
-  try {
-    await database.query('SELECT 1');
-    return database;
-  } catch {
-    await database.close().catch(() => undefined);
-    return null;
-  }
-}
-
-const database = await reachable();
+const database = await connectTestDatabase('graph repository integration');
 
 const suite = database === null ? describe.skip : describe;
-
-if (database === null) {
-  process.stdout.write(
-    `\n  graph repository integration: skipped, no database at ${CONNECTION_STRING.replace(
-      /\/\/[^@/]+@/,
-      '//[redacted]@',
-    )}\n`,
-  );
-}
 
 suite('GraphRepository against PostgreSQL', () => {
   const db = database as Database;
@@ -344,7 +318,15 @@ suite('GraphRepository against PostgreSQL', () => {
         limit: 50,
       });
 
-      expect(result).toEqual({ nodes: [], edges: [], truncated: false });
+      // Nothing reached, and that count is exact rather than a lower bound.
+      expect(result).toEqual({
+        nodes: [],
+        edges: [],
+        truncated: false,
+        reachableAtLeast: 0,
+        reachableExact: true,
+        cutDepth: null,
+      });
     });
   });
 
@@ -675,6 +657,203 @@ suite('GraphRepository against PostgreSQL', () => {
     });
   });
 
+  describe('level-by-level traversal', () => {
+    /**
+     * Each case gets a small graph of its own. Ids are `<project>-<name>`, so
+     * names sort the way the ids do and the expected (depth, id) order can be
+     * written by hand.
+     */
+    async function withGraph(
+      nodeNames: string[],
+      edgeList: Array<[string, string, CodeEdge['relationship']?]>,
+      body: (scope: { id: (name: string) => string; projectId: string }) => Promise<void>,
+      types: Record<string, CodeNode['type']> = {},
+    ): Promise<void> {
+      const scratch = await projects.create({
+        name: `integration-traverse-${randomUUID().slice(0, 8)}`,
+        description: 'created by the graph repository integration suite',
+      });
+      const id = (name: string): string => `${scratch.id}-${name}`;
+      try {
+        await graph.replaceProjectGraph(scratch.id, {
+          nodes: nodeNames.map((name) => ({
+            id: id(name),
+            projectId: scratch.id,
+            type: types[name] ?? ('function' as const),
+            name,
+          })),
+          edges: edgeList.map(([from, to, relationship]) => ({
+            id: id(`${from}>${to}`),
+            projectId: scratch.id,
+            sourceNodeId: id(from),
+            targetNodeId: id(to),
+            relationship: relationship ?? ('CALLS' as const),
+            metadata: { source: 'scip', confidence: 'high' },
+          })),
+        });
+        await body({ id, projectId: scratch.id });
+      } finally {
+        await db.query('DELETE FROM projects WHERE id = $1', [scratch.id]);
+      }
+    }
+
+    const names = (nodes: CodeNode[], projectIdOf: string): string[] =>
+      nodes.map((node) => node.id.replace(`${projectIdOf}-`, ''));
+    const edgeNames = (edges: CodeEdge[], projectIdOf: string): string[] =>
+      edges.map((edge) => edge.id.replace(`${projectIdOf}-`, '')).sort();
+
+    it('returns nothing for a root that does not exist, and says so exactly', async () => {
+      await withGraph(['a'], [], async ({ id, projectId: scope }) => {
+        const result = await graph.traverse(scope, { rootNodeId: id('missing'), depth: 3, limit: 10 });
+        expect(result).toEqual({ nodes: [], edges: [], truncated: false, reachableAtLeast: 0, reachableExact: true, cutDepth: null });
+      });
+    });
+
+    it('returns only the root of a disconnected node', async () => {
+      await withGraph(['a', 'b', 'c'], [['b', 'c']], async ({ id, projectId: scope }) => {
+        const result = await graph.traverse(scope, { rootNodeId: id('a'), depth: 5, limit: 10 });
+        expect(names(result.nodes, scope)).toEqual(['a']);
+        expect(result).toMatchObject({ edges: [], truncated: false, reachableAtLeast: 1, reachableExact: true, cutDepth: null });
+      });
+    });
+
+    it('visits each node of a cycle once and returns every edge of it', async () => {
+      await withGraph(['a', 'b', 'c'], [['a', 'b'], ['b', 'c'], ['c', 'a']], async ({ id, projectId: scope }) => {
+        for (const direction of ['outgoing', 'incoming', 'both'] as const) {
+          const result = await graph.traverse(scope, { rootNodeId: id('a'), depth: 5, direction, limit: 10 });
+          expect(new Set(names(result.nodes, scope))).toEqual(new Set(['a', 'b', 'c']));
+          expect(result.nodes).toHaveLength(3);
+          expect(edgeNames(result.edges, scope)).toEqual(['a>b', 'b>c', 'c>a']);
+          expect(result.reachableAtLeast).toBe(3);
+        }
+      });
+    });
+
+    it('reaches a node by two paths once, at its shortest depth', async () => {
+      // a → b → d and a → c → d; e is reachable only through d.
+      await withGraph(['a', 'b', 'c', 'd', 'e'], [['a', 'b'], ['a', 'c'], ['b', 'd'], ['c', 'd'], ['d', 'e']], async ({ id, projectId: scope }) => {
+        const result = await graph.traverse(scope, { rootNodeId: id('a'), depth: 2, direction: 'outgoing', limit: 10 });
+        expect(names(result.nodes, scope)).toEqual(['a', 'b', 'c', 'd']);
+        expect(edgeNames(result.edges, scope)).toEqual(['a>b', 'a>c', 'b>d', 'c>d']);
+      });
+    });
+
+    it('stops at the depth boundary, and keeps an edge whose two ends were both selected', async () => {
+      // a → b → c → d, plus c → a, which points back at the root.
+      await withGraph(['a', 'b', 'c', 'd'], [['a', 'b'], ['b', 'c'], ['c', 'd'], ['c', 'a']], async ({ id, projectId: scope }) => {
+        const twoHops = await graph.traverse(scope, { rootNodeId: id('a'), depth: 2, direction: 'outgoing', limit: 10 });
+        expect(names(twoHops.nodes, scope)).toEqual(['a', 'b', 'c']);
+        // c → a is not followed outgoing from a, but both of its ends are in
+        // the result, so it is part of the subgraph; c → d is not.
+        expect(edgeNames(twoHops.edges, scope)).toEqual(['a>b', 'b>c', 'c>a']);
+
+        const zero = await graph.traverse(scope, { rootNodeId: id('a'), depth: 0, limit: 10 });
+        expect(names(zero.nodes, scope)).toEqual(['a']);
+        expect(zero).toMatchObject({ truncated: false, reachableExact: true, cutDepth: null });
+      });
+    });
+
+    it('cuts a high-degree node at the limit, keeps the lowest ids, and reports a lower bound', async () => {
+      const spokes = Array.from({ length: 30 }, (_, index) => `s${String(index).padStart(2, '0')}`);
+      await withGraph(['hub', ...spokes, 'far'], [...spokes.map((spoke): [string, string] => ['hub', spoke]), ['s29', 'far']], async ({ id, projectId: scope }) => {
+        const result = await graph.traverse(scope, { rootNodeId: id('hub'), depth: 3, limit: 10 });
+
+        expect(names(result.nodes, scope)).toEqual(['hub', ...spokes.slice(0, 9)]);
+        expect(result).toMatchObject({ truncated: true, reachableExact: false, cutDepth: 1 });
+        // Exactly the 31 nodes up to depth 1; `far`, at depth 2, was never explored.
+        expect(result.reachableAtLeast).toBe(31);
+      });
+    });
+
+    it('tells an exact fit from a cut', async () => {
+      await withGraph(['a', 'b', 'c', 'd'], [['a', 'b'], ['b', 'c'], ['c', 'd']], async ({ id, projectId: scope }) => {
+        const fits = await graph.traverse(scope, { rootNodeId: id('a'), depth: 3, limit: 4 });
+        expect(fits).toMatchObject({ truncated: false, reachableAtLeast: 4, reachableExact: true, cutDepth: null });
+
+        const cut = await graph.traverse(scope, { rootNodeId: id('a'), depth: 3, limit: 3 });
+        expect(names(cut.nodes, scope)).toEqual(['a', 'b', 'c']);
+        expect(cut).toMatchObject({ truncated: true, reachableAtLeast: 4, reachableExact: false, cutDepth: 3 });
+      });
+    });
+
+    it('does not walk through a node the type filter excludes', async () => {
+      await withGraph(['a', 'b', 'c'], [['a', 'b'], ['b', 'c']], async ({ id, projectId: scope }) => {
+        const result = await graph.traverse(scope, { rootNodeId: id('a'), depth: 5, nodeTypes: ['function'], limit: 10 });
+        expect(names(result.nodes, scope)).toEqual(['a']);
+      }, { b: 'class' });
+    });
+
+    /**
+     * The recursive query the level-by-level walk replaced, kept here as the
+     * reference: on any graph, for any root, depth, direction, filter and
+     * limit, the two must select the same nodes in the same order.
+     */
+    async function recursiveReference(scope: string, options: {
+      rootNodeId: string; depth: number; limit: number;
+      direction?: 'both' | 'outgoing' | 'incoming'; relationships?: string[]; nodeTypes?: string[];
+    }): Promise<{ ids: string[]; truncated: boolean }> {
+      const rows = await db.query<{ id: string }>(
+        `WITH RECURSIVE walk(id, depth) AS (
+           SELECT n.id, 0 FROM code_nodes n WHERE n.project_id = $1 AND n.id = $2
+           UNION
+           SELECT nxt.id, w.depth + 1
+             FROM walk w
+             JOIN code_edges e
+               ON e.project_id = $1
+              AND (($7 <> 'incoming' AND e.source_node_id = w.id) OR ($7 <> 'outgoing' AND e.target_node_id = w.id))
+              AND ($4::text[] IS NULL OR e.relationship = ANY($4::text[]))
+             JOIN code_nodes nxt
+               ON nxt.project_id = $1
+              AND nxt.id = CASE WHEN e.source_node_id = w.id THEN e.target_node_id ELSE e.source_node_id END
+              AND ($5::text[] IS NULL OR nxt.node_type = ANY($5::text[]))
+            WHERE w.depth < $3
+         )
+         SELECT id FROM walk GROUP BY id ORDER BY min(depth), id LIMIT $6`,
+        [scope, options.rootNodeId, options.depth, options.relationships ?? null, options.nodeTypes ?? null, options.limit + 1, options.direction ?? 'both'],
+      );
+      return { ids: rows.rows.slice(0, options.limit).map((row) => row.id), truncated: rows.rows.length > options.limit };
+    }
+
+    it('selects exactly what the recursive query selected, on a seeded random graph', async () => {
+      // A deterministic pseudo-random graph: 120 nodes of two types, 360 edges
+      // of two relationships, with hubs, cycles, self-loops and duplicate paths.
+      let seed = 20261012;
+      const next = (): number => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+      const nodeNames = Array.from({ length: 120 }, (_, index) => `n${String(index).padStart(3, '0')}`);
+      const edgeSet = new Map<string, [string, string, CodeEdge['relationship']]>();
+      while (edgeSet.size < 360) {
+        const from = nodeNames[Math.floor(next() ** 2 * 120)] as string; // skewed: hubs
+        const to = nodeNames[Math.floor(next() * 120)] as string;
+        if (from === to && next() > 0.05) continue; // a few self-loops
+        edgeSet.set(`${from}>${to}`, [from, to, next() < 0.6 ? 'CALLS' : 'REFERENCES']);
+      }
+      const types = Object.fromEntries(nodeNames.map((name, index) => [name, index % 4 === 0 ? 'class' : 'function'])) as Record<string, CodeNode['type']>;
+
+      await withGraph(nodeNames, [...edgeSet.values()], async ({ id, projectId: scope }) => {
+        let compared = 0;
+        for (const root of ['n000', 'n001', 'n007', 'n050', 'n119']) {
+          for (const depth of [0, 1, 2, 3, 5]) {
+            for (const direction of ['both', 'outgoing', 'incoming'] as const) {
+              for (const variant of [
+                { limit: 500 },
+                { limit: 7 },
+                { limit: 40, relationships: ['CALLS'] as CodeEdge['relationship'][] },
+                { limit: 40, nodeTypes: ['function'] as CodeNode['type'][] },
+              ]) {
+                const options = { rootNodeId: id(root), depth, direction, ...variant };
+                const expected = await recursiveReference(scope, options);
+                const actual = await graph.traverse(scope, options);
+                expect({ ids: actual.nodes.map((node) => node.id), truncated: actual.truncated }, JSON.stringify({ root, depth, direction, ...variant })).toEqual(expected);
+                compared += 1;
+              }
+            }
+          }
+        }
+        expect(compared).toBe(300);
+      }, types);
+    }, 60_000);
+  });
+
   describe('path', () => {
     const strip = (ids: readonly string[]): string[] =>
       ids.map((id) => id.replace(`${projectId}-`, ''));
@@ -890,6 +1069,64 @@ suite('GraphRepository against PostgreSQL', () => {
       }
 
       expect(plans.every((plan) => plan.rows.length > 0)).toBe(true);
+    });
+
+    // The lookups the two ON DELETE CASCADE foreign keys run for every deleted
+    // node, with no project in them. Before 0006 every code_edges index led
+    // with project_id, so each one walked a whole index; re-analysing a
+    // 9,395-node project spent 5.7 s in them. Sequential scans are switched off
+    // so the test asks which index *can* serve the lookup, which a ten-row
+    // table would otherwise not reveal.
+    it('lets the cascade lookups seek by endpoint instead of walking a whole index', async () => {
+      const plans = await db.transaction(async (tx) => {
+        await tx.query('SET LOCAL enable_seqscan = off');
+        const plan = async (column: string): Promise<string> =>
+          (
+            await tx.query<{ 'QUERY PLAN': string }>(
+              `EXPLAIN DELETE FROM ONLY code_edges WHERE ${column} = $1`,
+              [`${projectId}-service`],
+            )
+          ).rows
+            .map((row) => row['QUERY PLAN'])
+            .join('\n');
+        return { source: await plan('source_node_id'), target: await plan('target_node_id') };
+      });
+
+      expect(plans.source).toContain('idx_code_edges_source_node_id');
+      expect(plans.target).toContain('idx_code_edges_target_node_id');
+    });
+
+    it('still cascades: deleting a node deletes the edges at either end of it', async () => {
+      const scratch = await projects.create({
+        name: `integration-cascade-${randomUUID().slice(0, 8)}`,
+        description: 'created by the graph repository integration suite',
+      });
+      try {
+        const id = (name: string): string => `${scratch.id}-${name}`;
+        await graph.replaceProjectGraph(scratch.id, {
+          nodes: ['a', 'b', 'c'].map((name) => ({
+            id: id(name),
+            projectId: scratch.id,
+            type: 'function' as const,
+            name,
+          })),
+          edges: [
+            { id: id('ab'), projectId: scratch.id, sourceNodeId: id('a'), targetNodeId: id('b'), relationship: 'CALLS' as const, metadata: { source: 'scip', confidence: 'high' } },
+            { id: id('cb'), projectId: scratch.id, sourceNodeId: id('c'), targetNodeId: id('b'), relationship: 'CALLS' as const, metadata: { source: 'scip', confidence: 'high' } },
+            { id: id('ac'), projectId: scratch.id, sourceNodeId: id('a'), targetNodeId: id('c'), relationship: 'CALLS' as const, metadata: { source: 'scip', confidence: 'high' } },
+          ],
+        });
+
+        await db.query('DELETE FROM code_nodes WHERE id = $1', [id('b')]);
+
+        const left = await db.query<{ id: string }>(
+          'SELECT id FROM code_edges WHERE project_id = $1 ORDER BY id',
+          [scratch.id],
+        );
+        expect(left.rows.map((row) => row.id)).toEqual([id('ac')]);
+      } finally {
+        await db.query('DELETE FROM projects WHERE id = $1', [scratch.id]);
+      }
     });
   });
 

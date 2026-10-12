@@ -24,6 +24,7 @@ const SAMPLES = [
   'repository-knowledge-sample',
   'kysely-sample',
   'function-values-sample',
+  'call-semantics-sample',
 ] as const;
 
 const FIXTURE_DIR = 'packages/scip/tests/fixtures';

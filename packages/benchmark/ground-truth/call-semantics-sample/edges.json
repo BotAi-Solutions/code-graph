@@ -1,0 +1,498 @@
+{
+  "_comment": [
+    "Every CALLS, REFERENCES, IMPORTS, EXTENDS and IMPLEMENTS relationship in",
+    "the fixture, read from the source by hand. All five are closed.",
+    "",
+    "The rules the entries follow (docs/benchmark.md, 'Code relationships'):",
+    "",
+    "- The source of a code edge is the innermost function, method, class or",
+    "  interface the occurrence sits in. Module-level code, including the",
+    "  initialiser of a module-level variable, belongs to the file.",
+    "- CALLS is an invocation: f(), ns.f(), obj.m(), and new C() when C declares",
+    "  a constructor. super() of a class with no declared constructor calls",
+    "  nothing the graph can name.",
+    "- REFERENCES is any other use of a declared name, heritage clauses included.",
+    "- Names in import and export specifiers are neither: they only make the",
+    "  file depend on another file.",
+    "- IMPORTS joins two files when one has an import or re-export from the other,",
+    "  or refers to something declared in it (the documented contract).",
+    "- EXTENDS targets a class. IMPLEMENTS targets an interface or a member: a type",
+    "  implements every interface it satisfies through its heritage, directly or",
+    "  through a base class or interface, and a member implements every supertype",
+    "  member it implements or overrides. An interface extending an interface is",
+    "  IMPLEMENTS in this model.",
+    "- External symbols (value.toFixed) are not in the graph and have no edges.",
+    "",
+    "Revision note: the first draft of this file listed only the nearest",
+    "supertype for IMPLEMENTS. That was wrong as a statement of fact (Square does",
+    "implement Shape) and the documented model does not say 'direct only', so",
+    "the transitive edges were added. Everything else is as first written.",
+    "",
+    "`knownGap` and `knownFalsePositives` record defects confirmed against the raw",
+    "SCIP index. They are scored (recall and precision include them); they do not",
+    "fail the run, and a gap that disappears does fail it until it is removed here."
+  ],
+  "closedRelationships": [
+    "CALLS",
+    "REFERENCES",
+    "IMPORTS",
+    "EXTENDS",
+    "IMPLEMENTS"
+  ],
+  "edges": [
+    {
+      "from": {
+        "type": "method",
+        "name": "BaseShape.describe"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "format"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "BaseShape.describe"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "BaseShape.area"
+      },
+      "note": "this.area()"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "invokes"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "format"
+      }
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "callsThroughNamespace"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "format"
+      },
+      "note": "geometry.format(2), through a namespace import"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "buildsSquare"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Square.<constructor>"
+      },
+      "note": "new Square(3)"
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "buildsSquare"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Square.area"
+      },
+      "note": "The instance method."
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "callsStatic"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "method",
+        "name": "Square.area"
+      },
+      "note": "The static method."
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "passesAsValue"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "register"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "invokes"
+      },
+      "note": "invokes() at module level"
+    },
+    {
+      "from": {
+        "type": "interface",
+        "name": "NamedShape"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "interface",
+        "name": "Shape"
+      }
+    },
+    {
+      "from": {
+        "type": "interface",
+        "name": "NamedShape"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "interface",
+        "name": "Named"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "BaseShape"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "interface",
+        "name": "NamedShape"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "BaseShape.describe"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "property",
+        "name": "BaseShape.label"
+      },
+      "note": "this.label"
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "Square"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "class",
+        "name": "BaseShape"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Square.area"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "property",
+        "name": "Square.side"
+      },
+      "note": "this.side",
+      "knownGap": "Square.side is not a node (see nodes.json), so nothing can refer to it."
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "passesAsValue"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "function",
+        "name": "format"
+      },
+      "note": "register(format): format is passed, not called.",
+      "knownGap": "A declared function used as a value becomes CALLS: every reference to a function or method is a call (scip-graph-builder relationshipOf)."
+    },
+    {
+      "from": {
+        "type": "function",
+        "name": "callsStatic"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "class",
+        "name": "Square"
+      },
+      "note": "Square in Square.area(4) is the class used as a value."
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "REFERENCES",
+      "to": {
+        "type": "function",
+        "name": "register"
+      },
+      "note": "export const formatter = register: a value use at module level.",
+      "knownGap": "A declared function used as a value becomes CALLS: every reference to a function or method is a call (scip-graph-builder relationshipOf)."
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/geometry.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/contracts.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/registry.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/geometry.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/geometry.ts"
+      },
+      "note": "The re-export."
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "IMPORTS",
+      "to": {
+        "type": "file",
+        "name": "src/registry.ts"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "Square"
+      },
+      "relationship": "EXTENDS",
+      "to": {
+        "type": "class",
+        "name": "BaseShape"
+      },
+      "confidence": "high"
+    },
+    {
+      "from": {
+        "type": "interface",
+        "name": "NamedShape"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "Shape"
+      },
+      "knownGap": "scip-typescript 0.4 emits no relationship for `interface A extends B`, so the graph has no inheritance edge between interfaces."
+    },
+    {
+      "from": {
+        "type": "interface",
+        "name": "NamedShape"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "Named"
+      },
+      "knownGap": "scip-typescript 0.4 emits no relationship for `interface A extends B`, so the graph has no inheritance edge between interfaces."
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "BaseShape"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "NamedShape"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "BaseShape"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "Shape"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "BaseShape"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "Named"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "Square"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "NamedShape"
+      },
+      "note": "Through BaseShape."
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "Square"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "Shape"
+      }
+    },
+    {
+      "from": {
+        "type": "class",
+        "name": "Square"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "interface",
+        "name": "Named"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "BaseShape.area"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "Shape.area"
+      }
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Square.area"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "BaseShape.area"
+      },
+      "note": "The instance method. The static method implements nothing."
+    },
+    {
+      "from": {
+        "type": "method",
+        "name": "Square.area"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "method",
+        "name": "Shape.area"
+      }
+    },
+    {
+      "from": {
+        "type": "property",
+        "name": "BaseShape.label"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "property",
+        "name": "Named.label"
+      }
+    },
+    {
+      "from": {
+        "type": "property",
+        "name": "Square.label"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "property",
+        "name": "BaseShape.label"
+      }
+    },
+    {
+      "from": {
+        "type": "property",
+        "name": "Square.label"
+      },
+      "relationship": "IMPLEMENTS",
+      "to": {
+        "type": "property",
+        "name": "Named.label"
+      }
+    }
+  ],
+  "knownFalsePositives": [
+    {
+      "from": {
+        "type": "function",
+        "name": "passesAsValue"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "format"
+      },
+      "reason": "A declared function used as a value is recorded as a call. register(format) passes format."
+    },
+    {
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "relationship": "CALLS",
+      "to": {
+        "type": "function",
+        "name": "register"
+      },
+      "reason": "A declared function used as a value is recorded as a call. export const formatter = register."
+    }
+  ]
+}

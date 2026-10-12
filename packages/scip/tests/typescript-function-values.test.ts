@@ -182,3 +182,83 @@ describe('TypeScriptSymbolRefiner on function values', () => {
     );
   });
 });
+
+describe('scanFunctionValues on import and export specifiers', () => {
+  it('records every name an import or export list binds or forwards', () => {
+    const text = [
+      "import { named, original as alias } from './a.js';",
+      "import fallback from './b.js';",
+      "import * as namespace from './c.js';",
+      "import type { Shape } from './d.js';",
+      "export { forwarded } from './e.js';",
+      "export * as bundle from './f.js';",
+      'const local = 1;',
+      'export { local };',
+    ].join('\n');
+
+    const { specifiers, callees } = scanFunctionValues('a.ts', text);
+
+    for (const name of ['named', 'original', 'alias', 'fallback', 'namespace', 'Shape', 'forwarded', 'bundle']) {
+      expect(specifiers.has(positionOf(text, name)), name).toBe(true);
+    }
+    // The second `local`, inside `export { local }`, is a specifier; the
+    // declaration is not.
+    expect(specifiers.has(positionOf(text, 'local'))).toBe(false);
+    expect(specifiers.has(positionOf(text, 'local', text.indexOf('export { local')))).toBe(true);
+    expect(callees.size).toBe(0);
+  });
+
+  it('does not mistake a use of an imported name for a specifier', () => {
+    const text = ["import { run } from './a.js';", 'run();', 'const kept = run;'].join('\n');
+
+    const { specifiers, callees } = scanFunctionValues('a.ts', text);
+
+    expect(specifiers.size).toBe(1);
+    expect(callees.has(positionKey(1, 0))).toBe(true);
+    expect(specifiers.has(positionKey(1, 0))).toBe(false);
+    expect(specifiers.has(positionKey(2, 13))).toBe(false);
+  });
+});
+
+describe('TypeScriptSymbolRefiner on import and export specifiers', () => {
+  const FIXTURE = fileURLToPath(new URL('./fixtures/call-semantics-sample.scip', import.meta.url));
+  const REPOSITORY = path.resolve(
+    fileURLToPath(new URL('../../../test-repositories/call-semantics-sample', import.meta.url)),
+  );
+
+  let raw: ScipIndex;
+  let index: ScipIndex;
+
+  beforeAll(async () => {
+    raw = await readScipIndexFile(FIXTURE);
+    index = await new TypeScriptSymbolRefiner().refine(raw, { repositoryPath: REPOSITORY });
+  });
+
+  const occurrencesOf = (source: ScipIndex, file: string, symbolSuffix: string) =>
+    (source.documents.find((document) => document.relativePath === `src/${file}`)?.occurrences ?? []).filter(
+      (occurrence) => !occurrence.isDefinition && occurrence.symbolId.endsWith(symbolSuffix),
+    );
+
+  it('relies on the refiner because scip-typescript sets no Import role', () => {
+    const all = raw.documents.flatMap((document) => document.occurrences);
+    expect(all.some((occurrence) => occurrence.isImport)).toBe(false);
+  });
+
+  it('marks the specifier and leaves the call alone', () => {
+    // src/index.ts: `import { invokes, register }` then `invokes();`.
+    const invokes = occurrencesOf(index, 'index.ts', '/invokes().');
+    expect(invokes.map((occurrence) => [occurrence.startLine, occurrence.isSpecifier === true, occurrence.isCall === true])).toEqual([
+      [2, true, false],
+      [8, false, true],
+    ]);
+  });
+
+  it('marks a re-export, and never marks a definition', () => {
+    const format = occurrencesOf(index, 'index.ts', '/format().');
+    expect(format).toHaveLength(1);
+    expect(format[0]?.isSpecifier).toBe(true);
+
+    const definitions = index.documents.flatMap((document) => document.occurrences).filter((o) => o.isDefinition);
+    expect(definitions.some((occurrence) => occurrence.isSpecifier)).toBe(false);
+  });
+});

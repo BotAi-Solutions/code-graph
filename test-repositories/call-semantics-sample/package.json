@@ -1,0 +1,8 @@
+{
+  "name": "call-semantics-sample",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark golden fixture: every call, reference, import and inheritance relationship is enumerated by hand.",
+  "main": "src/index.ts"
+}

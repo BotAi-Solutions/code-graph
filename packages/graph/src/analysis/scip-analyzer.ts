@@ -42,6 +42,9 @@ export class ScipAnalyzer implements CodeAnalyzer {
         documentCount: built.stats.documentCount,
         symbolCount: built.stats.symbolCount,
         unresolvedReferenceCount: built.stats.unresolvedReferenceCount,
+        unresolvedExternalReferenceCount: built.stats.unresolvedReferences.external,
+        unresolvedUnmodelledReferenceCount: built.stats.unresolvedReferences.unmodelled,
+        unresolvedUnknownReferenceCount: built.stats.unresolvedReferences.unknown,
       },
     };
   }

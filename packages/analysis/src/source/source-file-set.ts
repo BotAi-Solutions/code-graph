@@ -1,5 +1,30 @@
 import type { SourceFile, SourceFileSet } from '@ckg/graph';
+import type { ScanLimits } from '@ckg/language-detection';
 import type { IndexingError } from '@ckg/shared';
+
+/**
+ * What the read left out, cause by cause. `truncated` on the set is true
+ * exactly when the scan was truncated or one of the two count limits here was
+ * reached; skipped oversized files are reported but do not set it.
+ */
+export interface SourceReadReport {
+  /** Files the walk found that the analyzers read (source, manifests, schemas). */
+  candidateFiles: number;
+  /** Files actually held in the set. */
+  filesRead: number;
+  bytesRead: number;
+  /** The walk's own limits; null when the scan did not record them. */
+  scan: ScanLimits | null;
+  /** Candidates beyond the file-count limit, never opened. */
+  fileLimit: { limit: number; reached: boolean; filesNotRead: number };
+  /** Files larger than the per-file limit, skipped one by one. */
+  fileSizeLimit: { limitBytes: number; filesSkipped: number };
+  /**
+   * Files from the first one that would have taken the total past the limit
+   * onward, in read order, which were not kept.
+   */
+  totalSizeLimit: { limitBytes: number; reached: boolean; filesNotRead: number };
+}
 
 /**
  * The repository's source, read once.
@@ -22,6 +47,8 @@ export class InMemorySourceFileSet implements SourceFileSet {
      * readable and the run reports it once at the end.
      */
     readonly failures: readonly IndexingError[] = [],
+    /** How the set was read, when it came from `loadSourceFiles`. */
+    readonly report: SourceReadReport | null = null,
   ) {
     // Path order, so every analyzer visits files in the same sequence and the
     // graph is reproducible.

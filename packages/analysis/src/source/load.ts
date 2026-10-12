@@ -7,7 +7,7 @@ import {
   type RepositoryScan,
 } from '@ckg/language-detection';
 import type { IndexingError } from '@ckg/shared';
-import { InMemorySourceFileSet } from './source-file-set.js';
+import { InMemorySourceFileSet, type SourceReadReport } from './source-file-set.js';
 
 /**
  * Reads the files the analyzers can say something about.
@@ -65,11 +65,30 @@ export async function loadSourceFiles(
   const candidates = scan.files.filter(isIndexedSourceFile);
 
   const selected = candidates.slice(0, maxFiles);
-  const truncated = scan.truncated || candidates.length > selected.length;
+  const fileLimitReached = candidates.length > selected.length;
 
   const files: Array<{ relativePath: string; text: string }> = [];
   const failures: IndexingError[] = [];
   let totalBytes = 0;
+  let oversized = 0;
+
+  const report = (totalSizeNotRead: number): SourceReadReport => ({
+    candidateFiles: candidates.length,
+    filesRead: files.length,
+    bytesRead: totalBytes,
+    scan: scan.limits ?? null,
+    fileLimit: {
+      limit: maxFiles,
+      reached: fileLimitReached,
+      filesNotRead: candidates.length - selected.length,
+    },
+    fileSizeLimit: { limitBytes: maxFileBytes, filesSkipped: oversized },
+    totalSizeLimit: {
+      limitBytes: maxTotalBytes,
+      reached: totalSizeNotRead > 0,
+      filesNotRead: totalSizeNotRead,
+    },
+  });
 
   for (let index = 0; index < selected.length; index += READ_CONCURRENCY) {
     const batch = selected.slice(index, index + READ_CONCURRENCY);
@@ -79,7 +98,8 @@ export async function loadSourceFiles(
         const absolute = path.join(repositoryPath, relativePath);
         try {
           const stats = await stat(absolute);
-          if (!stats.isFile() || stats.size > maxFileBytes) return null;
+          if (!stats.isFile()) return null;
+          if (stats.size > maxFileBytes) return 'oversized' as const;
           // A live `.env` is listed but never read: its path is a fact about
           // the service, its contents are credentials.
           if (holdsSecrets(relativePath)) return { relativePath, text: '', size: 0 };
@@ -97,10 +117,15 @@ export async function loadSourceFiles(
       }),
     );
 
-    for (const file of read) {
+    for (const [offset, file] of read.entries()) {
       if (!file) continue;
+      if (file === 'oversized') {
+        oversized += 1;
+        continue;
+      }
       if (totalBytes + file.size > maxTotalBytes) {
-        return new InMemorySourceFileSet(files, true, failures);
+        const notRead = selected.length - (index + offset);
+        return new InMemorySourceFileSet(files, true, failures, report(notRead));
       }
       totalBytes += file.size;
       files.push({ relativePath: file.relativePath, text: file.text });
@@ -109,5 +134,6 @@ export async function loadSourceFiles(
     options.onProgress?.(Math.min(index + READ_CONCURRENCY, selected.length), selected.length);
   }
 
-  return new InMemorySourceFileSet(files, truncated, failures);
+  const truncated = scan.truncated || fileLimitReached;
+  return new InMemorySourceFileSet(files, truncated, failures, report(0));
 }

@@ -51,6 +51,9 @@ describe('migrations', () => {
       'idx_code_edges_source',
       'idx_code_edges_target',
       'idx_code_edges_relationship',
+      // What the ON DELETE CASCADE lookups seek into (0006).
+      'idx_code_edges_source_node_id',
+      'idx_code_edges_target_node_id',
     ]) {
       expect(sql).toContain(index);
     }

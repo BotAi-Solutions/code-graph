@@ -36,6 +36,11 @@ export interface NormalizedReference {
    * read the syntax and found no call, and also when no refiner looked.
    */
   isCall: boolean;
+  /**
+   * The reference is a name in an import or export specifier. It makes the
+   * file depend on the target's file, and is not a use of the target.
+   */
+  isSpecifier: boolean;
   /** Where the reference is, zero-based, as SCIP records it. */
   line: number;
   character: number;
@@ -123,6 +128,7 @@ export function normalizeDocument(
       enclosingSymbolId: scope?.symbol.id ?? fileSymbolId,
       isWriteAccess: occurrence.isWriteAccess,
       isCall: occurrence.isCall === true,
+      isSpecifier: occurrence.isSpecifier === true || occurrence.isImport,
       line: occurrence.startLine,
       character: occurrence.startCharacter,
     });

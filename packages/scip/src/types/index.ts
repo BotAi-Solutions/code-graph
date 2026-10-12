@@ -105,6 +105,14 @@ export interface ScipOccurrence extends ScipRange {
    * language refiner that read the syntax. Absent means unknown, not "no call".
    */
   isCall?: boolean;
+  /**
+   * True when the occurrence is a name in an import or export specifier list:
+   * `import { f } from`, `import * as ns from`, `export { f }`. The name binds
+   * or forwards the symbol; it neither calls nor uses it. SCIP's Import role
+   * would say this, but scip-typescript never sets it, so a language refiner
+   * fills it in from the syntax. Absent means unknown.
+   */
+  isSpecifier?: boolean;
 }
 
 export interface ScipDocument {
@@ -151,6 +159,17 @@ export interface ScipIndexResult {
   durationMs: number;
   /** Tail of the indexer's own diagnostics. Never contains source code. */
   diagnostics: string[];
+  /**
+   * What the indexer process used, when its runner could measure it (see
+   * `MeasuringCommandRunner`). Absent with an ordinary runner.
+   */
+  resources?: {
+    wallMs: number;
+    userCpuMs: number;
+    systemCpuMs: number;
+    peakRssBytes: number;
+    method: 'bsd-time' | 'gnu-time';
+  };
 }
 
 /**

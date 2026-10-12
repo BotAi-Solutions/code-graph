@@ -30,10 +30,39 @@ export interface Queryable {
   ): Promise<QueryResult<TRow>>;
 }
 
+/**
+ * One connection, held for the length of a callback. What a session-level
+ * PostgreSQL feature needs — an advisory lock, a `SET` — that a pool cannot
+ * give, because consecutive pool queries may land on different connections.
+ */
+export interface Session extends Queryable {
+  /** A transaction on this same connection. */
+  transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
+}
+
 export interface Database extends Queryable {
   transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
+  /**
+   * Runs `fn` on one dedicated connection. When `fn` throws, the connection is
+   * closed rather than returned to the pool, so nothing it set or held — a
+   * lock, a setting, an aborted transaction — can leak into later queries.
+   */
+  withSession<T>(fn: (session: Session) => Promise<T>): Promise<T>;
   close(): Promise<void>;
   ping(): Promise<boolean>;
+}
+
+/** BEGIN … COMMIT on one client, ROLLBACK when `fn` throws. */
+async function inTransaction<T>(client: pg.PoolClient, fn: (tx: Queryable) => Promise<T>): Promise<T> {
+  await client.query('BEGIN');
+  try {
+    const result = await fn(wrap(client));
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  }
 }
 
 function wrap(executor: pg.Pool | pg.PoolClient): Queryable {
@@ -85,16 +114,29 @@ export function createDatabase(options: CreateDatabaseOptions): Database {
     async transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T> {
       const client = await pool.connect();
       try {
-        await client.query('BEGIN');
-        const result = await fn(wrap(client));
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK').catch(() => undefined);
-        throw error;
+        return await inTransaction(client, fn);
       } finally {
         client.release();
       }
+    },
+
+    async withSession<T>(fn: (session: Session) => Promise<T>): Promise<T> {
+      const client = await pool.connect();
+      const session: Session = {
+        query: wrap(client).query,
+        transaction: (inner) => inTransaction(client, inner),
+      };
+      let result: T;
+      try {
+        result = await fn(session);
+      } catch (error) {
+        // Destroyed, not reused: ending the session is what guarantees that
+        // anything session-scoped it still held is released.
+        client.release(error instanceof Error ? error : true);
+        throw error;
+      }
+      client.release();
+      return result;
     },
 
     async close(): Promise<void> {

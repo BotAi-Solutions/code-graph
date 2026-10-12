@@ -4,7 +4,9 @@ import type { SupportedLanguage } from '@ckg/shared';
 import {
   NodeCommandRunner,
   resolveExecutable,
+  type CommandResult,
   type CommandRunner,
+  type MeasuredCommandResult,
 } from '../adapters/index.js';
 import type { ScipIndexOptions, ScipIndexResult, ScipIndexer } from '../types/index.js';
 
@@ -123,8 +125,15 @@ export class TypeScriptScipIndexer implements ScipIndexer {
       toolVersion: null,
       durationMs: result.durationMs,
       diagnostics,
+      ...(measuredResources(result) ? { resources: measuredResources(result) } : {}),
     };
   }
+}
+
+/** The runner's measurement, when it took one. */
+function measuredResources(result: CommandResult): ScipIndexResult['resources'] | undefined {
+  const usage = (result as Partial<MeasuredCommandResult>).resourceUsage;
+  return usage ?? undefined;
 }
 
 /**

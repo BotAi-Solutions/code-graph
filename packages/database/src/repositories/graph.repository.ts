@@ -131,6 +131,23 @@ export interface GraphResult extends CodeGraph {
   truncated: boolean;
 }
 
+/**
+ * A traversal result, with what the walk learned about the size of the
+ * neighbourhood. Set by `traverse` only.
+ */
+export interface TraversalResult extends GraphResult {
+  /**
+   * Distinct nodes the walk reached, the root included. Exact when
+   * `reachableExact` is true (the walk was not cut short); otherwise the number
+   * reached up to and including `cutDepth`, a lower bound on what lies within
+   * the requested depth.
+   */
+  reachableAtLeast: number;
+  reachableExact: boolean;
+  /** The depth at which the node limit was reached; null when it was not. */
+  cutDepth: number | null;
+}
+
 export interface GraphCounts {
   nodeCount: number;
   edgeCount: number;
@@ -501,54 +518,128 @@ export class GraphRepository {
    * `outgoing` follows source → target only, which is what "what does this
    * reach" means, and `incoming` the reverse.
    */
-  async traverse(projectId: string, options: TraverseOptions): Promise<GraphResult> {
+  async traverse(projectId: string, options: TraverseOptions): Promise<TraversalResult> {
     const relationships = options.relationships ?? null;
     const nodeTypes = options.nodeTypes ?? null;
     const direction: GraphDirection = options.direction ?? 'both';
 
-    const reachable = await this.db.query<{ id: string }>(
-      `WITH RECURSIVE walk(id, depth) AS (
-         SELECT n.id, 0
-           FROM code_nodes n
-          WHERE n.project_id = $1 AND n.id = $2
-         UNION
-         SELECT nxt.id, w.depth + 1
-           FROM walk w
-           JOIN code_edges e
-             ON e.project_id = $1
-            AND (
-                  ($7 <> 'incoming' AND e.source_node_id = w.id)
-               OR ($7 <> 'outgoing' AND e.target_node_id = w.id)
-                )
-            AND ($4::text[] IS NULL OR e.relationship = ANY($4::text[]))
-           JOIN code_nodes nxt
-             ON nxt.project_id = $1
-            AND nxt.id = CASE WHEN e.source_node_id = w.id
-                              THEN e.target_node_id ELSE e.source_node_id END
-            AND ($5::text[] IS NULL OR nxt.node_type = ANY($5::text[]))
-          WHERE w.depth < $3
-       )
-       SELECT id FROM walk GROUP BY id ORDER BY min(depth), id LIMIT $6`,
-      [
-        projectId,
-        options.rootNodeId,
-        options.depth,
-        relationships,
-        nodeTypes,
-        options.limit + 1,
-        direction,
-      ],
-    );
+    const walk = await this.db.withSession(async (tx) => {
+      // Every level reads one snapshot, as the single recursive statement this
+      // replaces did: a re-analysis committing between two levels must not mix
+      // two graphs into one walk.
+      //
+      // Each level is a small query, and parallel workers cost more to start
+      // than they save: measured on a 9,395-node graph, a level took 10 ms with
+      // them and 6 ms without. The recursive query never ran in parallel either
+      // (a recursive work table cannot be), so this keeps the walk on the plans
+      // it always had. Scoped to this read-only transaction, and sent with the
+      // BEGIN as one round trip: neither statement takes a parameter.
+      await tx.query(
+        'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SET LOCAL max_parallel_workers_per_gather = 0',
+      );
+      try {
+        return await this.walkLevels(tx, projectId, options, relationships, nodeTypes, direction);
+      } finally {
+        await tx.query('COMMIT');
+      }
+    });
 
-    const truncated = reachable.rows.length > options.limit;
-    const ids = reachable.rows.slice(0, options.limit).map((row) => row.id);
-
-    if (ids.length === 0) {
-      return { nodes: [], edges: [], truncated: false };
+    if (walk.selected.length === 0) {
+      return { nodes: [], edges: [], truncated: false, reachableAtLeast: 0, reachableExact: true, cutDepth: null };
     }
 
-    const graph = await this.loadInducedSubgraph(projectId, ids, relationships);
-    return { ...graph, truncated };
+    // Read after the walk, on the pool, with the node and edge reads in
+    // parallel — exactly as the recursive version did, which also read the
+    // subgraph outside the walk's statement.
+    const truncated = walk.selected.length > options.limit;
+    const graph = await this.loadInducedSubgraph(projectId, walk.selected.slice(0, options.limit), relationships);
+    return {
+      ...graph,
+      truncated,
+      reachableAtLeast: walk.reached,
+      reachableExact: !truncated,
+      cutDepth: walk.cutDepth,
+    };
+  }
+
+  /**
+   * The breadth-first walk itself: the selected ids in (depth, id) order, at
+   * most `limit + 1` of them, and how many nodes it reached.
+   */
+  private async walkLevels(
+    tx: Queryable,
+    projectId: string,
+    options: TraverseOptions,
+    relationships: CodeRelationship[] | null,
+    nodeTypes: CodeNodeType[] | null,
+    direction: GraphDirection,
+  ): Promise<{ selected: string[]; reached: number; cutDepth: number | null }> {
+    const root = await tx.query<{ id: string }>(
+      'SELECT id FROM code_nodes WHERE project_id = $1 AND id = $2',
+      [projectId, options.rootNodeId],
+    );
+    if (root.rows.length === 0) return { selected: [], reached: 0, cutDepth: null };
+
+    // Breadth-first, one level per query. A node's level is its shortest
+    // distance from the root, so taking whole levels in order, each sorted by
+    // id, is the same (min depth, id) order the recursive query sorted by. The
+    // first level that would take the count past `limit` is the last one that
+    // can affect the answer: everything deeper sorts after it. So the walk
+    // stops there, taking only the ids it needs, instead of exploring every
+    // level and discarding all but `limit` of them.
+    const selected = [options.rootNodeId];
+    const visited = new Set(selected);
+    let frontier = selected;
+    let reached = 1;
+    let cutDepth: number | null = null;
+
+    for (let depth = 1; depth <= options.depth && frontier.length > 0; depth += 1) {
+      // One more than the cap allows, so a cut can be told from an exact fit.
+      const wanted = options.limit + 1 - selected.length;
+      const level = await tx.query<{ id: string; level_size: number }>(
+        `SELECT id, count(*) OVER () AS level_size
+           FROM (
+             SELECT DISTINCT n.id
+               FROM (
+                 SELECT e.target_node_id AS id
+                   FROM code_edges e
+                  WHERE $5 <> 'incoming'
+                    AND e.project_id = $1
+                    AND e.source_node_id = ANY($2::text[])
+                    AND ($3::text[] IS NULL OR e.relationship = ANY($3::text[]))
+                 UNION ALL
+                 SELECT e.source_node_id
+                   FROM code_edges e
+                  WHERE $5 <> 'outgoing'
+                    AND e.project_id = $1
+                    AND e.target_node_id = ANY($2::text[])
+                    AND ($3::text[] IS NULL OR e.relationship = ANY($3::text[]))
+               ) candidate
+               JOIN code_nodes n
+                 ON n.project_id = $1
+                AND n.id = candidate.id
+                AND ($4::text[] IS NULL OR n.node_type = ANY($4::text[]))
+              WHERE NOT (n.id = ANY($6::text[]))
+           ) fresh
+          ORDER BY id
+          LIMIT $7`,
+        [projectId, frontier, relationships, nodeTypes, direction, [...visited], wanted],
+      );
+
+      const levelSize = level.rows[0]?.level_size ?? 0;
+      reached += levelSize;
+      const ids = level.rows.map((row) => row.id);
+      selected.push(...ids);
+
+      if (levelSize >= wanted) {
+        cutDepth = depth;
+        break;
+      }
+      for (const id of ids) visited.add(id);
+      frontier = ids;
+    }
+
+    return { selected, reached, cutDepth };
   }
 
   /**

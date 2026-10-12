@@ -410,13 +410,6 @@
       "relationship": "CALLS",
       "to": { "type": "function", "name": "createUserRouter" },
       "confidence": "high"
-    },
-    {
-      "note": "File-level summary of the two method calls to toUser.",
-      "from": { "type": "file", "name": "src/repositories/user.repository.ts" },
-      "relationship": "CALLS",
-      "to": { "type": "function", "name": "toUser" },
-      "confidence": "high"
     }
   ]
 }

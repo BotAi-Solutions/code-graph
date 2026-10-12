@@ -362,3 +362,48 @@ describe('summarizeScan', () => {
     expect(summary.fileCategories).toEqual({ code: 1, document: 2, schema: 1 });
   });
 });
+
+describe('scanRepository records why a walk is incomplete', () => {
+  it('a full walk hits no limit', async () => {
+    await tree({ 'a.ts': '', 'src/b.ts': '' });
+    const scan = await scanRepository(root);
+
+    expect(scan.truncated).toBe(false);
+    expect(scan.limits).toEqual({
+      fileLimit: 25_000,
+      filesOverLimit: 0,
+      depthLimit: 24,
+      directoriesOverDepth: 0,
+      aborted: false,
+      unreadableDirectories: 0,
+    });
+  });
+
+  it('the file limit, with how many files it did not list', async () => {
+    await tree({ 'a.ts': '', 'b.ts': '', 'c.ts': '', 'd.ts': '' });
+    const scan = await scanRepository(root, { maxFiles: 1 });
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.files).toHaveLength(1);
+    expect(scan.limits).toMatchObject({ fileLimit: 1, filesOverLimit: 3, directoriesOverDepth: 0 });
+  });
+
+  it('the depth limit, separately from the file limit', async () => {
+    await tree({ 'top.ts': '', 'one/two/deep.ts': '' });
+    const scan = await scanRepository(root, { maxDepth: 1 });
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.files).toEqual(['top.ts']);
+    expect(scan.limits).toMatchObject({ directoriesOverDepth: 1, filesOverLimit: 0 });
+  });
+
+  it('a cancelled walk', async () => {
+    await tree({ 'a.ts': '' });
+    const controller = new AbortController();
+    controller.abort();
+    const scan = await scanRepository(root, { signal: controller.signal });
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.limits?.aborted).toBe(true);
+  });
+});

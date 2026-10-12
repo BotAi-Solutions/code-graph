@@ -34,6 +34,30 @@ export interface RepositoryScan {
   directoryCount: number;
   /** True when the scan stopped early because the repository is very large. */
   truncated: boolean;
+  /**
+   * Why the walk is incomplete, cause by cause. `truncated` is true exactly
+   * when one of the limits below was hit. Optional so a scan built by hand
+   * (in a test, or before this was recorded) is still a scan.
+   */
+  limits?: ScanLimits;
+}
+
+export interface ScanLimits {
+  /** Files the walk keeps at most. */
+  fileLimit: number;
+  /** Files found after the limit was reached, and so not listed. */
+  filesOverLimit: number;
+  /** Deepest directory level walked; the root is depth 0. */
+  depthLimit: number;
+  /** Directories below the depth limit, not walked. Their files are unknown. */
+  directoriesOverDepth: number;
+  /** The walk was cancelled before it finished. */
+  aborted: boolean;
+  /**
+   * Directories that could not be listed (permissions, a broken link). Not a
+   * truncation, since the walk carried on, but their files are missing.
+   */
+  unreadableDirectories: number;
 }
 
 export interface LanguageEvidence {

@@ -16,3 +16,6 @@ coverage/
 .vite/
 .DS_Store
 *.log
+
+# Performance benchmark checkouts and results
+.benchmarks/

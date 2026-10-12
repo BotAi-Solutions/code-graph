@@ -7,7 +7,12 @@ import {
   EVIDENCE_SOURCES,
 } from '../types/graph.js';
 import { NODE_CATEGORIES, NODE_FAMILIES } from '../constants/node-families.js';
-import { ANALYSIS_STATUSES, REPOSITORY_SOURCE_TYPES } from '../types/domain.js';
+import {
+  ANALYSIS_PHASE_TIMINGS,
+  ANALYSIS_STATUSES,
+  INCOMPLETENESS_REASONS,
+  REPOSITORY_SOURCE_TYPES,
+} from '../types/domain.js';
 import { SUPPORTED_LANGUAGES } from '../types/language.js';
 import { FILE_CATEGORIES } from '../constants/file-categories.js';
 import { ANALYSIS_PHASES } from '../constants/indexing.js';
@@ -243,6 +248,84 @@ export const createAnalysisBodySchema = z
   })
   .default({});
 
+const nonNegativeCount = z.number().int().nonnegative();
+const nonNegativeMs = z.number().nonnegative();
+
+export const analysisCompletenessSchema = z.object({
+  incomplete: z.boolean(),
+  reasons: z.array(z.enum(INCOMPLETENESS_REASONS)),
+  unresolvedReferences: z.object({
+    total: nonNegativeCount,
+    external: nonNegativeCount,
+    unmodelled: nonNegativeCount,
+    unknown: nonNegativeCount,
+  }),
+  droppedEdges: z.object({
+    total: nonNegativeCount,
+    byAnalyzer: z.record(z.string(), nonNegativeCount),
+  }),
+  analyzers: z.object({ run: z.array(z.string()), failed: z.array(z.string()) }),
+  scan: z
+    .object({
+      truncated: z.boolean(),
+      fileLimit: nonNegativeCount,
+      filesOverLimit: nonNegativeCount,
+      depthLimit: nonNegativeCount,
+      directoriesOverDepth: nonNegativeCount,
+      aborted: z.boolean(),
+      unreadableDirectories: nonNegativeCount,
+    })
+    .nullable(),
+  sourceRead: z
+    .object({
+      truncated: z.boolean(),
+      candidateFiles: nonNegativeCount,
+      filesRead: nonNegativeCount,
+      bytesRead: nonNegativeCount,
+      fileLimit: z.object({ limit: nonNegativeCount, reached: z.boolean(), filesNotRead: nonNegativeCount }),
+      fileSizeLimit: z.object({ limitBytes: nonNegativeCount, filesSkipped: nonNegativeCount }),
+      totalSizeLimit: z.object({
+        limitBytes: nonNegativeCount,
+        reached: z.boolean(),
+        filesNotRead: nonNegativeCount,
+      }),
+    })
+    .nullable(),
+  unreadableFiles: nonNegativeCount,
+});
+
+export const analysisTimingsSchema = z.object({
+  totalMs: nonNegativeMs,
+  phases: z.partialRecord(z.enum(ANALYSIS_PHASE_TIMINGS), nonNegativeMs),
+  analyzers: z.array(
+    z.object({
+      analyzer: z.string(),
+      durationMs: nonNegativeMs,
+      outcome: z.enum(['completed', 'failed']),
+    }),
+  ),
+  scipIndexerReportedMs: nonNegativeMs.optional(),
+  unattributedMs: nonNegativeMs,
+});
+
+export const analysisResourcesSchema = z.object({
+  workerCpuUserMs: nonNegativeMs,
+  workerCpuSystemMs: nonNegativeMs,
+  workerSampledPeakRssBytes: nonNegativeCount,
+  rssSamples: nonNegativeCount,
+  workerLifetimeMaxRssBytes: nonNegativeCount,
+  indexerMeasured: z.boolean(),
+  indexer: z
+    .object({
+      wallMs: nonNegativeMs,
+      userCpuMs: nonNegativeMs,
+      systemCpuMs: nonNegativeMs,
+      peakRssBytes: nonNegativeCount,
+      method: z.enum(['bsd-time', 'gnu-time']),
+    })
+    .optional(),
+});
+
 export const analysisStatsSchema = z.object({
   documentCount: z.number().int(),
   symbolCount: z.number().int(),
@@ -260,6 +343,10 @@ export const analysisStatsSchema = z.object({
   languages: languageCountsSchema.optional(),
   fileCategories: fileCategoryCountsSchema.optional(),
   parseErrorCount: z.number().int().optional(),
+  // Optional for the same reason: absent on older runs means "not measured".
+  completeness: analysisCompletenessSchema.optional(),
+  timings: analysisTimingsSchema.optional(),
+  resources: analysisResourcesSchema.optional(),
 });
 
 export const analysisJobSchema = z.object({

@@ -65,7 +65,7 @@ async function main(): Promise<void> {
 
   const run = await runBenchmark();
 
-  process.stdout.write(formatReport(run.results));
+  process.stdout.write(formatReport(run.results, run.baselines));
 
   for (const timing of run.timings) {
     process.stdout.write(
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   }
 
   if (options.jsonPath !== null) {
-    const report = toMachineReport(run.results);
+    const report = toMachineReport(run.results, undefined, run.baselines);
     const target = path.resolve(options.jsonPath);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, `${JSON.stringify(report, null, 2)}\n`, 'utf8');

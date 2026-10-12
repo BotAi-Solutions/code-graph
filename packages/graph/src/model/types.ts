@@ -25,8 +25,37 @@ export interface GraphBuildStats {
   symbolCount: number;
   nodeCount: number;
   edgeCount: number;
-  /** References whose target was not defined inside the analysed repository. */
+  /**
+   * Reference occurrences whose target has no node, so no edge was made.
+   * Always `external + unmodelled + unknown` below.
+   */
   unresolvedReferenceCount: number;
+  unresolvedReferences: UnresolvedReferenceCounts;
+}
+
+/**
+ * Why a reference has no target node, counted per occurrence (import and export
+ * names included). Each occurrence lands in exactly one bucket.
+ */
+export interface UnresolvedReferenceCounts {
+  /**
+   * The target belongs to a package that defines nothing in this index: a
+   * dependency, the standard library, or a workspace package not indexed.
+   * Established from the package in the SCIP symbol, not assumed.
+   */
+  external: number;
+  /**
+   * The target is defined in the index but is deliberately not a node:
+   * parameters, type parameters, ambient `declare module` contents.
+   */
+  unmodelled: number;
+  /**
+   * The target belongs to a package the index defines symbols for, yet has no
+   * definition in it (an anonymous object-literal member, a file outside the
+   * indexed set), or its symbol could not be parsed. Not called external,
+   * because nothing shows that it is.
+   */
+  unknown: number;
 }
 
 export interface GraphBuildResult extends CodeGraph {

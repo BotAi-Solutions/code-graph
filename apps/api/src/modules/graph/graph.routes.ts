@@ -47,7 +47,7 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
           tags: ['graph'],
           summary: 'Traverse the code knowledge graph',
           description:
-            'With `rootNodeId`, walks outward to `depth` hops — `direction` narrows which way. Without one, returns an overview: the most connected nodes and the edges between them. `projection` (architecture, calls, files, dependencies, dataflow) supplies the node-type and relationship filters when none are given, and ranks the overview. The full graph is never returned.',
+            'With `rootNodeId`, walks outward to `depth` hops — `direction` narrows which way — keeping the `limit` nearest nodes (by hop count, then id) and every edge between them. `meta.truncated` says the limit cut the walk; `meta.reachableAtLeast` is then the number of nodes reached up to `meta.cutDepth`, a lower bound, and exact when `meta.reachableExact` is true. Without one, returns an overview: the most connected nodes and the edges between them. `projection` (architecture, calls, files, dependencies, dataflow) supplies the node-type and relationship filters when none are given, and ranks the overview. The full graph is never returned.',
           params: projectIdParamSchema,
           querystring: graphQuerySchema,
           response: { 200: envelopeSchema(codeGraphSchema), ...commonErrorResponses },
@@ -83,6 +83,16 @@ export function graphRoutes(service: GraphService): FastifyPluginAsyncZod {
               nodeCount: result.nodes.length,
               edgeCount: result.edges.length,
               truncated: result.truncated,
+              // Traversals only. `reachableAtLeast` is exact when
+              // `reachableExact` is true, and a lower bound — the nodes
+              // reached up to `cutDepth` — when the node limit cut the walk.
+              ...(result.reachableAtLeast !== undefined
+                ? {
+                    reachableAtLeast: result.reachableAtLeast,
+                    reachableExact: result.reachableExact,
+                    cutDepth: result.cutDepth,
+                  }
+                : {}),
             },
           ),
         );

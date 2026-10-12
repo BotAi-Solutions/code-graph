@@ -1,0 +1,341 @@
+{
+  "fixture": "typescript-sample",
+  "_comment": [
+    "Read from test-repositories/typescript-sample/src by hand. Classes, interfaces,",
+    "functions and methods are enumerated completely and are closed. Properties,",
+    "types, variables and files are listed for recall only.",
+    "",
+    "Disclosure: this fixture's graph output was looked at during the audit that",
+    "preceded this file, so the entries were derived again from the source with",
+    "the rules in edges.json, and every disagreement was checked against the raw",
+    "SCIP index before being recorded as a known gap.",
+    "",
+    "`knownGap`: confirmed defects. Scored, not failing; a gap that disappears",
+    "fails the run until the marker is removed.",
+    "",
+    "`diagnostics`: a golden fixture must build without dropping an edge,",
+    "losing an analyzer, failing a read or hitting a size cap."
+  ],
+  "closedTypes": [
+    "class",
+    "interface",
+    "function",
+    "method"
+  ],
+  "diagnostics": {
+    "droppedEdges": 0,
+    "failedAnalyzers": 0,
+    "readErrors": 0,
+    "truncated": false
+  },
+  "nodes": [
+    {
+      "type": "class",
+      "name": "BaseController",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "class",
+      "name": "UserController",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "class",
+      "name": "UserNotFoundError",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "class",
+      "name": "UserService",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "class",
+      "name": "UserRepository",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "class",
+      "name": "Logger",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "interface",
+      "name": "HttpResponse",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "interface",
+      "name": "User",
+      "file": "src/models/user.ts"
+    },
+    {
+      "type": "interface",
+      "name": "UserDraft",
+      "file": "src/models/user.ts"
+    },
+    {
+      "type": "interface",
+      "name": "UserStore",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "type",
+      "name": "UserRole",
+      "file": "src/models/user.ts"
+    },
+    {
+      "type": "type",
+      "name": "LogLevel",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "function",
+      "name": "bootstrap",
+      "file": "src/index.ts"
+    },
+    {
+      "type": "function",
+      "name": "createUser",
+      "file": "src/models/user.ts"
+    },
+    {
+      "type": "function",
+      "name": "isAdmin",
+      "file": "src/models/user.ts"
+    },
+    {
+      "type": "method",
+      "name": "BaseController.<constructor>",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "BaseController.ok",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "BaseController.created",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "BaseController.failure",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserController.<constructor>",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserController.getUser",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserController.listUsers",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserController.createUser",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserController.listAdministrators",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserController.deleteUser",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserNotFoundError.<constructor>",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserService.<constructor>",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserService.getUser",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserService.listUsers",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserService.registerUser",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserService.listAdministrators",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserService.deleteUser",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserStore.findById",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserStore.findAll",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserStore.save",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserStore.remove",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserRepository.findById",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserRepository.findAll",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserRepository.save",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "UserRepository.remove",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "method",
+      "name": "Logger.<constructor>",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "method",
+      "name": "Logger.debug",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "method",
+      "name": "Logger.info",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "method",
+      "name": "Logger.warn",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "method",
+      "name": "Logger.error",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "method",
+      "name": "Logger.write",
+      "file": "src/utils/logger.ts"
+    },
+    {
+      "type": "property",
+      "name": "BaseController.logger",
+      "file": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "property",
+      "name": "UserRepository.users",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "property",
+      "name": "UserRepository.logger",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "property",
+      "name": "UserRepository.sequence",
+      "file": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "property",
+      "name": "UserService.logger",
+      "file": "src/services/user.service.ts"
+    },
+    {
+      "type": "property",
+      "name": "UserController.service",
+      "file": "src/controllers/user.controller.ts",
+      "knownGap": "Constructor parameter properties are SCIP parameters, which the graph does not model."
+    },
+    {
+      "type": "property",
+      "name": "UserService.repository",
+      "file": "src/services/user.service.ts",
+      "knownGap": "Constructor parameter properties are SCIP parameters, which the graph does not model."
+    },
+    {
+      "type": "property",
+      "name": "UserNotFoundError.userId",
+      "file": "src/services/user.service.ts",
+      "knownGap": "Constructor parameter properties are SCIP parameters, which the graph does not model."
+    },
+    {
+      "type": "property",
+      "name": "Logger.scope",
+      "file": "src/utils/logger.ts",
+      "knownGap": "Constructor parameter properties are SCIP parameters, which the graph does not model."
+    },
+    {
+      "type": "variable",
+      "name": "logger",
+      "file": "src/index.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/controllers/user.controller.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/index.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/models/user.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/repositories/user.repository.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/services/user.service.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/utils/logger.ts"
+    }
+  ]
+}

@@ -78,6 +78,28 @@ describe('API', () => {
     });
   });
 
+  describe('server timing', () => {
+    const durationOf = (header: unknown): number => {
+      const match = /^app;dur=(\d+(?:\.\d+)?)$/.exec(String(header));
+      if (!match) throw new Error(`no app duration in ${String(header)}`);
+      return Number(match[1]);
+    };
+
+    it('reports the server-observed duration of a successful request', async () => {
+      const response = await harness.app.inject({ method: 'GET', url: '/api/projects' });
+
+      expect(response.statusCode).toBe(200);
+      expect(durationOf(response.headers['server-timing'])).toBeGreaterThanOrEqual(0);
+    });
+
+    it('reports it on an error response as well', async () => {
+      const response = await harness.app.inject({ method: 'GET', url: '/api/nope' });
+
+      expect(response.statusCode).toBe(404);
+      expect(durationOf(response.headers['server-timing'])).toBeGreaterThanOrEqual(0);
+    });
+  });
+
   describe('health', () => {
     it('reports ok when the database answers', async () => {
       const response = await harness.app.inject({ method: 'GET', url: '/health' });
@@ -413,6 +435,37 @@ describe('API', () => {
         'repo',
         'service',
       ]);
+    });
+
+    it('passes a traversal’s extent into meta: a lower bound and the cut depth when the limit cut it', async () => {
+      const original = harness.graph.traverse.bind(harness.graph);
+      harness.graph.traverse = async (...args: Parameters<typeof original>) => ({
+        ...(await original(...args)),
+        truncated: true,
+        reachableAtLeast: 7342,
+        reachableExact: false,
+        cutDepth: 2,
+      });
+      try {
+        const response = await harness.app.inject({
+          method: 'GET',
+          url: `/api/projects/${projectId}/graph?rootNodeId=controller&depth=3`,
+        });
+        expect(body<CodeGraph>(response).meta).toMatchObject({
+          mode: 'traversal',
+          truncated: true,
+          reachableAtLeast: 7342,
+          reachableExact: false,
+          cutDepth: 2,
+        });
+      } finally {
+        harness.graph.traverse = original;
+      }
+
+      // The overview is not a walk, and its meta does not pretend to be one.
+      const overview = await harness.app.inject({ method: 'GET', url: `/api/projects/${projectId}/graph` });
+      expect(body<CodeGraph>(overview).meta).not.toHaveProperty('reachableAtLeast');
+      expect(body<CodeGraph>(overview).meta).not.toHaveProperty('cutDepth');
     });
 
     it('reaches the whole call chain at a larger depth', async () => {

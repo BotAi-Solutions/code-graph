@@ -181,7 +181,7 @@ interface CodeEdge {
 | `CONTAINS` | Lexical containment | Repository → directory → file → symbol → member, from the SCIP descriptor chain |
 | `IMPORTS` | File-level dependency | An import statement, or a cross-file reference |
 | `EXPORTS` | What a file offers | An `export` declaration, including re-exports |
-| `CALLS` | Invocation | A reference whose target is a function or method, attributed to the definition it sits inside. For a function-valued variable, only a reference in callee position |
+| `CALLS` | Invocation | A reference whose target is a function or method, attributed to the definition it sits inside. For a function-valued variable, only a reference in callee position. A name in an import or export specifier is neither CALLS nor REFERENCES |
 | `REFERENCES` | Non-call usage | Same, where the target is a class, interface, type or variable, or a function-valued variable used as a value |
 | `IMPLEMENTS` | Satisfies an abstraction | A SCIP implementation relationship whose target is an interface or a member |
 | `EXTENDS` | Inherits from a class | A SCIP implementation relationship whose target is a class |

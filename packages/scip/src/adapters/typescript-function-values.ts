@@ -24,6 +24,10 @@ import type { ScipFunctionValue } from '../types/index.js';
  *   `await f()`, `f?.()`, `f<T>()`) or the property name of a member access
  *   (`ns.f()`). In `a.b()` only `b` is called, not `a`. `new f()`, tagged
  *   templates and `f.call()` are not calls of `f`.
+ *
+ * The same pass also records the names written in import and export specifier
+ * lists. scip-typescript reports `import { f } from './x'` as an ordinary
+ * reference to `f`, which would otherwise read as the file using `f`.
  */
 
 export interface FunctionValueScan {
@@ -31,6 +35,11 @@ export interface FunctionValueScan {
   declarations: Map<string, ScipFunctionValue>;
   /** Positions of the names that are the callee of a call expression. */
   callees: Set<string>;
+  /**
+   * Positions of the names in import and export specifiers: both sides of
+   * `{ a as b }`, a default import, and a namespace import.
+   */
+  specifiers: Set<string>;
 }
 
 /** The key both maps use: a zero-based line and character, as SCIP records them. */
@@ -64,6 +73,7 @@ export function scanFunctionValues(relativePath: string, text: string): Function
 
   const declarations = new Map<string, ScipFunctionValue>();
   const callees = new Set<string>();
+  const specifiers = new Set<string>();
 
   const keyOf = (node: ts.Node): string => {
     const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -84,11 +94,20 @@ export function scanFunctionValues(relativePath: string, text: string): Function
       if (callee) callees.add(keyOf(callee));
     }
 
+    if (ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) {
+      if (node.propertyName) specifiers.add(keyOf(node.propertyName));
+      specifiers.add(keyOf(node.name));
+    } else if (ts.isImportClause(node) && node.name) {
+      specifiers.add(keyOf(node.name));
+    } else if (ts.isNamespaceImport(node) || ts.isNamespaceExport(node)) {
+      specifiers.add(keyOf(node.name));
+    }
+
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
 
-  return { declarations, callees };
+  return { declarations, callees, specifiers };
 }
 
 /** `const` only: `let`, `var`, `using` and `await using` are excluded. */

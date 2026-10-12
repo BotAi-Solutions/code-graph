@@ -3,13 +3,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type {
-  AnalysisJob,
-  AnalysisProgress,
-  AnalysisStats,
-  CodeGraph,
-  Repository,
-  SourceRevision,
+import {
+  ANALYSIS_PHASE_TIMINGS,
+  analysisStatsSchema,
+  type AnalysisJob,
+  type AnalysisProgress,
+  type AnalysisStats,
+  type CodeGraph,
+  type Repository,
+  type SourceRevision,
 } from '@ckg/shared';
 import { createSilentLogger } from '@ckg/shared/logger';
 import { findWorkspaceRoot } from '@ckg/shared/node';
@@ -201,6 +203,7 @@ describe('AnalyzeRepositoryJob', () => {
     options: {
       analyzers?: CodeAnalyzer[];
       captureRevision?: (directory: string) => Promise<SourceRevision>;
+      sourceReadLimits?: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number };
     } = {},
   ): {
     job: AnalyzeRepositoryJob;
@@ -226,6 +229,7 @@ describe('AnalyzeRepositoryJob', () => {
       scipTimeoutMs: 1000,
       ...(options.analyzers ? { analyzers: options.analyzers } : {}),
       ...(options.captureRevision ? { captureRevision: options.captureRevision } : {}),
+      ...(options.sourceReadLimits ? { sourceReadLimits: options.sourceReadLimits } : {}),
     });
 
     return { job, analysisJobs, graph };
@@ -479,6 +483,158 @@ describe('AnalyzeRepositoryJob', () => {
     });
 
     await expect(job.run(analysisJobs.seed(queuedJob()))).rejects.toThrow(/does not exist/);
+  });
+
+  describe('completeness and timings in the persisted statistics', () => {
+    const persisted = (analysisJobs: FakeAnalysisJobRepository): AnalysisStats => {
+      const stats = analysisJobs.jobs.get('55555555-5555-4555-8555-555555555555')?.stats;
+      if (!stats) throw new Error('no statistics were persisted');
+      return stats;
+    };
+
+    it('persists exactly what the run returned, in a shape the API schema keeps whole', async () => {
+      const { job, analysisJobs } = createJob(new FixtureCommandRunner());
+      const returned = await job.run(analysisJobs.seed(queuedJob()));
+
+      expect(persisted(analysisJobs)).toEqual(returned);
+      // The API serialises through this schema, which strips unknown keys: a
+      // field missing from it would be measured, stored and never shown.
+      expect(analysisStatsSchema.parse(returned)).toEqual(returned);
+    });
+
+    it('reports a run that hit no limit as having no known incompleteness', async () => {
+      const { job, analysisJobs } = createJob(new FixtureCommandRunner());
+      await job.run(analysisJobs.seed(queuedJob()));
+      const completeness = persisted(analysisJobs).completeness;
+
+      expect(completeness).toMatchObject({
+        incomplete: false,
+        reasons: [],
+        unreadableFiles: 0,
+        droppedEdges: { total: 0 },
+        analyzers: { failed: [] },
+      });
+      expect(completeness?.scan).toMatchObject({ truncated: false, filesOverLimit: 0, directoriesOverDepth: 0 });
+      expect(completeness?.sourceRead).toMatchObject({
+        truncated: false,
+        fileLimit: { reached: false, filesNotRead: 0 },
+        fileSizeLimit: { filesSkipped: 0 },
+        totalSizeLimit: { reached: false, filesNotRead: 0 },
+      });
+      expect(completeness?.sourceRead?.filesRead).toBe(completeness?.sourceRead?.candidateFiles);
+    });
+
+    it('splits unresolved references into categories that sum to the total', async () => {
+      const { job, analysisJobs } = createJob(new FixtureCommandRunner());
+      await job.run(analysisJobs.seed(queuedJob()));
+      const unresolved = persisted(analysisJobs).completeness?.unresolvedReferences;
+
+      // Counted independently from the fixture's raw index: 43 references into
+      // the TypeScript standard library and 8 into @types/node are external;
+      // 46 are uses of the repository's own parameters; one, the `deleted`
+      // member of an object literal in user.controller.ts, belongs to the
+      // repository's package but is never defined, so it is not called external.
+      expect(unresolved).toEqual({ total: 98, external: 51, unmodelled: 46, unknown: 1 });
+    });
+
+    it('marks a run that hit the file limit as incomplete, while still completing it', async () => {
+      const { job, analysisJobs } = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+        sourceReadLimits: { maxFiles: 2 },
+      });
+      await job.run(analysisJobs.seed(queuedJob()));
+      const stats = persisted(analysisJobs);
+
+      expect(analysisJobs.jobs.get('55555555-5555-4555-8555-555555555555')?.status).toBe('COMPLETED');
+      expect(stats.completeness?.incomplete).toBe(true);
+      expect(stats.completeness?.reasons).toEqual(['source_file_limit']);
+      expect(stats.completeness?.sourceRead).toMatchObject({ truncated: true, filesRead: 2 });
+      const read = stats.completeness?.sourceRead;
+      expect(read?.fileLimit).toEqual({ limit: 2, reached: true, filesNotRead: (read?.candidateFiles ?? 0) - 2 });
+      expect(analysisJobs.progressHistory.at(-1)?.message).toContain('incomplete');
+    });
+
+    it('counts files skipped for size, and a read stopped by the total-size limit', async () => {
+      const bySize = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+        sourceReadLimits: { maxFileBytes: 300 },
+      });
+      await bySize.job.run(bySize.analysisJobs.seed(queuedJob()));
+      const skipped = persisted(bySize.analysisJobs).completeness;
+      expect(skipped?.reasons).toContain('source_file_size_limit');
+      expect(skipped?.sourceRead?.fileSizeLimit.filesSkipped).toBeGreaterThan(0);
+      // A skipped file is not a truncation: the flag keeps its old meaning.
+      expect(skipped?.sourceRead?.truncated).toBe(false);
+
+      const byTotal = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+        sourceReadLimits: { maxTotalBytes: 1500 },
+      });
+      await byTotal.job.run(byTotal.analysisJobs.seed(queuedJob()));
+      const stopped = persisted(byTotal.analysisJobs).completeness;
+      expect(stopped?.reasons).toContain('source_total_size_limit');
+      expect(stopped?.sourceRead?.totalSizeLimit.reached).toBe(true);
+      expect(stopped?.sourceRead?.totalSizeLimit.filesNotRead).toBeGreaterThan(0);
+      expect(stopped?.sourceRead?.truncated).toBe(true);
+    });
+
+    it('names a failed analyzer in completeness and in the timings, once each', async () => {
+      class ExplodingAnalyzer implements CodeAnalyzer {
+        readonly name = 'exploding-analyzer';
+        readonly stage = 'source' as const;
+        supports(): boolean {
+          return true;
+        }
+        async analyze(): Promise<never> {
+          throw new Error('this analyzer is broken');
+        }
+      }
+      const { job, analysisJobs } = createJob(new FixtureCommandRunner(), LOCAL_REPOSITORY, {
+        analyzers: [new ExplodingAnalyzer()],
+      });
+      await job.run(analysisJobs.seed(queuedJob()));
+      const stats = persisted(analysisJobs);
+
+      expect(stats.completeness?.reasons).toEqual(['analyzer_failed']);
+      expect(stats.completeness?.analyzers).toEqual({ run: ['scip', 'exploding-analyzer'], failed: ['exploding-analyzer'] });
+      expect(stats.timings?.analyzers.map((entry) => [entry.analyzer, entry.outcome])).toEqual([
+        ['scip', 'completed'],
+        ['exploding-analyzer', 'failed'],
+      ]);
+    });
+
+    it('times every phase, with non-negative durations that fit inside the total', async () => {
+      const { job, analysisJobs } = createJob(new FixtureCommandRunner());
+      await job.run(analysisJobs.seed(queuedJob()));
+      const stats = persisted(analysisJobs);
+      const timings = stats.timings;
+      if (!timings) throw new Error('no timings');
+
+      expect(Object.keys(timings.phases).sort()).toEqual([...ANALYSIS_PHASE_TIMINGS].sort());
+      let sum = 0;
+      for (const value of Object.values(timings.phases)) {
+        expect(value).toBeGreaterThanOrEqual(0);
+        sum += value ?? 0;
+      }
+      expect(timings.unattributedMs).toBeGreaterThanOrEqual(0);
+      // Disjoint phases plus the gaps between them make up the total, to rounding.
+      expect(sum + timings.unattributedMs).toBeCloseTo(timings.totalMs, 0);
+      expect(timings.scipIndexerReportedMs).toBeGreaterThanOrEqual(0);
+
+      // Every analyzer that ran is timed, and the analyzers fit inside assembly.
+      expect(timings.analyzers.map((entry) => entry.analyzer)).toEqual(stats.completeness?.analyzers.run);
+      const analyzerSum = timings.analyzers.reduce((total, entry) => total + entry.durationMs, 0);
+      expect(analyzerSum).toBeLessThanOrEqual((timings.phases.graphAssembly ?? 0) + 0.1);
+
+      // The existing field is still there, still whole milliseconds.
+      expect(Number.isInteger(stats.durationMs)).toBe(true);
+      expect(stats.durationMs).toBeGreaterThanOrEqual(0);
+
+      expect(stats.resources).toMatchObject({ indexerMeasured: false });
+      expect(stats.resources?.workerCpuUserMs).toBeGreaterThanOrEqual(0);
+      expect(stats.resources?.workerCpuSystemMs).toBeGreaterThanOrEqual(0);
+      expect(stats.resources?.workerSampledPeakRssBytes).toBeGreaterThan(0);
+      expect(stats.resources?.workerLifetimeMaxRssBytes).toBeGreaterThanOrEqual(
+        stats.resources?.workerSampledPeakRssBytes ?? 0,
+      );
+    });
   });
 
   describe('over a layered service repository', () => {

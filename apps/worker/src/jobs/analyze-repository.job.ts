@@ -1,6 +1,8 @@
 import type {
+  AnalysisCompleteness,
   AnalysisJob,
   AnalysisStats,
+  IncompletenessReason,
   AnalysisStatus,
   CodeNodeType,
   IndexingError,
@@ -22,11 +24,17 @@ import {
   type RepositoryScan,
 } from '@ckg/language-detection';
 import { readScipIndexFile, type ScipIndexerRegistry } from '@ckg/scip';
-import { CodeGraphAssembler, ScipAnalyzer, type CodeAnalyzer } from '@ckg/graph';
-import { createDefaultAnalyzers, loadSourceFiles } from '@ckg/analysis';
+import {
+  CodeGraphAssembler,
+  ScipAnalyzer,
+  type AssembledGraph,
+  type CodeAnalyzer,
+} from '@ckg/graph';
+import { createDefaultAnalyzers, loadSourceFiles, type InMemorySourceFileSet } from '@ckg/analysis';
 import { AnalysisWorkspace } from '../services/analysis-workspace.js';
 import { AnalysisProgressReporter } from '../services/progress-reporter.js';
 import { RepositoryLoader } from '../services/repository-loader.js';
+import { RunMetrics } from '../services/run-metrics.js';
 
 /**
  * The analysis pipeline.
@@ -82,6 +90,14 @@ export interface AnalyzeRepositoryJobDependencies {
    * Defaults to the real one; a test can pass a stub.
    */
   captureRevision?: ((directory: string) => Promise<SourceRevision>) | undefined;
+  /**
+   * Overrides the source read's limits (file count, bytes per file, total
+   * bytes). Defaults to the loader's own. A test sets them low to make a
+   * truncated run happen; a benchmark can record which it used.
+   */
+  sourceReadLimits?:
+    | { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number }
+    | undefined;
 }
 
 export class AnalysisFailedError extends Error {
@@ -110,6 +126,7 @@ export class AnalyzeRepositoryJob {
 
   async run(job: AnalysisJob): Promise<AnalysisStats> {
     const startedAt = Date.now();
+    const metrics = new RunMetrics();
     const log = this.deps.logger.child({ jobId: job.id, projectId: job.projectId });
 
     const progress = new AnalysisProgressReporter({
@@ -124,12 +141,16 @@ export class AnalyzeRepositoryJob {
     }
 
     const workspaceDirectory = await this.deps.workspace.prepare(job.id);
-    const loaded = await this.deps.repositoryLoader.load(repository, workspaceDirectory);
+    const loaded = await metrics.time('repositoryLoad', () =>
+      this.deps.repositoryLoader.load(repository, workspaceDirectory),
+    );
     log.info({ repositoryName: loaded.name }, 'repository ready');
 
     // Before the scan reads anything: a file saved mid-run is then newer than
     // the capture, and the finished graph reads as stale rather than current.
-    const sourceRevision = await this.captureRevision(loaded.path, log);
+    const sourceRevision = await metrics.time('sourceRevision', () =>
+      this.captureRevision(loaded.path, log),
+    );
 
     // --- scan -----------------------------------------------------------
     // One walk of the tree, shared by language detection, the source loader
@@ -141,16 +162,18 @@ export class AnalyzeRepositoryJob {
       message: 'Scanning project files…',
     });
 
-    const scanned = await this.scan(loaded.path, (filesSeen) => {
-      progress.report({
-        phase: 'scanning',
-        current: filesSeen,
-        // A walk does not know how many files it will find until it has found
-        // them, so there is no denominator to offer and none is invented.
-        total: 0,
-        message: `Scanning project files… ${String(filesSeen)} found`,
-      });
-    });
+    const scanned = await metrics.time('scan', () =>
+      this.scan(loaded.path, (filesSeen) => {
+        progress.report({
+          phase: 'scanning',
+          current: filesSeen,
+          // A walk does not know how many files it will find until it has found
+          // them, so there is no denominator to offer and none is invented.
+          total: 0,
+          message: `Scanning project files… ${String(filesSeen)} found`,
+        });
+      }),
+    );
 
     const metadata = scanned.metadata;
     progress.carry({ files: metadata.sourceFiles });
@@ -166,7 +189,9 @@ export class AnalyzeRepositoryJob {
     );
 
     // --- language -------------------------------------------------------
-    const language = await this.resolveLanguage(job, scanned.scan, log);
+    const language = await metrics.time('languageDetection', () =>
+      this.resolveLanguage(job, scanned.scan, log),
+    );
     await this.deps.analysisJobs.update(job.id, { language });
 
     const indexer = this.deps.indexers.resolve(language);
@@ -188,10 +213,12 @@ export class AnalyzeRepositoryJob {
       message: `Indexing ${String(metadata.sourceFiles)} source files with ${indexer.name}…`,
     });
 
-    const indexResult = await indexer.index(loaded.path, {
-      outputDirectory: workspaceDirectory,
-      timeoutMs: this.deps.scipTimeoutMs,
-    });
+    const indexResult = await metrics.time('scipIndex', () =>
+      indexer.index(loaded.path, {
+        outputDirectory: workspaceDirectory,
+        timeoutMs: this.deps.scipTimeoutMs,
+      }),
+    );
     log.info({ durationMs: indexResult.durationMs }, 'SCIP index produced');
 
     // --- parse ----------------------------------------------------------
@@ -203,9 +230,11 @@ export class AnalyzeRepositoryJob {
       message: 'Parsing the index…',
     });
 
-    const parsed = await readScipIndexFile(indexResult.indexPath);
+    const parsed = await metrics.time('scipDecode', () => readScipIndexFile(indexResult.indexPath));
     const refiner = this.deps.indexers.resolveRefiner(language);
-    const index = await refiner.refine(parsed, { repositoryPath: loaded.path });
+    const index = await metrics.time('scipRefine', () =>
+      refiner.refine(parsed, { repositoryPath: loaded.path }),
+    );
 
     const indexedSymbolCount = index.documents.reduce(
       (total, document) => total + document.symbols.length,
@@ -218,17 +247,20 @@ export class AnalyzeRepositoryJob {
 
     // One pass over the source, shared by every analyzer, reusing the walk the
     // scan already did.
-    const sources = await loadSourceFiles(loaded.path, {
-      scan: scanned.scan,
-      onProgress: (read, total) => {
-        progress.report({
-          phase: 'parsing',
-          current: read,
-          total,
-          message: 'Reading source files…',
-        });
-      },
-    });
+    const sources = await metrics.time('sourceLoad', () =>
+      loadSourceFiles(loaded.path, {
+        ...this.deps.sourceReadLimits,
+        scan: scanned.scan,
+        onProgress: (read, total) => {
+          progress.report({
+            phase: 'parsing',
+            current: read,
+            total,
+            message: 'Reading source files…',
+          });
+        },
+      }),
+    );
 
     // --- build ----------------------------------------------------------
     const analyzers = [
@@ -266,7 +298,7 @@ export class AnalyzeRepositoryJob {
       },
     });
 
-    const graph = await assembler.assemble();
+    const graph = await metrics.time('graphAssembly', () => assembler.assemble());
 
     // Counted now rather than from the raw index: an index's symbol table also
     // holds every symbol the project *refers* to, and reporting that as
@@ -291,6 +323,7 @@ export class AnalyzeRepositoryJob {
         counters: graph.stats.counters,
         droppedEdges: graph.stats.droppedEdgeCount,
         failedAnalyzers: graph.stats.failedAnalyzerCount,
+        unresolvedReferences: graph.stats.unresolvedReferences,
         unreadableFiles: graph.errors.length,
       },
       'code knowledge graph built',
@@ -308,9 +341,20 @@ export class AnalyzeRepositoryJob {
       errors: graph.errors.length,
     });
 
-    await this.deps.graph.replaceProjectGraph(job.projectId, graph);
+    await metrics.time('persist', () => this.deps.graph.replaceProjectGraph(job.projectId, graph));
 
-    const stats = this.buildStats(graph, metadata, startedAt);
+    const stats: AnalysisStats = {
+      ...this.buildStats(graph, metadata, startedAt),
+      completeness: describeCompleteness(graph, sources, scanned.scan.truncated),
+      timings: metrics.timings({
+        analyzers: graph.analyzerTimings,
+        scipIndexerReportedMs: indexResult.durationMs,
+      }),
+      resources: metrics.resources(indexResult.resources),
+    };
+    if (stats.completeness?.incomplete) {
+      log.warn({ reasons: stats.completeness.reasons }, 'the graph is known to be incomplete');
+    }
 
     await this.deps.analysisJobs.update(job.id, {
       status: 'COMPLETED',
@@ -327,10 +371,7 @@ export class AnalyzeRepositoryJob {
       phase: 'completed',
       current: 1,
       total: 1,
-      message:
-        graph.errors.length > 0
-          ? `Indexed with warnings: ${String(graph.errors.length)} file(s) could not be parsed`
-          : 'Indexing complete',
+      message: completionMessage(graph.errors.length, stats.completeness),
       relationships: graph.edges.length,
       errors: graph.errors.length,
     });
@@ -462,3 +503,81 @@ export class AnalyzeRepositoryJob {
 
 /** Per-file failures kept on the job record. Beyond this it is a pattern, not a list. */
 const MAX_RECORDED_ERRORS = 100;
+
+/**
+ * What the run is known to have left out.
+ *
+ * Every count is read from where it was produced, once: the walk's limits from
+ * the scan, the read's limits from the source set, unresolved references and
+ * dropped edges from the assembler, unreadable files from the merged error
+ * list. Nothing here is inferred from the size or shape of the graph.
+ */
+export function describeCompleteness(
+  graph: Pick<AssembledGraph, 'stats' | 'errors' | 'analyzersRun'>,
+  sources: Pick<InMemorySourceFileSet, 'truncated' | 'report'>,
+  scanTruncated: boolean,
+): AnalysisCompleteness {
+  const reasons: IncompletenessReason[] = [];
+  const read = sources.report;
+  const scan = read?.scan ?? null;
+
+  if (scan) {
+    if (scan.filesOverLimit > 0) reasons.push('scan_file_limit');
+    if (scan.directoriesOverDepth > 0) reasons.push('scan_depth_limit');
+    if (scan.aborted) reasons.push('scan_aborted');
+    if (scan.unreadableDirectories > 0) reasons.push('unreadable_directories');
+  } else if (scanTruncated) {
+    // The walk said it stopped early without saying why: still a known
+    // truncation, reported under the most general cause.
+    reasons.push('scan_file_limit');
+  }
+  if (read) {
+    if (read.fileLimit.reached) reasons.push('source_file_limit');
+    if (read.fileSizeLimit.filesSkipped > 0) reasons.push('source_file_size_limit');
+    if (read.totalSizeLimit.reached) reasons.push('source_total_size_limit');
+  }
+  if (graph.errors.length > 0) reasons.push('unreadable_files');
+  if (graph.stats.failedAnalyzerCount > 0) reasons.push('analyzer_failed');
+
+  const unresolved = graph.stats.unresolvedReferences;
+
+  return {
+    incomplete: reasons.length > 0,
+    reasons,
+    unresolvedReferences: {
+      total: graph.stats.unresolvedReferenceCount,
+      external: unresolved.external,
+      unmodelled: unresolved.unmodelled,
+      unknown: unresolved.unknown,
+    },
+    droppedEdges: {
+      total: graph.stats.droppedEdgeCount,
+      byAnalyzer: { ...graph.stats.droppedEdgesByAnalyzer },
+    },
+    analyzers: { run: [...graph.analyzersRun], failed: [...graph.stats.failedAnalyzers] },
+    scan: scan ? { truncated: scanTruncated, ...scan } : null,
+    sourceRead: read
+      ? {
+          truncated: sources.truncated,
+          candidateFiles: read.candidateFiles,
+          filesRead: read.filesRead,
+          bytesRead: read.bytesRead,
+          fileLimit: { ...read.fileLimit },
+          fileSizeLimit: { ...read.fileSizeLimit },
+          totalSizeLimit: { ...read.totalSizeLimit },
+        }
+      : null,
+    unreadableFiles: graph.errors.length,
+  };
+}
+
+/** The final progress line: says "incomplete" whenever the run knows it is. */
+function completionMessage(errorCount: number, completeness: AnalysisCompleteness | undefined): string {
+  const limited = (completeness?.reasons ?? []).filter((reason) => reason !== 'unreadable_files');
+  if (limited.length > 0) {
+    return `Indexed, incomplete: ${limited.join(', ')}${errorCount > 0 ? `; ${String(errorCount)} file(s) could not be parsed` : ''}`;
+  }
+  return errorCount > 0
+    ? `Indexed with warnings: ${String(errorCount)} file(s) could not be parsed`
+    : 'Indexing complete';
+}

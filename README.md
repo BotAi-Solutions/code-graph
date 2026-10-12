@@ -9,7 +9,7 @@ the code.**
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169e1)
 ![SCIP](https://img.shields.io/badge/indexer-SCIP-orange)
 ![Retrieval eval](https://img.shields.io/badge/retrieval%20eval-49%2F49-brightgreen)
-![Tests](https://img.shields.io/badge/tests-1225%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-1601%20passing-brightgreen)
 
 <img src="ref-image/universe.png" alt="Universe view of a 5,877-node graph" width="100%">
 
@@ -805,6 +805,8 @@ the process immediately with the variable's name — never its value.
 | `POSTGRES_PORT` | `5432` | compose | Host port the Compose database publishes on |
 | `DATABASE_URL` | — | api, worker | **Required.** PostgreSQL connection string |
 | `DATABASE_POOL_MAX` | `10` | api, worker | Pool size |
+| `TEST_DATABASE_URL` | — | tests | Database for the integration suites. Its name must contain `test`; never the development database |
+| `BENCHMARK_DATABASE_URL` | — | `pnpm benchmark:perf` | Database dedicated to the performance benchmark, which creates and deletes projects there; refused if it is the `DATABASE_URL` database ([docs](docs/performance-benchmark.md)) |
 | `SCIP_TYPESCRIPT_COMMAND` | `scip-typescript` | worker | Indexer command or path |
 | `SCIP_INDEX_TIMEOUT_MS` | `600000` | worker | Hard ceiling on one indexer run |
 | `ANALYSIS_WORKSPACE_DIR` | `./.workspace` | worker | Per-analysis scratch space |
@@ -863,13 +865,27 @@ TypeScript is strict everywhere, ESM throughout, with project references so
 
 ### Tests
 
-**1,225 tests** pass with a database reachable; without one, 1,158 pass and the
-67 database-backed integration tests skip themselves (reported as skipped, not
-passed).
+**1,601 tests** pass with `TEST_DATABASE_URL` set; without it, 1,513 pass and
+the 88 database-backed integration tests skip themselves (reported as skipped,
+not passed). Two more are marked expected failures (`it.fails`): they record a
+known defect in value-use CALLS edges and fail loudly once it is fixed.
 
 ```bash
-pnpm test                                    # no database needed
-docker compose up -d postgres && pnpm test   # integration suites run too
+pnpm test                                                 # no database needed
+TEST_DATABASE_URL=postgresql://…/code_knowledge_graph_test pnpm test   # integration suites run too
+```
+
+The database-backed suites run only against `TEST_DATABASE_URL`, a database
+used for nothing else: they migrate it, write to it and delete from it. They
+never read `DATABASE_URL` and have no default connection. Unset, they skip; set,
+they refuse a database whose name does not contain `test`, the development
+database's name, or the same host, port and database as `DATABASE_URL` (from the
+environment or `.env`), and they fail if it cannot be reached. `pnpm test` does
+not read `.env`, so pass the variable on the command line. Create the database
+once, for example with the Compose server running:
+
+```bash
+docker compose exec postgres createdb -U ckg code_knowledge_graph_test
 ```
 
 `packages/scip/tests/fixtures/` holds real `index.scip` files produced by
@@ -924,6 +940,7 @@ restructuring — see the last section of [docs/architecture.md](docs/architectu
 - [docs/graph-model.md](docs/graph-model.md) — nodes, edges, evidence, confidence, identity
 - [docs/repository-knowledge.md](docs/repository-knowledge.md) — file categories, parsers, cross-source relationships
 - [docs/benchmark.md](docs/benchmark.md) — ground truth, metrics, CI
+- [docs/performance-benchmark.md](docs/performance-benchmark.md) — pinned repositories, initial indexing and re-indexing, resource and query measurement
 - [docs/retrieval-evaluation.md](docs/retrieval-evaluation.md) — retrieval cases, pass/partial/fail
 - [docs/retrieval-evaluation-report.md](docs/retrieval-evaluation-report.md) — baseline (45/49), root cause, and post-fix re-measurement (49/49)
 - [docs/scip.md](docs/scip.md) — indexers, parsing, adding a language

@@ -1,8 +1,12 @@
 import { evidence as evidenceOf } from '@ckg/shared';
 import type { CodeNode, CodeNodeType, CodeRelationship, EdgeEvidence } from '@ckg/shared';
-import type { ScipIndex } from '@ckg/scip';
+import { parseScipSymbol, type ScipIndex } from '@ckg/scip';
 import type { GraphIdentityContext } from '../model/identity.js';
-import type { GraphBuildResult, GraphBuildStats } from '../model/types.js';
+import type {
+  GraphBuildResult,
+  GraphBuildStats,
+  UnresolvedReferenceCounts,
+} from '../model/types.js';
 import {
   isCallableNodeType,
   isContainerNodeType,
@@ -167,7 +171,8 @@ export class ScipGraphBuilder {
     }
 
     // --- behaviour: calls, references, imports ----------------------------
-    let unresolvedReferenceCount = 0;
+    const unresolved: UnresolvedReferenceCounts = { external: 0, unmodelled: 0, unknown: 0 };
+    const classifyUnresolved = unresolvedClassifier(index);
 
     for (const document of documents) {
       const fileNode = fileNodeByPath.get(document.relativePath);
@@ -176,9 +181,10 @@ export class ScipGraphBuilder {
       for (const reference of document.references) {
         const target = symbols.get(reference.targetSymbolId);
         if (!target) {
-          // Defined outside the analysed repository (a dependency or the
-          // standard library). Those are not nodes, so there is no edge.
-          unresolvedReferenceCount += 1;
+          // No node to point at: a dependency or the standard library, a
+          // parameter, or something the index never defined. No edge either
+          // way; which of those it was is recorded.
+          unresolved[classifyUnresolved(reference.targetSymbolId)] += 1;
           continue;
         }
 
@@ -203,6 +209,10 @@ export class ScipGraphBuilder {
         // (`from './user.service.js'`). IMPORTS above already carries that;
         // a second REFERENCES edge would only duplicate it.
         if (target.nodeType === 'file') continue;
+
+        // `import { f }` and `export { f }` bind or forward a name. The file
+        // dependency is recorded above; the name is not a call or a use.
+        if (reference.isSpecifier) continue;
 
         const relationship = relationshipOf(target, reference.isCall);
         const evidence =
@@ -245,7 +255,8 @@ export class ScipGraphBuilder {
       symbolCount,
       nodeCount: nodeArray.length,
       edgeCount: edgeArray.length,
-      unresolvedReferenceCount,
+      unresolvedReferenceCount: unresolved.external + unresolved.unmodelled + unresolved.unknown,
+      unresolvedReferences: unresolved,
     };
 
     return { nodes: nodeArray, edges: edgeArray, stats };
@@ -359,6 +370,56 @@ export class ScipGraphBuilder {
       evidence: DERIVED_EVIDENCE,
       metadata: { derived: true },
     });
+  }
+}
+
+/**
+ * Sorts a reference with no target node into the one bucket that explains it.
+ *
+ * Read from the raw index rather than the normalised documents, because the
+ * question is what the indexer defined, not what the graph kept. Memoised per
+ * symbol: a repository refers to `string` a great many times.
+ */
+function unresolvedClassifier(
+  index: ScipIndex,
+): (symbolId: string) => keyof UnresolvedReferenceCounts {
+  const defined = new Set<string>();
+  const indexedPackages = new Set<string>();
+
+  for (const document of index.documents) {
+    for (const occurrence of document.occurrences) {
+      if (!occurrence.isDefinition || occurrence.symbolId.startsWith('local ')) continue;
+      defined.add(occurrence.symbolId);
+      const owner = packageOf(occurrence.symbolId);
+      if (owner) indexedPackages.add(owner);
+    }
+  }
+
+  const memo = new Map<string, keyof UnresolvedReferenceCounts>();
+  return (symbolId) => {
+    const known = memo.get(symbolId);
+    if (known) return known;
+
+    let bucket: keyof UnresolvedReferenceCounts;
+    if (defined.has(symbolId)) bucket = 'unmodelled';
+    else {
+      const owner = packageOf(symbolId);
+      bucket = owner !== null && !indexedPackages.has(owner) ? 'external' : 'unknown';
+    }
+    memo.set(symbolId, bucket);
+    return bucket;
+  };
+}
+
+/** `manager name` of a global SCIP symbol, or null when it cannot be read. */
+function packageOf(symbolId: string): string | null {
+  try {
+    const identity = parseScipSymbol(symbolId);
+    // `.` is SCIP's placeholder for "no package": nothing can be said about it.
+    if (identity.isLocal || !identity.packageName || identity.packageName === '.') return null;
+    return `${identity.packageManager} ${identity.packageName}`;
+  } catch {
+    return null;
   }
 }
 

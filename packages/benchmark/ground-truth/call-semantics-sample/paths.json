@@ -1,0 +1,41 @@
+{
+  "paths": [
+    {
+      "name": "Module call chain: index.ts reaches format through invokes",
+      "from": {
+        "type": "file",
+        "name": "src/index.ts"
+      },
+      "to": {
+        "type": "function",
+        "name": "format"
+      },
+      "maxDepth": 2,
+      "viaRelationships": [
+        "CALLS"
+      ],
+      "through": [
+        {
+          "type": "function",
+          "name": "invokes"
+        }
+      ]
+    },
+    {
+      "name": "Subclass to contract: Square reaches Shape through inheritance",
+      "from": {
+        "type": "class",
+        "name": "Square"
+      },
+      "to": {
+        "type": "interface",
+        "name": "Shape"
+      },
+      "maxDepth": 3,
+      "viaRelationships": [
+        "EXTENDS",
+        "IMPLEMENTS"
+      ]
+    }
+  ]
+}

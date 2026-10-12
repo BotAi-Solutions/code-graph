@@ -378,6 +378,78 @@ there is something to count.
 failure — is still null. A job recorded before progress existed has
 `progress: null` and `errors: []`.
 
+#### Completeness, timings and resources
+
+`COMPLETED` means the run finished, **not that the graph is complete**. Runs
+recorded since these were measured also carry three optional objects in
+`stats`; on older runs they are absent, which means "not measured", never
+"complete" or "zero".
+
+```json
+"completeness": {
+  "incomplete": false,
+  "reasons": [],
+  "unresolvedReferences": { "total": 98, "external": 51, "unmodelled": 46, "unknown": 1 },
+  "droppedEdges": { "total": 0, "byAnalyzer": {} },
+  "analyzers": { "run": ["scip", "file-analyzer", "…"], "failed": [] },
+  "scan": { "truncated": false, "fileLimit": 25000, "filesOverLimit": 0, "depthLimit": 24,
+            "directoriesOverDepth": 0, "aborted": false, "unreadableDirectories": 0 },
+  "sourceRead": { "truncated": false, "candidateFiles": 9, "filesRead": 9, "bytesRead": 7312,
+                  "fileLimit": { "limit": 5000, "reached": false, "filesNotRead": 0 },
+                  "fileSizeLimit": { "limitBytes": 1048576, "filesSkipped": 0 },
+                  "totalSizeLimit": { "limitBytes": 67108864, "reached": false, "filesNotRead": 0 } },
+  "unreadableFiles": 0
+},
+"timings": {
+  "totalMs": 412.5,
+  "phases": { "repositoryLoad": 0.4, "sourceRevision": 31.2, "scan": 3.1, "languageDetection": 0.2,
+              "scipIndex": 280.4, "scipDecode": 2.6, "scipRefine": 9.8, "sourceLoad": 2.2,
+              "graphAssembly": 61.0, "persist": 18.7 },
+  "analyzers": [{ "analyzer": "scip", "durationMs": 12.4, "outcome": "completed" }, "…"],
+  "scipIndexerReportedMs": 279,
+  "unattributedMs": 2.9
+},
+"resources": { "workerCpuUserMs": 140.2, "workerCpuSystemMs": 21.7,
+               "workerSampledPeakRssBytes": 183500800, "rssSamples": 11,
+               "workerLifetimeMaxRssBytes": 201326592, "indexerMeasured": false }
+```
+
+(The values above illustrate the shape; they are not measurements.)
+
+`completeness.reasons` lists each limit reached or step that did not finish:
+`scan_file_limit`, `scan_depth_limit`, `scan_aborted`,
+`unreadable_directories`, `source_file_limit`, `source_file_size_limit`,
+`source_total_size_limit`, `unreadable_files`, `analyzer_failed`.
+`incomplete` is true exactly when the list is non-empty. An empty list means no
+known incompleteness, not proof of completeness.
+
+| Field | Definition |
+| --- | --- |
+| `unresolvedReferences` | Reference occurrences (import and export names included) whose target has no node, so no edge was made. Each lands in one bucket: **external** — the target's package defines nothing in the index (a dependency, the standard library, an unindexed workspace package); **unmodelled** — defined in the index but not a node by design (parameters, type parameters, ambient modules); **unknown** — in a package the index defines, yet never defined in it (for example an anonymous object-literal member), so not provably external. Expected, not by itself incompleteness. |
+| `droppedEdges` | Edges a source analyzer proposed that the merge discarded because an endpoint was not a node, or both endpoints were the same node. References the SCIP builder never turned into edges are counted under `unresolvedReferences`, not here. |
+| `sourceRead.truncated` | Unchanged meaning: the walk was truncated or a count limit was reached. Files skipped for size are reported in `fileSizeLimit` and do not set it. |
+| `unreadableFiles` | Files in `errors`; the same number as `parseErrorCount`. |
+
+Timings are milliseconds from a monotonic clock, rounded to 0.01. Each phase is
+timed around exactly one call, so phases do not overlap; `unattributedMs` is
+the rest (status writes, workspace preparation, logging). `totalMs` runs from
+the start of the run to the assembly of the statistics, after persistence, the
+same interval as the existing integer `durationMs`, which is kept. A phase that
+did not run is absent. `analyzers` covers `analyze()` plus merging each
+analyzer's findings; their sum is part of `graphAssembly`.
+
+`resources` covers the worker process only. CPU is the process's user and
+system time during the run. `workerSampledPeakRssBytes` is the highest resident
+set size seen at phase boundaries, a lower bound on the true peak.
+`workerLifetimeMaxRssBytes` is the process's peak since it started, so it
+describes this run only if nothing larger ran before it in the same process.
+The SCIP indexer runs as a separate process. The default worker does not
+measure it (`indexerMeasured: false`). When it is started through
+`MeasuringCommandRunner`, as the performance benchmark does, `indexer` holds
+its wall time, CPU time and peak RSS, read by the operating system's `time`
+utility, and `indexerMeasured` is true. The two peaks are never added: they
+need not have happened at the same moment.
+
 The statistics beyond the first five are optional for the same reason: a run
 that did not measure them does not report them, and nothing derives them.
 
@@ -469,13 +541,26 @@ projection's node-type filter. `meta` reports what was actually applied.
     "mode": "traversal", "rootNodeId": "a1b2…", "depth": 2, "direction": "both",
     "projection": "architecture",
     "nodeTypes": ["api", "service", "…"], "relationships": ["ROUTES_TO", "…"],
-    "limit": 500, "nodeCount": 11, "edgeCount": 25, "truncated": false
+    "limit": 500, "nodeCount": 11, "edgeCount": 25, "truncated": false,
+    "reachableAtLeast": 11, "reachableExact": true, "cutDepth": null
   }
 }
 ```
 
 `truncated: true` means `limit` cut the result short — raise it, narrow the
 filters, or reduce the depth.
+
+A traversal keeps the `limit` nodes nearest the root: by hop count, then by id.
+It walks one hop at a time and stops at the first hop that takes it past
+`limit`, since nothing further out could be kept. Its meta says how far it got:
+
+| Field | Meaning |
+| --- | --- |
+| `reachableAtLeast` | Distinct nodes reached, the root included. **Exact** when `reachableExact` is true (the walk was not cut). When it was cut, the nodes reached up to and including `cutDepth`: a **lower bound** on what lies within `depth`, because hops beyond `cutDepth` were not explored. |
+| `reachableExact` | True exactly when `truncated` is false. |
+| `cutDepth` | The hop at which `limit` was reached, or null. |
+
+The three are present for traversals only; an overview has none of them.
 
 Edges are the induced subgraph: an edge appears only when both endpoints do.
 

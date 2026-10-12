@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "_comment": [
+    "Pinned repositories for the performance benchmark (scripts/perf-benchmark.ts).",
+    "Each commit is a full SHA, checked with `pnpm benchmark:perf -- --verify-only`.",
+    "`ref` records where the pin came from; it is never used to fetch.",
+    "`tier` is the intended size class; measured counts are recorded with every run.",
+    "No dependencies are installed: the production pipeline indexes a checkout as it is."
+  ],
+  "repositories": [
+    {
+      "id": "ky",
+      "url": "https://github.com/sindresorhus/ky",
+      "commit": "3541888878c4d303a8bc2ad61815f4e048f55a5d",
+      "ref": "v2.2.0 (release tag, peeled)",
+      "tier": "S",
+      "purpose": "A small TypeScript library with a clean call graph: the baseline cost of a run.",
+      "languages": ["typescript"],
+      "setup": {
+        "installDependencies": false,
+        "notes": "Known incompatibility: tsconfig.json extends @sindresorhus/tsconfig, which exists only after an install. Without it scip-typescript fails with TS6053 and indexes nothing, so every run is expected to fail. Kept to record that, not replaced."
+      }
+    },
+    {
+      "id": "express",
+      "url": "https://github.com/expressjs/express",
+      "commit": "cf6722bf89a86905281d9160b6482e08166b5ef0",
+      "ref": "v5.3.0 (release tag, peeled)",
+      "tier": "S",
+      "purpose": "Plain CommonJS JavaScript with no tsconfig: exercises the JavaScript path and --infer-tsconfig.",
+      "languages": ["javascript"],
+      "setup": { "installDependencies": false, "notes": "No tsconfig.json; scip-typescript infers one." }
+    },
+    {
+      "id": "zod",
+      "url": "https://github.com/colinhacks/zod",
+      "commit": "284243fb0d6532665afdc9239188773bb624f73c",
+      "ref": "v4.6.6 (release tag, peeled)",
+      "tier": "M",
+      "purpose": "A heavily generic TypeScript monorepo: overloads, declaration merging, and the root-tsconfig limitation.",
+      "languages": ["typescript"],
+      "setup": {
+        "installDependencies": false,
+        "notes": "A pnpm workspace. The pipeline indexes from the root and does not pass --pnpm-workspaces, so coverage depends on the root tsconfig."
+      }
+    },
+    {
+      "id": "realworld-express",
+      "url": "https://github.com/gothinkster/node-express-realworld-example-app",
+      "commit": "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
+      "ref": "master at 2024-01-04 (no release tags)",
+      "tier": "S",
+      "purpose": "An Express and Prisma service: exercises the route and database analyzers.",
+      "languages": ["typescript"],
+      "setup": { "installDependencies": false, "notes": "Prisma client is generated at install time and is absent." }
+    },
+    {
+      "id": "immich-server",
+      "url": "https://github.com/immich-app/immich",
+      "commit": "a4af86282d13354bd21bbaf7a2ffb7fae15e8cf2",
+      "ref": "a4af862, resolved to the full SHA (committed 2026-09-24, the revision of docs/real-repository-validation-report.md)",
+      "tier": "L",
+      "purpose": "A production NestJS and Kysely server: the prior validation baseline, at the same revision.",
+      "languages": ["typescript"],
+      "subdirectory": "server",
+      "sparsePaths": ["server"],
+      "setup": {
+        "installDependencies": false,
+        "notes": "Only server/ is indexed. A cone-mode sparse checkout fetches server/ plus the files at the repository root."
+      }
+    }
+  ]
+}

@@ -25,7 +25,8 @@
     "fixtures:build": "pnpm build:packages && tsx scripts/build-fixtures.ts",
     "analyze:sample": "pnpm build:packages && tsx scripts/dev-analysis.ts",
     "benchmark": "pnpm build:packages && pnpm --filter @ckg/benchmark benchmark",
-    "evaluate:retrieval": "pnpm build:packages && pnpm --filter @ckg/retrieval-eval evaluate"
+    "evaluate:retrieval": "pnpm build:packages && pnpm --filter @ckg/retrieval-eval evaluate",
+    "benchmark:perf": "pnpm build:packages && tsx scripts/perf-benchmark.ts"
   },
   "devDependencies": {
     "@ckg/analysis": "workspace:*",

@@ -3,10 +3,10 @@ import {
   GraphRepository,
   ProjectRepository,
   SourceRepositoryRepository,
-  createDatabase,
   migrate,
 } from '@ckg/database';
 import type { Database } from '@ckg/database';
+import { connectTestDatabase } from './helpers/test-database.js';
 
 /**
  * The SQL path resolution relies on, against a real PostgreSQL.
@@ -18,39 +18,13 @@ import type { Database } from '@ckg/database';
  * that wrong fails only here: a fake handed the same argument is perfectly
  * happy with it.
  *
- * Skips itself when no database is reachable, like the graph suite beside it.
+ * Runs only against `TEST_DATABASE_URL` (see `helpers/test-database.ts`) and
+ * skips when that is unset, like the graph suite beside it.
  */
 
-const CONNECTION_STRING =
-  process.env.DATABASE_URL ?? 'postgresql://ckg:ckg@localhost:5432/code_knowledge_graph';
-
-async function reachable(): Promise<Database | null> {
-  const database = createDatabase({
-    connectionString: CONNECTION_STRING,
-    maxConnections: 2,
-    applicationName: 'ckg-integration-tests',
-  });
-  try {
-    await database.query('SELECT 1');
-    return database;
-  } catch {
-    await database.close().catch(() => undefined);
-    return null;
-  }
-}
-
-const database = await reachable();
+const database = await connectTestDatabase('project resolution integration');
 
 const suite = database === null ? describe.skip : describe;
-
-if (database === null) {
-  process.stdout.write(
-    `\n  project resolution integration: skipped, no database at ${CONNECTION_STRING.replace(
-      /\/\/[^@/]+@/,
-      '//[redacted]@',
-    )}\n`,
-  );
-}
 
 suite('Project resolution SQL against PostgreSQL', () => {
   const db = database as Database;

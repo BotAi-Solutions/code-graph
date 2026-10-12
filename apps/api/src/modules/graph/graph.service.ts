@@ -64,7 +64,7 @@ export interface GraphStore {
       direction?: GraphDirection | undefined;
       limit: number;
     },
-  ): Promise<GraphResult>;
+  ): Promise<GraphResult & Partial<TraversalExtent>>;
   overview(
     projectId: string,
     options: {
@@ -163,7 +163,14 @@ export interface GraphQueryInput {
 
 export type GraphQueryMode = 'traversal' | 'overview';
 
-export interface GraphQueryResult extends GraphResult {
+/** What a traversal learned about the neighbourhood's size; see `TraversalResult`. */
+export interface TraversalExtent {
+  reachableAtLeast: number;
+  reachableExact: boolean;
+  cutDepth: number | null;
+}
+
+export interface GraphQueryResult extends GraphResult, Partial<TraversalExtent> {
   mode: GraphQueryMode;
   rootNodeId: string | null;
   depth: number;

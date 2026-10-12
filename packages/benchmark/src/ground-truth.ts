@@ -38,6 +38,18 @@ export interface ExpectedNode {
   file?: string;
   /** Why this node is expected. Documentation for the reviewer, not a check. */
   note?: string;
+  /**
+   * How many distinct nodes share this address. Defaults to 1. A static and an
+   * instance method with one name are two declarations, and a graph that
+   * merges them has lost one.
+   */
+  count?: number;
+  /**
+   * A confirmed defect: the pipeline is known not to produce this. It is still
+   * scored as missing. It does not fail the run, and it fails the run once the
+   * pipeline does produce it, so a fix cannot go unnoticed.
+   */
+  knownGap?: string;
 }
 
 export interface ExpectedEndpoint {
@@ -60,6 +72,40 @@ export interface ExpectedEdge {
     located?: boolean;
   };
   note?: string;
+  /** As on `ExpectedNode`. */
+  count?: number;
+  /** As on `ExpectedNode`. */
+  knownGap?: string;
+}
+
+/**
+ * Something the pipeline produces in a closed category that is known to be
+ * wrong. Scored as a false positive; does not fail the run while it is
+ * produced, and fails it once it is not.
+ */
+export interface KnownFalsePositiveNode {
+  type: CodeNodeType;
+  name: string;
+  reason: string;
+}
+
+export interface KnownFalsePositiveEdge {
+  from: ExpectedEndpoint;
+  relationship: CodeRelationship;
+  to: ExpectedEndpoint;
+  reason: string;
+}
+
+/**
+ * What the build itself is expected to report. Asserted when present: a
+ * golden fixture should lose nothing, so a dropped edge or a truncated read
+ * there is a regression rather than a statistic.
+ */
+export interface ExpectedDiagnostics {
+  droppedEdges?: number;
+  failedAnalyzers?: number;
+  readErrors?: number;
+  truncated?: boolean;
 }
 
 export interface ExpectedPath {
@@ -96,6 +142,10 @@ export interface GroundTruth {
   closedRelationships: CodeRelationship[];
   edges: ExpectedEdge[];
   paths: ExpectedPath[];
+  /** Optional so a ground truth built in code needs no empty lists. */
+  knownFalsePositiveNodes?: KnownFalsePositiveNode[];
+  knownFalsePositiveEdges?: KnownFalsePositiveEdge[];
+  diagnostics?: ExpectedDiagnostics;
 }
 
 /** How a node is addressed in ground truth, and matched in the graph. */
@@ -103,7 +153,11 @@ export function nodeKey(entry: { type: string; name: string }): string {
   return `${entry.type}|${entry.name}`;
 }
 
-export function edgeKey(entry: ExpectedEdge): string {
+export function edgeKey(entry: {
+  from: ExpectedEndpoint;
+  relationship: CodeRelationship;
+  to: ExpectedEndpoint;
+}): string {
   return `${nodeKey(entry.from)} -${entry.relationship}-> ${nodeKey(entry.to)}`;
 }
 
@@ -131,8 +185,11 @@ export async function loadGroundTruth(
   const closedNodeTypes = nodeTypeList(nodesFile.closedTypes, 'nodes.json closedTypes');
   const nodes = (asArray(nodesFile.nodes, 'nodes.json nodes') as ExpectedNode[]).map(
     (entry, index) => {
-      assertNodeType(entry.type, `nodes.json nodes[${String(index)}]`);
-      assertString(entry.name, `nodes.json nodes[${String(index)}].name`);
+      const where = `nodes.json nodes[${String(index)}]`;
+      assertNodeType(entry.type, where);
+      assertString(entry.name, `${where}.name`);
+      assertCount(entry.count, `${where}.count`);
+      if (entry.knownGap !== undefined) assertString(entry.knownGap, `${where}.knownGap`);
       return entry;
     },
   );
@@ -147,6 +204,8 @@ export async function loadGroundTruth(
       assertEndpoint(entry.from, `${where}.from`);
       assertEndpoint(entry.to, `${where}.to`);
       assertRelationship(entry.relationship, where);
+      assertCount(entry.count, `${where}.count`);
+      if (entry.knownGap !== undefined) assertString(entry.knownGap, `${where}.knownGap`);
       if (entry.confidence !== undefined) {
         assertMember(entry.confidence, CONFIDENCE_LEVELS, `${where}.confidence`);
       }
@@ -174,6 +233,29 @@ export async function loadGroundTruth(
     },
   );
 
+  const knownFalsePositiveNodes = (
+    asOptionalArray(nodesFile.knownFalsePositives, 'nodes.json knownFalsePositives') as KnownFalsePositiveNode[]
+  ).map((entry, index) => {
+    const where = `nodes.json knownFalsePositives[${String(index)}]`;
+    assertNodeType(entry.type, where);
+    assertString(entry.name, `${where}.name`);
+    assertString(entry.reason, `${where}.reason`);
+    return entry;
+  });
+
+  const knownFalsePositiveEdges = (
+    asOptionalArray(edgesFile.knownFalsePositives, 'edges.json knownFalsePositives') as KnownFalsePositiveEdge[]
+  ).map((entry, index) => {
+    const where = `edges.json knownFalsePositives[${String(index)}]`;
+    assertEndpoint(entry.from, `${where}.from`);
+    assertEndpoint(entry.to, `${where}.to`);
+    assertRelationship(entry.relationship, where);
+    assertString(entry.reason, `${where}.reason`);
+    return entry;
+  });
+
+  const diagnostics = diagnosticsOf(nodesFile.diagnostics);
+
   const fixtureName = asString(nodesFile.fixture, 'nodes.json fixture');
   if (fixtureName !== fixture) {
     throw new GroundTruthError(
@@ -185,8 +267,86 @@ export async function loadGroundTruth(
   // quietly wrong, which is the one thing a benchmark may not be.
   assertUnique(nodes.map(nodeKey), 'nodes.json');
   assertUnique(edges.map(edgeKey), 'edges.json');
+  assertUnique(knownFalsePositiveNodes.map(nodeKey), 'nodes.json knownFalsePositives');
+  assertUnique(knownFalsePositiveEdges.map(edgeKey), 'edges.json knownFalsePositives');
 
-  return { fixture, closedNodeTypes, nodes, closedRelationships, edges, paths };
+  // A known false positive is something the dataset says should NOT be there;
+  // listing it as expected as well would make the file contradict itself.
+  assertDisjoint(nodes.map(nodeKey), knownFalsePositiveNodes.map(nodeKey), 'nodes.json');
+  assertDisjoint(edges.map(edgeKey), knownFalsePositiveEdges.map(edgeKey), 'edges.json');
+
+  // Precision against a known false positive only means something where the
+  // category is closed; in an open one it would never be counted.
+  for (const entry of knownFalsePositiveNodes) {
+    if (!closedNodeTypes.includes(entry.type)) {
+      throw new GroundTruthError(
+        `nodes.json knownFalsePositives lists ${nodeKey(entry)}, but ${entry.type} is not a closed type`,
+      );
+    }
+  }
+  for (const entry of knownFalsePositiveEdges) {
+    if (!closedRelationships.includes(entry.relationship)) {
+      throw new GroundTruthError(
+        `edges.json knownFalsePositives lists ${edgeKey(entry)}, but ${entry.relationship} is not a closed relationship`,
+      );
+    }
+  }
+
+  return {
+    fixture,
+    closedNodeTypes,
+    nodes,
+    closedRelationships,
+    edges,
+    paths,
+    knownFalsePositiveNodes,
+    knownFalsePositiveEdges,
+    ...(diagnostics ? { diagnostics } : {}),
+  };
+}
+
+function asOptionalArray(value: unknown, where: string): unknown[] {
+  return value === undefined ? [] : asArray(value, where);
+}
+
+function assertCount(value: unknown, where: string): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new GroundTruthError(`${where} must be a positive integer`);
+  }
+}
+
+function assertDisjoint(expected: readonly string[], known: readonly string[], where: string): void {
+  const set = new Set(expected);
+  for (const key of known) {
+    if (set.has(key)) {
+      throw new GroundTruthError(`${where} lists ${key} both as expected and as a known false positive`);
+    }
+  }
+}
+
+function diagnosticsOf(value: unknown): ExpectedDiagnostics | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null) {
+    throw new GroundTruthError('nodes.json diagnostics must be an object');
+  }
+  const entry = value as Record<string, unknown>;
+  const result: ExpectedDiagnostics = {};
+  for (const name of ['droppedEdges', 'failedAnalyzers', 'readErrors'] as const) {
+    const count = entry[name];
+    if (count === undefined) continue;
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+      throw new GroundTruthError(`nodes.json diagnostics.${name} must be a non-negative integer`);
+    }
+    result[name] = count;
+  }
+  if (entry.truncated !== undefined) {
+    if (typeof entry.truncated !== 'boolean') {
+      throw new GroundTruthError('nodes.json diagnostics.truncated must be a boolean');
+    }
+    result.truncated = entry.truncated;
+  }
+  return result;
 }
 
 async function readJson(file: string): Promise<Record<string, unknown>> {

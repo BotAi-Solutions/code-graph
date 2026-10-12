@@ -2,7 +2,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodeGraphAssembler, ScipAnalyzer, type AssembledGraph } from '@ckg/graph';
 import { createDefaultAnalyzers, loadSourceFiles } from '@ckg/analysis';
-import { readScipIndexFile, TypeScriptSymbolRefiner } from '@ckg/scip';
+import { readScipIndexFile, TypeScriptSymbolRefiner, type ScipIndex } from '@ckg/scip';
+import type { GraphDiagnostics } from './evaluate.js';
 
 /**
  * The graph the benchmark measures.
@@ -36,12 +37,23 @@ export const BENCHMARK_FIXTURES: readonly FixtureDefinition[] = [
     name: 'repository-knowledge-sample',
     title: 'TypeScript, Markdown, JSON, YAML, OpenAPI and SQL in one repository',
   },
+  {
+    name: 'call-semantics-sample',
+    title: 'Golden fixture: every call, reference, import and inheritance edge enumerated by hand',
+  },
+  {
+    name: 'typescript-sample',
+    title: 'A layered TypeScript application: calls, imports and inheritance enumerated by hand',
+  },
 ];
 
 export interface BuiltFixture {
   fixture: FixtureDefinition;
   repositoryPath: string;
   graph: AssembledGraph;
+  /** The refined SCIP index the graph was built from, for the raw comparison. */
+  index: ScipIndex;
+  diagnostics: GraphDiagnostics;
   durationMs: number;
 }
 
@@ -62,14 +74,23 @@ export async function buildFixtureGraph(fixture: FixtureDefinition): Promise<Bui
     { repositoryPath },
   );
 
+  const sources = await loadSourceFiles(repositoryPath);
   const graph = await new CodeGraphAssembler({
     identity: BENCHMARK_IDENTITY,
     repositoryName: fixture.name,
     repositoryPath,
     language: 'typescript',
-    sources: await loadSourceFiles(repositoryPath),
+    sources,
     analyzers: [new ScipAnalyzer({ index }), ...createDefaultAnalyzers()],
   }).assemble();
 
-  return { fixture, repositoryPath, graph, durationMs: Date.now() - startedAt };
+  const diagnostics: GraphDiagnostics = {
+    unresolvedReferences: graph.stats.unresolvedReferenceCount,
+    droppedEdges: graph.stats.droppedEdgeCount,
+    failedAnalyzers: graph.stats.failedAnalyzerCount,
+    readErrors: graph.errors.length,
+    truncated: sources.truncated,
+  };
+
+  return { fixture, repositoryPath, graph, index, diagnostics, durationMs: Date.now() - startedAt };
 }

@@ -31,6 +31,8 @@ is what lets two results be compared at all.
 | Evidence attribution | Can every edge name an analyzer and a confidence? |
 | Evidence location | Does every edge read out of a file carry a file and a line? |
 | Path correctness | Can the graph actually be traversed the way a reader would? |
+| Build diagnostics | Did the build drop edges, lose an analyzer, fail a read or hit a size cap? |
+| Agreement with SCIP | Does the graph still say what the raw index said? (see below) |
 
 The last two are the ones a precision/recall score would miss. A graph can score
 perfectly on nodes and edges and still be useless if its edges point the wrong
@@ -63,6 +65,38 @@ aggregate precision, while recall spans every expectation.
 
 Which categories are closed is declared in the dataset itself, in
 `closedTypes` and `closedRelationships`.
+
+### Counting
+
+Every produced item in a closed category is counted exactly once: as a true
+positive while the ground truth still expects one at its address, otherwise as
+a false positive. So `truePositives + falsePositives = produced`, and two nodes
+that share a name are not silently collapsed into one. Where two distinct
+declarations legitimately share an address (a static and an instance method),
+the expectation says so with `"count": 2`.
+
+Precision is `TP / (TP + FP)`, recall `TP / (TP + FN)`, F1 their harmonic mean,
+and the aggregate is micro-averaged.
+
+### Known gaps
+
+A defect that has been confirmed, and traced to its cause, is recorded rather
+than either fixed in the dataset or left to fail every run:
+
+- `"knownGap": "<reason>"` on an expected node or edge: the pipeline is known not
+  to produce it.
+- `"knownFalsePositives": [...]` in `nodes.json` or `edges.json`: things a closed
+  category produces that are known to be wrong.
+
+Both are **scored**: a known gap lowers recall, a known false positive lowers
+precision. Neither fails the run. Once the pipeline stops exhibiting one, the
+run fails until the marker is removed, so a fix can never land unnoticed and
+the numbers can never improve silently. Known gaps are listed in their own
+section of both reports.
+
+A known gap is not a place to put an expectation the pipeline happens not to
+meet. Each one in the bundled datasets names the cause, checked against the
+raw SCIP index.
 
 ## The ground truth
 
@@ -106,7 +140,69 @@ Closing a category is a commitment: an improvement to extraction will show up as
 a false positive until the dataset is updated. That is intended. It is what
 makes the dataset a review checkpoint rather than a rubber stamp.
 
-## The fixture
+## Code relationships
+
+`call-semantics-sample` is the golden fixture for code relationships. It is
+small enough that every `CALLS`, `REFERENCES`, `IMPORTS`, `EXTENDS` and
+`IMPLEMENTS` relationship in it is written down, so all five are closed and
+precision is a real measurement for each. `typescript-sample` closes `CALLS`,
+`IMPORTS`, `EXTENDS` and `IMPLEMENTS` on a layered application; its
+`REFERENCES` (about a hundred type and property uses) stays open.
+
+The rules both datasets follow:
+
+- **Source.** A code edge starts at the innermost function, method, class or
+  interface the occurrence sits in. Module-level code, including the
+  initialiser of a module-level variable, belongs to the file; a field
+  initialiser belongs to its class.
+- **CALLS** is an invocation: `f()`, `ns.f()`, `obj.m()`, and `new C()` when `C`
+  declares a constructor. Class-level summaries (one per pair of classes where
+  a member of the first calls a member of the second) are part of the
+  documented model, at medium confidence.
+- **REFERENCES** is any other use of a declared name, heritage clauses included.
+- **Import and export specifiers** are neither: `import { f }` only makes the
+  file depend on another file.
+- **IMPORTS** joins two files when one imports or re-exports from the other, or
+  refers to something declared in it. That second half is the documented
+  contract, so IMPORTS is "depends on", not "has an import statement for".
+- **EXTENDS** targets a class. **IMPLEMENTS** targets an interface or a member,
+  and is transitive: a class implements every interface it satisfies through
+  its base classes, as SCIP reports it. An interface extending an interface is
+  IMPLEMENTS in this model.
+- External symbols (the standard library, dependencies) are not nodes and have
+  no edges.
+
+## Against the raw SCIP index
+
+`scip-baseline.ts` compares every fixture's graph with the index it was built
+from, joined by the SCIP symbol each symbol node keeps in
+`metadata.scipSymbol`. It needs no ground truth, so it runs on every fixture,
+and the tests run it on all six checked-in indexes.
+
+| Check | Meaning of a disagreement |
+| --- | --- |
+| Definitions | A symbol defined in the index has no node, and no documented reason (parameter, type parameter, ambient module) explains it |
+| Identity | One symbol became several nodes |
+| Locations | A node's start or end line differs from its definition's range |
+| Uses | A `(scope, target)` pair SCIP supports is missing from `CALLS` ∪ `REFERENCES`, or the graph holds one SCIP does not support |
+| Inheritance | Same, for SCIP implementation relationships against `EXTENDS` ∪ `IMPLEMENTS` |
+| Unresolved | The graph's `unresolvedReferenceCount` is not external references plus references to unmodelled symbols |
+
+Scope attribution is computed independently of the builder, so agreement is
+evidence that normalisation kept what the index said. It is a consistency
+measurement, not a correctness one: where the index itself is wrong, the graph
+agrees with it, and only the ground truth notices.
+
+What cannot be compared directly, and is scored only by the ground truth:
+
+- **CALLS vs REFERENCES.** SCIP has no call role; uses are compared as pairs.
+- **IMPORTS.** SCIP has an import role, but scip-typescript never sets it.
+- **EXTENDS vs IMPLEMENTS.** SCIP reports both with one flag.
+- **Derived class-level edges and analyzer edges.** Not SCIP facts.
+- **Individual reference sites.** The graph collapses repeated uses into one
+  edge with an occurrence count.
+
+## The fixtures
 
 `test-repositories/repository-knowledge-sample` is built to exercise the joins,
 not to look impressive:
@@ -143,13 +239,13 @@ expectation. There is no threshold flag on purpose: a threshold is a number
 somebody picks to make a build green, and the expectations in the ground truth
 are the thresholds.
 
-The machine-readable report is versioned (`schema: 1`) and carries every score,
+The machine-readable report is versioned (`schema: 2`) and carries every score,
 every ratio and every named failure, so a job can diff two runs and say what
 changed.
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "generatedAt": "…",
   "fixtures": [
     {
@@ -160,12 +256,19 @@ changed.
       "edgeCategories": { "IMPLEMENTED_BY": { "…": "…" } },
       "evidence": { "validRatio": 1, "locatedRatio": 1, "…": "…" },
       "paths": { "total": 7, "correct": 7, "ratio": 1, "failures": [] },
-      "failures": { "missingNodes": [], "unexpectedEdges": [], "…": [] }
+      "failures": { "missingNodes": [], "unexpectedEdges": [], "staleKnownGaps": [], "…": [] },
+      "knownGaps": { "missingEdges": [], "unexpectedEdges": [], "…": [] },
+      "diagnostics": { "unresolvedReferences": 200, "droppedEdges": 0, "truncated": false, "…": 0 },
+      "scipBaseline": { "uses": { "scip": 50, "graph": 50, "both": 50, "…": "…" }, "consistent": true, "…": "…" }
     }
   ],
   "totals": { "fixtures": 1, "passed": 1 }
 }
 ```
+
+Schema 2 adds `knownGaps`, `staleKnownGaps`, `diagnostics` and `scipBaseline`,
+and counts duplicates in a closed category as false positives instead of
+collapsing them by name. Every field of schema 1 is still present.
 
 ## Adding a fixture
 

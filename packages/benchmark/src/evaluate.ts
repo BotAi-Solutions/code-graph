@@ -49,6 +49,34 @@ export interface CategoryResult {
   unexpected: string[];
   /** Found, but not as the ground truth described it. */
   mismatches: Mismatch[];
+  /** Missing, and recorded in the ground truth as a known gap. Scored; not a failure. */
+  knownMissing: string[];
+  /** Unexpected, and recorded as a known false positive. Scored; not a failure. */
+  knownUnexpected: string[];
+  /**
+   * Known gaps and known false positives the pipeline no longer exhibits. A
+   * failure, so that a fix is noticed and the ground truth updated.
+   */
+  staleKnownGaps: string[];
+}
+
+/** What the build reported about what it could not represent. */
+export interface GraphDiagnostics {
+  /** References to symbols outside the repository, dropped by the builder. */
+  unresolvedReferences: number;
+  /** Edges an analyzer described whose endpoints were not both in the graph. */
+  droppedEdges: number;
+  failedAnalyzers: number;
+  /** Files that could not be read or parsed. */
+  readErrors: number;
+  /** The source read stopped at a cap, so the graph may be incomplete. */
+  truncated: boolean;
+}
+
+export interface DiagnosticsResult {
+  observed: GraphDiagnostics | null;
+  /** Where the observation disagrees with what the ground truth asserts. */
+  problems: string[];
 }
 
 export interface EvidenceResult {
@@ -87,6 +115,7 @@ export interface EvaluationResult {
   edges: Score;
   evidence: EvidenceResult;
   paths: PathResult[];
+  diagnostics: DiagnosticsResult;
   /** True when every expectation held and no closed category leaked. */
   passed: boolean;
   graphNodeCount: number;
@@ -98,13 +127,23 @@ export function addressOf(node: CodeNode): string {
   return node.qualifiedName ?? node.name;
 }
 
-export function evaluate(graph: CodeGraph, truth: GroundTruth): EvaluationResult {
+export interface EvaluateOptions {
+  /** The build's own report, when the graph came from the assembler. */
+  diagnostics?: GraphDiagnostics;
+}
+
+export function evaluate(
+  graph: CodeGraph,
+  truth: GroundTruth,
+  options: EvaluateOptions = {},
+): EvaluationResult {
   const index = buildIndex(graph);
 
   const nodeCategories = evaluateNodes(graph, truth, index);
   const edgeCategories = evaluateEdges(graph, truth, index);
   const evidence = evaluateEvidence(graph, truth, index);
   const paths = truth.paths.map((expected) => evaluatePath(graph, index, expected));
+  const diagnostics = evaluateDiagnostics(truth, options.diagnostics);
 
   const nodes = aggregate(nodeCategories.map((entry) => entry.score));
   const edges = aggregate(edgeCategories.map((entry) => entry.score));
@@ -114,7 +153,8 @@ export function evaluate(graph: CodeGraph, truth: GroundTruth): EvaluationResult
       (entry) =>
         entry.missing.length === 0 &&
         entry.unexpected.length === 0 &&
-        entry.mismatches.length === 0,
+        entry.mismatches.length === 0 &&
+        entry.staleKnownGaps.length === 0,
     );
 
   return {
@@ -125,7 +165,9 @@ export function evaluate(graph: CodeGraph, truth: GroundTruth): EvaluationResult
     edges,
     evidence,
     paths,
+    diagnostics,
     passed:
+      diagnostics.problems.length === 0 &&
       clean(nodeCategories) &&
       clean(edgeCategories) &&
       evidence.invalid === 0 &&
@@ -171,8 +213,113 @@ function buildIndex(graph: CodeGraph): GraphIndex {
   return { byAddress, byId, edgeKeys };
 }
 
-function resolve(index: GraphIndex, endpoint: ExpectedEndpoint): CodeNode | undefined {
-  return index.byAddress.get(nodeKey(endpoint))?.[0];
+function resolve(
+  index: GraphIndex,
+  endpoint: ExpectedEndpoint & { file?: string },
+): CodeNode | undefined {
+  const candidates = index.byAddress.get(nodeKey(endpoint));
+  // Two nodes can share an address (a name declared in two files). The one in
+  // the expected file is the one meant; picking whichever came first would
+  // report a file mismatch for a node that is actually there.
+  if (endpoint.file !== undefined) {
+    const inFile = candidates?.find((node) => node.filePath === endpoint.file);
+    if (inFile) return inFile;
+  }
+  return candidates?.[0];
+}
+
+// --- scoring a category ----------------------------------------------------
+
+interface Expectation {
+  key: string;
+  count: number;
+  knownGap?: string;
+}
+
+interface CategoryCounts {
+  counts: Counts;
+  produced: number;
+  missing: string[];
+  unexpected: string[];
+  knownMissing: string[];
+  knownUnexpected: string[];
+  staleKnownGaps: string[];
+}
+
+/**
+ * Scores one category as multisets of addresses.
+ *
+ * Every produced item is counted exactly once: as a true positive while the
+ * ground truth still expects another one at its address, otherwise as a
+ * false positive. So for a closed category `truePositives + falsePositives`
+ * is exactly what the pipeline produced, and precision is never computed over
+ * a denominator that quietly lost duplicates.
+ */
+function scoreCategory(
+  expected: readonly Expectation[],
+  produced: ReadonlyMap<string, number>,
+  closed: boolean,
+  knownFalsePositives: ReadonlyMap<string, string>,
+): CategoryCounts {
+  const counts: Counts = { truePositives: 0, falsePositives: 0, falseNegatives: 0 };
+  const missing: string[] = [];
+  const unexpected: string[] = [];
+  const knownMissing: string[] = [];
+  const knownUnexpected: string[] = [];
+  const staleKnownGaps: string[] = [];
+
+  const expectedCount = new Map<string, number>();
+
+  for (const entry of expected) {
+    expectedCount.set(entry.key, entry.count);
+    const found = Math.min(entry.count, produced.get(entry.key) ?? 0);
+
+    counts.truePositives += found;
+    counts.falseNegatives += entry.count - found;
+
+    const label = entry.count > 1 ? `${entry.key} (${String(found)} of ${String(entry.count)})` : entry.key;
+
+    if (found < entry.count) {
+      (entry.knownGap === undefined ? missing : knownMissing).push(label);
+    } else if (entry.knownGap !== undefined) {
+      staleKnownGaps.push(`${label} is now produced; remove its knownGap`);
+    }
+  }
+
+  let total = 0;
+  for (const [key, count] of produced) {
+    total += count;
+    if (!closed) continue;
+
+    const extra = count - (expectedCount.get(key) ?? 0);
+    if (extra <= 0) continue;
+
+    counts.falsePositives += extra;
+    const label = extra > 1 ? `${key} (x${String(extra)})` : key;
+    (knownFalsePositives.has(key) ? knownUnexpected : unexpected).push(label);
+  }
+
+  for (const key of knownFalsePositives.keys()) {
+    if ((produced.get(key) ?? 0) <= (expectedCount.get(key) ?? 0)) {
+      staleKnownGaps.push(`${key} is no longer produced; remove it from knownFalsePositives`);
+    }
+  }
+
+  return {
+    counts,
+    produced: total,
+    missing: missing.sort(),
+    unexpected: unexpected.sort(),
+    knownMissing: knownMissing.sort(),
+    knownUnexpected: knownUnexpected.sort(),
+    staleKnownGaps: staleKnownGaps.sort(),
+  };
+}
+
+function tally(keys: Iterable<string>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+  return counts;
 }
 
 // --- nodes -----------------------------------------------------------------
@@ -202,22 +349,32 @@ function evaluateNodes(
   return types.map((type) => {
     const expected = expectedByType.get(type) ?? [];
     const produced = producedByType.get(type) ?? [];
+    const isClosed = closed.has(type);
 
-    const expectedNames = new Set(expected.map((entry) => entry.name));
-    const producedNames = new Set(produced.map((node) => addressOf(node)));
+    const known = new Map(
+      (truth.knownFalsePositiveNodes ?? [])
+        .filter((entry) => entry.type === type)
+        .map((entry) => [nodeKey(entry), entry.reason] as const),
+    );
 
-    const missing: string[] = [];
+    const scored = scoreCategory(
+      expected.map((entry) => ({
+        key: nodeKey(entry),
+        count: entry.count ?? 1,
+        ...(entry.knownGap !== undefined ? { knownGap: entry.knownGap } : {}),
+      })),
+      tally(produced.map((node) => nodeKey({ type: node.type, name: addressOf(node) }))),
+      isClosed,
+      known,
+    );
+
     const mismatches: Mismatch[] = [];
-
     for (const entry of expected) {
+      if (entry.file === undefined) continue;
       const match = resolve(index, entry);
-      if (!match) {
-        missing.push(nodeKey(entry));
-        continue;
-      }
       // A node found under the right name but in the wrong file is not the
       // node that was expected, and saying so is more useful than a silent pass.
-      if (entry.file !== undefined && match.filePath !== entry.file) {
+      if (match && match.filePath !== entry.file) {
         mismatches.push({
           expected: nodeKey(entry),
           reason: `expected file ${entry.file}, found ${match.filePath ?? 'none'}`,
@@ -225,23 +382,19 @@ function evaluateNodes(
       }
     }
 
-    const isClosed = closed.has(type);
-    const unexpected = isClosed
-      ? [...producedNames].filter((name) => !expectedNames.has(name)).sort()
-      : [];
-
-    const counts: Counts = {
-      truePositives: expected.length - missing.length,
-      falsePositives: unexpected.length,
-      falseNegatives: missing.length,
-    };
+    // Unexpected nodes are reported by address alone: the category already
+    // names the type, and this is the format the report has always used.
+    const withoutType = (label: string): string => label.slice(type.length + 1);
 
     return {
       category: type,
-      score: scoreOf(counts, { closed: isClosed, produced: produced.length }),
-      missing: missing.sort(),
-      unexpected,
+      score: scoreOf(scored.counts, { closed: isClosed, produced: scored.produced }),
+      missing: scored.missing,
+      unexpected: scored.unexpected.map(withoutType),
       mismatches,
+      knownMissing: scored.knownMissing,
+      knownUnexpected: scored.knownUnexpected.map(withoutType),
+      staleKnownGaps: scored.staleKnownGaps,
     };
   });
 }
@@ -275,42 +428,45 @@ function evaluateEdges(
   return relationships.map((relationship) => {
     const expected = expectedByRelationship.get(relationship) ?? [];
     const produced = producedByRelationship.get(relationship) ?? [];
+    const isClosed = closed.has(relationship);
 
-    const expectedKeys = new Set(expected.map(edgeKey));
-    const missing: string[] = [];
+    const known = new Map(
+      (truth.knownFalsePositiveEdges ?? [])
+        .filter((entry) => entry.relationship === relationship)
+        .map((entry) => [edgeKey(entry), entry.reason] as const),
+    );
+
+    const scored = scoreCategory(
+      expected.map((entry) => ({
+        key: edgeKey(entry),
+        count: entry.count ?? 1,
+        ...(entry.knownGap !== undefined ? { knownGap: entry.knownGap } : {}),
+      })),
+      tally(
+        produced
+          .map((edge) => describeEdge(index, edge))
+          .filter((key): key is string => key !== null),
+      ),
+      isClosed,
+      known,
+    );
+
     const mismatches: Mismatch[] = [];
-
     for (const entry of expected) {
-      const key = edgeKey(entry);
-      const matches = index.edgeKeys.get(key);
-
-      if (!matches || matches.length === 0) {
-        missing.push(key);
-        continue;
-      }
+      const matches = index.edgeKeys.get(edgeKey(entry));
+      if (!matches || matches.length === 0) continue;
       mismatches.push(...checkEdgeDetail(entry, matches[0] as CodeEdge));
     }
 
-    const isClosed = closed.has(relationship);
-    const unexpected = isClosed
-      ? produced
-          .map((edge) => describeEdge(index, edge))
-          .filter((key) => key !== null && !expectedKeys.has(key))
-          .sort()
-      : [];
-
-    const counts: Counts = {
-      truePositives: expected.length - missing.length,
-      falsePositives: unexpected.length,
-      falseNegatives: missing.length,
-    };
-
     return {
       category: relationship,
-      score: scoreOf(counts, { closed: isClosed, produced: produced.length }),
-      missing: missing.sort(),
-      unexpected: unexpected as string[],
+      score: scoreOf(scored.counts, { closed: isClosed, produced: scored.produced }),
+      missing: scored.missing,
+      unexpected: scored.unexpected,
       mismatches,
+      knownMissing: scored.knownMissing,
+      knownUnexpected: scored.knownUnexpected,
+      staleKnownGaps: scored.staleKnownGaps,
     };
   });
 }
@@ -422,6 +578,35 @@ function evaluateEvidence(
     confidenceMismatches,
     unattributed: [...unattributed].sort(),
   };
+}
+
+// --- diagnostics -----------------------------------------------------------
+
+function evaluateDiagnostics(
+  truth: GroundTruth,
+  observed: GraphDiagnostics | undefined,
+): DiagnosticsResult {
+  const asserted = truth.diagnostics;
+  if (!observed) {
+    return {
+      observed: null,
+      problems: asserted ? ['the ground truth asserts diagnostics, but none were supplied'] : [],
+    };
+  }
+  if (!asserted) return { observed, problems: [] };
+
+  const problems: string[] = [];
+  const check = (name: string, expected: number | boolean | undefined, actual: number | boolean): void => {
+    if (expected !== undefined && expected !== actual) {
+      problems.push(`expected ${name} ${String(expected)}, found ${String(actual)}`);
+    }
+  };
+  check('droppedEdges', asserted.droppedEdges, observed.droppedEdges);
+  check('failedAnalyzers', asserted.failedAnalyzers, observed.failedAnalyzers);
+  check('readErrors', asserted.readErrors, observed.readErrors);
+  check('truncated', asserted.truncated, observed.truncated);
+
+  return { observed, problems };
 }
 
 // --- paths -----------------------------------------------------------------

@@ -52,6 +52,10 @@ export async function scanRepository(
   let directoryCount = 0;
   let truncated = false;
   let sinceProgress = 0;
+  let filesOverLimit = 0;
+  let directoriesOverDepth = 0;
+  let aborted = false;
+  let unreadableDirectories = 0;
 
   const queue: Array<{ absolute: string; relative: string; depth: number }> = [
     { absolute: rootPath, relative: '', depth: 0 },
@@ -60,6 +64,7 @@ export async function scanRepository(
   while (queue.length > 0) {
     if (options.signal?.aborted) {
       truncated = true;
+      aborted = true;
       break;
     }
 
@@ -67,6 +72,7 @@ export async function scanRepository(
     if (!current) break;
     if (current.depth > maxDepth) {
       truncated = true;
+      directoriesOverDepth += 1;
       continue;
     }
 
@@ -77,6 +83,7 @@ export async function scanRepository(
       // Unreadable directory (permissions, broken symlink): skip it rather than
       // failing the whole analysis. The root itself is validated by the caller,
       // which is where an unreadable project is worth reporting.
+      unreadableDirectories += 1;
       continue;
     }
 
@@ -101,6 +108,7 @@ export async function scanRepository(
 
       if (files.length >= maxFiles) {
         truncated = true;
+        filesOverLimit += 1;
         continue;
       }
 
@@ -134,6 +142,14 @@ export async function scanRepository(
     categoryCounts,
     directoryCount,
     truncated,
+    limits: {
+      fileLimit: maxFiles,
+      filesOverLimit,
+      depthLimit: maxDepth,
+      directoriesOverDepth,
+      aborted,
+      unreadableDirectories,
+    },
   };
 }
 

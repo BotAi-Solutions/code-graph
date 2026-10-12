@@ -145,3 +145,61 @@ describe('the parsed module set', () => {
     expect(modules.failures()).toHaveLength(1);
   });
 });
+
+describe('loadSourceFiles reports each limit it reached', () => {
+  const files = {
+    'src/a.ts': 'export const a = 1;',
+    'src/b.ts': 'export const b = 2;',
+    'src/c.ts': 'export const c = 3;',
+    'src/big.ts': `export const big = '${'x'.repeat(400)}';`,
+  };
+
+  it('a run within every limit reports nothing left out', async () => {
+    await tree(files);
+    const set = await loadSourceFiles(root);
+
+    expect(set.truncated).toBe(false);
+    expect(set.report).toMatchObject({
+      candidateFiles: 4,
+      filesRead: 4,
+      fileLimit: { reached: false, filesNotRead: 0 },
+      fileSizeLimit: { filesSkipped: 0 },
+      totalSizeLimit: { reached: false, filesNotRead: 0 },
+    });
+    expect(set.report?.scan).toMatchObject({ filesOverLimit: 0, directoriesOverDepth: 0, aborted: false });
+  });
+
+  it('the file-count limit: truncated, with the files it never opened', async () => {
+    await tree(files);
+    const set = await loadSourceFiles(root, { maxFiles: 3 });
+
+    expect(set.truncated).toBe(true);
+    expect(set.report?.fileLimit).toEqual({ limit: 3, reached: true, filesNotRead: 1 });
+    expect(set.report?.filesRead).toBe(3);
+  });
+
+  it('the per-file size limit: counted, not silent, and not a truncation', async () => {
+    await tree(files);
+    const set = await loadSourceFiles(root, { maxFileBytes: 100 });
+
+    expect(set.report?.fileSizeLimit).toEqual({ limitBytes: 100, filesSkipped: 1 });
+    expect(set.byPath('src/big.ts')).toBeUndefined();
+    expect(set.truncated).toBe(false);
+    expect(set.failures).toEqual([]);
+  });
+
+  it('the total-size limit: truncated at the first file that would cross it', async () => {
+    await tree(files);
+    // Path order is a, b, big, c. a and b fit; big would cross 100 bytes.
+    const set = await loadSourceFiles(root, { maxTotalBytes: 100 });
+
+    expect(set.truncated).toBe(true);
+    expect(set.report?.totalSizeLimit).toEqual({ limitBytes: 100, reached: true, filesNotRead: 2 });
+    expect(set.report?.filesRead).toBe(2);
+    expect(set.report?.bytesRead).toBeLessThanOrEqual(100);
+  });
+
+  it('a set built by hand has no report, which reads as unknown rather than complete', () => {
+    expect(new InMemorySourceFileSet([]).report).toBeNull();
+  });
+});

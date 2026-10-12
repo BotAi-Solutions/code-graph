@@ -1,0 +1,40 @@
+{
+  "paths": [
+    {
+      "name": "Transport to persistence: the controller reaches the repository method",
+      "from": {
+        "type": "method",
+        "name": "UserController.createUser"
+      },
+      "to": {
+        "type": "method",
+        "name": "UserRepository.save"
+      },
+      "maxDepth": 2,
+      "viaRelationships": [
+        "CALLS"
+      ],
+      "through": [
+        {
+          "type": "method",
+          "name": "UserService.registerUser"
+        }
+      ]
+    },
+    {
+      "name": "Persistence to model: saving a user builds it with createUser",
+      "from": {
+        "type": "method",
+        "name": "UserController.createUser"
+      },
+      "to": {
+        "type": "function",
+        "name": "createUser"
+      },
+      "maxDepth": 3,
+      "viaRelationships": [
+        "CALLS"
+      ]
+    }
+  ]
+}

@@ -75,6 +75,14 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   registerErrorHandler(app);
 
+  // Server-observed latency, for clients that measure their own: from the
+  // request's arrival to the moment the serialised response is handed to the
+  // socket. The standard header, so browsers' network panels show it too.
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('server-timing', `app;dur=${reply.elapsedTime.toFixed(2)}`);
+    return payload;
+  });
+
   await app.register(cors, {
     origin: config.http.corsOrigins,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],

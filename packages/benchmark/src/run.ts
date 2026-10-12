@@ -1,6 +1,7 @@
 import { evaluate, type EvaluationResult } from './evaluate.js';
 import { BENCHMARK_FIXTURES, buildFixtureGraph, type FixtureDefinition } from './graph-source.js';
 import { loadGroundTruth, type GroundTruth } from './ground-truth.js';
+import { compareWithScip, type ScipBaselineResult } from './scip-baseline.js';
 
 /**
  * Running the benchmark: build each fixture's graph, score it, return the
@@ -10,6 +11,8 @@ import { loadGroundTruth, type GroundTruth } from './ground-truth.js';
 
 export interface BenchmarkRun {
   results: EvaluationResult[];
+  /** Per fixture, in the order of `results`: the graph against its raw SCIP index. */
+  baselines: ScipBaselineResult[];
   /** Per fixture, how long assembling its graph took. */
   timings: Array<{ fixture: string; durationMs: number }>;
   passed: boolean;
@@ -25,6 +28,7 @@ export async function runBenchmark(options: RunOptions = {}): Promise<BenchmarkR
   const fixtures = options.fixtures ?? BENCHMARK_FIXTURES;
 
   const results: EvaluationResult[] = [];
+  const baselines: ScipBaselineResult[] = [];
   const timings: BenchmarkRun['timings'] = [];
 
   for (const fixture of fixtures) {
@@ -34,9 +38,20 @@ export async function runBenchmark(options: RunOptions = {}): Promise<BenchmarkR
     );
     const built = await buildFixtureGraph(fixture);
 
-    results.push(evaluate(built.graph, truth));
+    results.push(evaluate(built.graph, truth, { diagnostics: built.diagnostics }));
+    baselines.push(
+      compareWithScip(built.index, built.graph, {
+        reportedUnresolved: built.diagnostics.unresolvedReferences,
+      }),
+    );
     timings.push({ fixture: fixture.name, durationMs: built.durationMs });
   }
 
-  return { results, timings, passed: results.every((result) => result.passed) };
+  return {
+    results,
+    baselines,
+    timings,
+    passed:
+      results.every((result) => result.passed) && baselines.every((baseline) => baseline.consistent),
+  };
 }

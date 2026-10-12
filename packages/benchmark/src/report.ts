@@ -1,5 +1,6 @@
 import { formatRatio, type Score } from './metrics.js';
-import type { CategoryResult, EvaluationResult } from './evaluate.js';
+import type { CategoryResult, EvaluationResult, GraphDiagnostics } from './evaluate.js';
+import type { ScipBaselineResult } from './scip-baseline.js';
 
 /**
  * Two renderings of one result: one for a person reading a terminal, one for a
@@ -11,8 +12,14 @@ import type { CategoryResult, EvaluationResult } from './evaluate.js';
  */
 
 export interface MachineReport {
-  /** Bumped when the shape changes, so a consumer can refuse an old one. */
-  schema: 1;
+  /**
+   * Bumped when the shape changes, so a consumer can refuse an old one.
+   *
+   * 2: adds `knownGaps`, `staleKnownGaps`, `diagnostics` and `scipBaseline`;
+   * duplicates in a closed category are now counted as false positives instead
+   * of being collapsed by name. Every field of 1 is still present.
+   */
+  schema: 2;
   generatedAt: string;
   fixtures: Array<{
     fixture: string;
@@ -44,7 +51,19 @@ export interface MachineReport {
       missingEdges: string[];
       unexpectedEdges: string[];
       mismatches: string[];
+      staleKnownGaps: string[];
+      diagnostics: string[];
     };
+    /** Confirmed defects the ground truth records. Scored, not failures. */
+    knownGaps: {
+      missingNodes: string[];
+      unexpectedNodes: string[];
+      missingEdges: string[];
+      unexpectedEdges: string[];
+    };
+    diagnostics: GraphDiagnostics | null;
+    /** The graph against its raw SCIP index; null when not run. */
+    scipBaseline: Omit<ScipBaselineResult, 'notComparable'> | null;
   }>;
   totals: {
     fixtures: number;
@@ -81,11 +100,12 @@ function machineScore(score: Score): MachineScore {
 export function toMachineReport(
   results: readonly EvaluationResult[],
   generatedAt: string = new Date().toISOString(),
+  baselines: readonly ScipBaselineResult[] = [],
 ): MachineReport {
   return {
-    schema: 1,
+    schema: 2,
     generatedAt,
-    fixtures: results.map((result) => ({
+    fixtures: results.map((result, position) => ({
       fixture: result.fixture,
       passed: result.passed,
       graph: { nodes: result.graphNodeCount, edges: result.graphEdgeCount },
@@ -125,13 +145,33 @@ export function toMachineReport(
         mismatches: [...result.nodeCategories, ...result.edgeCategories].flatMap((entry) =>
           entry.mismatches.map((mismatch) => `${mismatch.expected}: ${mismatch.reason}`),
         ),
+        staleKnownGaps: [...result.nodeCategories, ...result.edgeCategories].flatMap(
+          (entry) => entry.staleKnownGaps,
+        ),
+        diagnostics: result.diagnostics.problems,
       },
+      knownGaps: {
+        missingNodes: result.nodeCategories.flatMap((entry) => entry.knownMissing),
+        unexpectedNodes: result.nodeCategories.flatMap((entry) => entry.knownUnexpected),
+        missingEdges: result.edgeCategories.flatMap((entry) => entry.knownMissing),
+        unexpectedEdges: result.edgeCategories.flatMap((entry) => entry.knownUnexpected),
+      },
+      diagnostics: result.diagnostics.observed,
+      scipBaseline: baselineOf(baselines[position]),
     })),
     totals: {
       fixtures: results.length,
       passed: results.filter((result) => result.passed).length,
     },
   };
+}
+
+function baselineOf(
+  baseline: ScipBaselineResult | undefined,
+): Omit<ScipBaselineResult, 'notComparable'> | null {
+  if (!baseline) return null;
+  const { notComparable: _omitted, ...rest } = baseline;
+  return rest;
 }
 
 function categoryMap(categories: readonly CategoryResult[]): Record<string, MachineScore> {
@@ -146,10 +186,13 @@ function ratio(part: number, whole: number): number | null {
 
 // --- human report ----------------------------------------------------------
 
-export function formatReport(results: readonly EvaluationResult[]): string {
+export function formatReport(
+  results: readonly EvaluationResult[],
+  baselines: readonly ScipBaselineResult[] = [],
+): string {
   const lines: string[] = ['', 'Repository Knowledge Graph Benchmark', ''];
 
-  for (const result of results) {
+  for (const [position, result] of results.entries()) {
     lines.push(`Fixture: ${result.fixture}`);
     lines.push(
       `  graph: ${String(result.graphNodeCount)} nodes, ${String(result.graphEdgeCount)} edges`,
@@ -198,6 +241,39 @@ export function formatReport(results: readonly EvaluationResult[]): string {
     }
     lines.push('');
 
+    const diagnostics = result.diagnostics.observed;
+    if (diagnostics) {
+      lines.push('Build diagnostics');
+      lines.push(
+        `  unresolved references ${String(diagnostics.unresolvedReferences)}, dropped edges ${String(diagnostics.droppedEdges)}, failed analyzers ${String(diagnostics.failedAnalyzers)}, read errors ${String(diagnostics.readErrors)}, truncated ${diagnostics.truncated ? 'yes' : 'no'}`,
+      );
+      for (const problem of result.diagnostics.problems) lines.push(`    ! ${problem}`);
+      lines.push('');
+    }
+
+    const baseline = baselines[position];
+    if (baseline) lines.push(...baselineLines(baseline), '');
+
+    const known = [
+      ...result.nodeCategories.flatMap((entry) =>
+        entry.knownMissing.map((key) => `missing node    ${key}`),
+      ),
+      ...result.nodeCategories.flatMap((entry) =>
+        entry.knownUnexpected.map((key) => `unexpected node ${entry.category}|${key}`),
+      ),
+      ...result.edgeCategories.flatMap((entry) =>
+        entry.knownMissing.map((key) => `missing edge    ${key}`),
+      ),
+      ...result.edgeCategories.flatMap((entry) =>
+        entry.knownUnexpected.map((key) => `unexpected edge ${key}`),
+      ),
+    ];
+    if (known.length > 0) {
+      lines.push('Known gaps (scored above, not failures; reasons in the ground truth)');
+      for (const entry of known) lines.push(`  ${entry}`);
+      lines.push('');
+    }
+
     const failures = [
       ...result.nodeCategories.flatMap((entry) =>
         entry.missing.map((key) => `missing node   ${key}`),
@@ -214,6 +290,11 @@ export function formatReport(results: readonly EvaluationResult[]): string {
       ...[...result.nodeCategories, ...result.edgeCategories].flatMap((entry) =>
         entry.mismatches.map((mismatch) => `mismatch       ${mismatch.expected} — ${mismatch.reason}`),
       ),
+      ...[...result.nodeCategories, ...result.edgeCategories].flatMap((entry) =>
+        entry.staleKnownGaps.map((gap) => `stale gap      ${gap}`),
+      ),
+      ...result.diagnostics.problems.map((problem) => `diagnostics    ${problem}`),
+      ...(baseline && !baseline.consistent ? ['scip baseline  the graph disagrees with its SCIP index (see above)'] : []),
     ];
 
     if (failures.length > 0) {
@@ -222,11 +303,49 @@ export function formatReport(results: readonly EvaluationResult[]): string {
       lines.push('');
     }
 
-    lines.push(result.passed ? 'RESULT: pass' : 'RESULT: fail');
+    const passed = result.passed && (baseline?.consistent ?? true);
+    lines.push(passed ? 'RESULT: pass' : 'RESULT: fail');
     lines.push('');
   }
 
   return lines.join('\n');
+}
+
+function baselineLines(baseline: ScipBaselineResult): string[] {
+  const definitions = baseline.definitions;
+  const references = baseline.references;
+  const byDesign = Object.entries(definitions.notModelledByDesign)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([reason, count]) => `${reason} ${String(count)}`)
+    .join(', ');
+
+  const lines = [
+    'Against the raw SCIP index',
+    `  Definitions:   ${String(definitions.modelled)}/${String(definitions.total)} are nodes${byDesign ? `; not modelled by design: ${byDesign}` : ''}`,
+    `  Locations:     ${String(baseline.locations.preserved)}/${String(baseline.locations.checked)} node ranges equal the index`,
+    `  References:    ${String(references.occurrences)} occurrences: ${String(references.external)} external, ${String(references.toUnmodelledSymbols)} to unmodelled symbols, ${String(references.specifiers)} import/export names, ${String(references.moduleSpecifiers)} module specifiers`,
+    `  Uses:          ${pairLine(baseline.uses)}`,
+    `  Inheritance:   ${pairLine(baseline.inheritance)}${baseline.inheritance.externalTargets > 0 ? `; ${String(baseline.inheritance.externalTargets)} to external types` : ''}`,
+  ];
+  if (references.reportedUnresolved !== null) {
+    lines.push(
+      `  Unresolved:    the graph reports ${String(references.reportedUnresolved)} = ${String(references.external)} external + ${String(references.toUnmodelledSymbols)} to unmodelled symbols${references.unresolvedConsistent ? '' : '  ! does not add up'}`,
+    );
+  }
+  for (const symbol of definitions.multiplyDefined) lines.push(`    note: one symbol, several definitions: ${symbol}`);
+  for (const symbol of definitions.unexplained) lines.push(`    ! not a node, and no reason why: ${symbol}`);
+  for (const symbol of baseline.identity.symbolsWithSeveralNodes) lines.push(`    ! several nodes for one symbol: ${symbol}`);
+  for (const mismatch of baseline.locations.mismatches) lines.push(`    ! location: ${mismatch}`);
+  for (const pair of baseline.uses.onlyScip) lines.push(`    ! use lost: ${pair}`);
+  for (const pair of baseline.uses.onlyGraph) lines.push(`    ! use not in SCIP: ${pair}`);
+  for (const pair of baseline.inheritance.onlyScip) lines.push(`    ! inheritance lost: ${pair}`);
+  for (const pair of baseline.inheritance.onlyGraph) lines.push(`    ! inheritance not in SCIP: ${pair}`);
+  lines.push('  Not compared (see docs/benchmark.md): CALLS vs REFERENCES, IMPORTS, EXTENDS vs IMPLEMENTS, derived and analyzer edges');
+  return lines;
+}
+
+function pairLine(pairs: { scip: number; graph: number; both: number }): string {
+  return `${String(pairs.both)} agree; ${String(pairs.scip - pairs.both)} in SCIP only, ${String(pairs.graph - pairs.both)} in the graph only`;
 }
 
 function scoreLines(score: Score, indent: string): string[] {

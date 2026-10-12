@@ -582,6 +582,11 @@ no reachable `DATABASE_URL` is configured in the environment and run when one
 is; with this repository's Postgres (`localhost:5433`) exported, the suite is
 1206 passed and 0 skipped.
 
+> **Later change.** The integration suites no longer read `DATABASE_URL` or fall
+> back to a default connection. They run only against `TEST_DATABASE_URL`, which
+> must name a dedicated test database; see the README's *Tests* section. The
+> commands in this report are kept as they were run.
+
 ### 13.2 What the 43 evaluator tests cover
 
 Verified by reading the suite, not inferred:

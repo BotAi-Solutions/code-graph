@@ -18,7 +18,9 @@ import { positionKey, scanFunctionValues, type FunctionValueScan } from './types
  * `const` whose value is a function becomes a `function` (see
  * `typescript-function-values.ts`), and each occurrence that is the callee of
  * a call is marked `isCall`. Without that, a call to `const f = () => {}`
- * could not be told apart from passing `f` as a value.
+ * could not be told apart from passing `f` as a value. Names in import and
+ * export specifiers are marked `isSpecifier`, so `import { f }` is not read as
+ * the file calling `f`.
  *
  * No source text is retained, logged or written to the graph.
  */
@@ -101,12 +103,13 @@ export class TypeScriptSymbolRefiner implements ScipSymbolRefiner {
       return applyFunctionValue(byKeyword, scan, position);
     });
 
-    const occurrences = document.occurrences.map((occurrence) =>
-      !occurrence.isDefinition &&
-      scan.callees.has(positionKey(occurrence.startLine, occurrence.startCharacter))
-        ? { ...occurrence, isCall: true }
-        : occurrence,
-    );
+    const occurrences = document.occurrences.map((occurrence) => {
+      if (occurrence.isDefinition) return occurrence;
+      const key = positionKey(occurrence.startLine, occurrence.startCharacter);
+      if (scan.callees.has(key)) return { ...occurrence, isCall: true };
+      if (scan.specifiers.has(key)) return { ...occurrence, isSpecifier: true };
+      return occurrence;
+    });
 
     return { ...document, symbols, occurrences };
   }

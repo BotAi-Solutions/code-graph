@@ -2,6 +2,7 @@ import type { CodeGraph, IndexingError, SupportedLanguage } from '@ckg/shared';
 import { EdgeAccumulator } from '../builder/edge-accumulator.js';
 import { NodeAccumulator } from '../builder/node-accumulator.js';
 import type { GraphIdentityContext } from '../model/identity.js';
+import type { UnresolvedReferenceCounts } from '../model/types.js';
 import {
   ANALYSIS_STAGES,
   type AnalysisContext,
@@ -69,12 +70,30 @@ export interface AssembledGraphStats {
   nodeCount: number;
   edgeCount: number;
   unresolvedReferenceCount: number;
-  /** Edges an analyzer described whose endpoints were not both in the graph. */
+  /** The same references, by why they have no target node. Sums to the count above. */
+  unresolvedReferences: UnresolvedReferenceCounts;
+  /**
+   * Edges an analyzer proposed that were discarded at the merge: an endpoint
+   * did not resolve to a node, or both endpoints were the same node. Edges the
+   * SCIP builder never made (unresolved references, self references) are not
+   * included; they never reached the merge.
+   */
   droppedEdgeCount: number;
+  /** `droppedEdgeCount`, per analyzer that dropped any. */
+  droppedEdgesByAnalyzer: Record<string, number>;
   /** Per-analyzer counters, keyed `<analyzer>.<counter>`. */
   counters: Record<string, number>;
   /** Analyzers that threw and were skipped. */
   failedAnalyzerCount: number;
+  /** Their names, in run order. */
+  failedAnalyzers: string[];
+}
+
+/** How long one analyzer took, from just before `analyze()` to the end of its merge. */
+export interface AnalyzerTiming {
+  analyzer: string;
+  durationMs: number;
+  outcome: 'completed' | 'failed';
 }
 
 export interface AssembledGraph extends CodeGraph {
@@ -84,6 +103,12 @@ export interface AssembledGraph extends CodeGraph {
   analyzersRun: string[];
   /** Files that could not be read or parsed, deduplicated by path. */
   errors: IndexingError[];
+  /**
+   * Per analyzer that ran, in run order. Analyzers whose `supports()` declined
+   * are not listed. Rebuilding the symbol index between stages is not part of
+   * any analyzer; the whole of `assemble()` is the caller's to time.
+   */
+  analyzerTimings: AnalyzerTiming[];
 }
 
 export class CodeGraphAssembler {
@@ -109,6 +134,10 @@ export class CodeGraphAssembler {
     let documentCount = 0;
     let symbolCount = 0;
     let unresolvedReferenceCount = 0;
+    const unresolvedReferences: UnresolvedReferenceCounts = { external: 0, unmodelled: 0, unknown: 0 };
+    const droppedEdgesByAnalyzer: Record<string, number> = {};
+    const failedAnalyzers: string[] = [];
+    const analyzerTimings: AnalyzerTiming[] = [];
     let failedAnalyzerCount = 0;
     let completedAnalyzers = 0;
 
@@ -137,6 +166,7 @@ export class CodeGraphAssembler {
         }
         analyzersRun.push(analyzer.name);
 
+        const analyzerStartedAt = performance.now();
         let result;
         try {
           result = await analyzer.analyze(context);
@@ -144,6 +174,12 @@ export class CodeGraphAssembler {
           // One analyzer's bug is not the repository's problem. Record it where
           // an operator will see it and carry on with the rest.
           failedAnalyzerCount += 1;
+          failedAnalyzers.push(analyzer.name);
+          analyzerTimings.push({
+            analyzer: analyzer.name,
+            durationMs: performance.now() - analyzerStartedAt,
+            outcome: 'failed',
+          });
           completedAnalyzers += 1;
           diagnostics.push(
             `${analyzer.name}: failed and was skipped — ${
@@ -170,6 +206,7 @@ export class CodeGraphAssembler {
         for (const edge of result.edges ?? []) {
           if (!this.mergeEdge(nodes, edges, edge)) {
             droppedEdgeCount += 1;
+            droppedEdgesByAnalyzer[analyzer.name] = (droppedEdgesByAnalyzer[analyzer.name] ?? 0) + 1;
           }
         }
 
@@ -181,6 +218,9 @@ export class CodeGraphAssembler {
           if (name === 'documentCount') documentCount = Math.max(documentCount, value);
           else if (name === 'symbolCount') symbolCount = Math.max(symbolCount, value);
           else if (name === 'unresolvedReferenceCount') unresolvedReferenceCount += value;
+          else if (name === 'unresolvedExternalReferenceCount') unresolvedReferences.external += value;
+          else if (name === 'unresolvedUnmodelledReferenceCount') unresolvedReferences.unmodelled += value;
+          else if (name === 'unresolvedUnknownReferenceCount') unresolvedReferences.unknown += value;
           else counters[`${analyzer.name}.${name}`] = value;
         }
 
@@ -191,6 +231,12 @@ export class CodeGraphAssembler {
         for (const failure of result.errors ?? []) {
           if (!errors.has(failure.file)) errors.set(failure.file, failure);
         }
+
+        analyzerTimings.push({
+          analyzer: analyzer.name,
+          durationMs: performance.now() - analyzerStartedAt,
+          outcome: 'completed',
+        });
 
         completedAnalyzers += 1;
         this.options.onProgress?.({
@@ -216,15 +262,19 @@ export class CodeGraphAssembler {
       analyzersRun,
       // Path order, so two runs over the same repository report the same list.
       errors: [...errors.values()].sort((a, b) => a.file.localeCompare(b.file)),
+      analyzerTimings,
       stats: {
         documentCount,
         symbolCount,
         nodeCount: nodeArray.length,
         edgeCount: edgeArray.length,
         unresolvedReferenceCount,
+        unresolvedReferences,
         droppedEdgeCount,
+        droppedEdgesByAnalyzer,
         counters,
         failedAnalyzerCount,
+        failedAnalyzers,
       },
     };
   }
