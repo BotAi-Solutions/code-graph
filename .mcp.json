@@ -1,3 +1,8 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "code-graph": {
+      "command": "node",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/apps/mcp/dist/server.js"]
+    }
+  }
 }
